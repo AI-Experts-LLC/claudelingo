@@ -31,8 +31,14 @@ claudelingo init
 ```
 
 `init` writes hooks into `~/.claude/settings.json` and a `notify` entry into
-`~/.codex/config.toml`. It merges into whatever is already there and is safe to run
-twice; `claudelingo uninit` takes it all back out.
+`~/.codex/config.toml`. It merges into whatever is already there, backs the Codex
+config up first, and is safe to run twice; `claudelingo uninit` takes it all back
+out and leaves everyone else's entries alone.
+
+Codex allows only one `notify` program. If you already have one, `init` says so and
+changes nothing rather than silently disabling your tooling. It exits non-zero if
+either integration fails to install — a pane that never wakes up is otherwise very
+hard to diagnose.
 
 Then open the pane in a second terminal, or a split pane next to your agent:
 
@@ -58,8 +64,10 @@ a permission decision, and that is exactly when you should be looking at Claude
 rather than at a vocabulary card.
 
 Codex has no "turn started" hook, so claudelingo tails the newest rollout transcript
-under `~/.codex/sessions` for that edge. Only bytes written after the pane opens are
-read, so yesterday's session can never set it off.
+under `~/.codex/sessions` for that edge. Transcripts that already exist when the pane
+opens are skipped to their end, so yesterday's session can never set it off; a
+transcript that *appears* afterwards is a live session and is read from its first
+line, because Codex writes the session header and your first message together.
 
 If a session is killed mid-turn its `Stop` hook never fires. A `busy` older than
 fifteen minutes is treated as idle, so the pane can't get stuck quizzing forever.
@@ -84,7 +92,9 @@ through the short steps — it never wipes your history.
 
 At most 8 words are in flight at once and at most 20 new ones per day, so a long
 afternoon of agent-watching builds a real deck instead of a flood you forget.
-Skipping (`s`) costs nothing: it defers the word without touching the box.
+Skipping (`s`) costs nothing: it defers the word for ten minutes without touching the
+box, and works on a word you have not been taught yet. While you are typing an answer,
+`Esc` clears it and a second `Esc` skips the card.
 
 ## Memory hooks
 
@@ -95,7 +105,8 @@ at low effort, with a server-side fallback so a policy refusal is rescued inside
 same call rather than surfacing as a blank.
 
 It needs a credential — `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or an
-`ant auth login` profile. Without one, everything else still works; run with
+`ant auth login` profile. Without one the pane says so once, on startup, instead of
+producing an auth error on every card; everything else still works. Run with
 `--no-enrich` to turn the prompt off entirely.
 
 ## Other languages
@@ -153,6 +164,7 @@ Options: `--lang <code>`, `--always-on`, `--no-enrich`, `--no-color`,
 | `s` | skip, without penalty |
 | `e` | ask Claude for a memory hook |
 | `p` | practise even when the agent is idle |
+| `Esc` | clear a typed answer; again to skip the card |
 | `q` / `Ctrl-C` | quit |
 | `?` | help |
 
@@ -167,12 +179,22 @@ Everything sits under `~/.claudelingo` (override with `CLAUDELINGO_HOME`):
 settings.json        your language and preferences
 status.json          the current agent state, written by the hooks
 progress-<lang>.json your deck
+progress-<lang>.lock held by the running pane, so a second one cannot clobber it
 packs/               generated word packs
 cache/               memory hooks already fetched
 ```
 
-Progress is written atomically after every answer, so quitting — or a crash — never
-costs you more than the card on screen.
+Progress is written after every answer to a temp file that is flushed and renamed, so
+quitting — or a crash, or a power cut — never costs you more than the card on screen.
+
+Two rules protect that file. A deck that cannot be parsed is **moved aside**, never
+overwritten: you get a `progress-es.json.corrupt-<timestamp>` copy and the pane tells
+you where it went. And only one pane at a time may study a given language, because two
+would each hold the whole deck in memory and the second to save would erase the first's
+work — run a second pane on a different `--lang` instead.
+
+If the pane cannot write at all (read-only home, full disk) it says so in red and keeps
+running rather than crashing out and leaving your terminal in raw mode.
 
 ## Development
 
@@ -186,9 +208,16 @@ npm run typecheck
 ```
 
 The end-to-end tests spawn the real binary and drive it over pipes, firing genuine
-hook events and appending to a genuine Codex transcript, then assert on the frames a
-user would see. `CLAUDELINGO_FORCE_RENDER=1` makes the pane paint without a TTY and
-`CLAUDELINGO_SEED` fixes the shuffle, which is what makes those assertions stable.
+hook events, appending to a genuine Codex transcript, revoking write permission on the
+home directory, and serving memory hooks from a local stub HTTP server — then assert on
+the frames a user would see. `CLAUDELINGO_FORCE_RENDER=1` makes the pane paint without a
+TTY and `CLAUDELINGO_SEED` fixes the shuffle, which is what makes those assertions
+stable.
+
+Panel width is measured in terminal **columns**, not code points, so a generated CJK
+pack cannot tear the border. `test/unit/width.test.ts` checks that against an
+independent expected-column table rather than the renderer's own measure — otherwise
+the assertion cannot fail.
 
 ## Licence
 

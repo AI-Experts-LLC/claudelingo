@@ -70,6 +70,8 @@ export function cli(
 export class Pane {
   private child: ChildProcessWithoutNullStreams;
   private buffer = "";
+  private errors = "";
+  private exitCode: number | null | undefined;
   readonly exited: Promise<number | null>;
 
   constructor(args: string[], env: Env, extraEnv: Record<string, string> = {}) {
@@ -85,24 +87,69 @@ export class Pane {
       },
     });
     this.child.stdout.on("data", (d) => (this.buffer += d.toString()));
-    this.child.stderr.on("data", (d) => (this.buffer += d.toString()));
-    this.exited = new Promise((resolve) => this.child.on("close", resolve));
+    // Kept separate: a stack trace landing inside `frames` would let a crashing
+    // pane masquerade as a rendered frame.
+    this.child.stderr.on("data", (d) => (this.errors += d.toString()));
+    this.exited = new Promise((resolve) => {
+      this.child.on("close", (code) => {
+        this.exitCode = code;
+        resolve(code);
+      });
+    });
   }
 
   get output(): string {
     return this.buffer;
   }
 
-  /** Every frame painted so far, split on the panel's top border. */
+  /** Anything the pane wrote to stderr — a crash, or a deliberate warning. */
+  get stderr(): string {
+    return this.errors;
+  }
+
+  /**
+   * Every COMPLETE frame painted so far.
+   *
+   * A frame is only counted once its closing border has arrived, so a partially
+   * flushed write can never be mistaken for a finished frame and produce a
+   * confusing hard failure in an assertion that runs straight after a wait.
+   */
   get frames(): string[] {
     return this.buffer
       .split(/(?=┌)/)
       .map((f) => f.trim())
-      .filter((f) => f.startsWith("┌"));
+      .filter((f) => f.startsWith("┌") && f.includes("└"));
   }
 
   get lastFrame(): string {
     return this.frames.at(-1) ?? "";
+  }
+
+  /**
+   * The current frame with its borders and line wrapping removed.
+   *
+   * Prose in the panel is hard-wrapped to the panel width, so a sentence rarely
+   * appears as a contiguous substring of the raw frame. Match against this.
+   */
+  get flatFrame(): string {
+    return this.lastFrame
+      .split("\n")
+      .map((line) => line.replace(/^[┌│└]/, "").replace(/[┐│┘]$/, ""))
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  /** Wait for wrapped prose to appear in the frame currently on screen. */
+  waitForProse(text: string, timeoutMs = 8000): Promise<void> {
+    return this.until(() => this.flatFrame.includes(text), timeoutMs);
+  }
+
+  /** Fails loudly if the pane died, rather than timing out on a missing frame. */
+  private assertAlive(): void {
+    if (this.exitCode !== undefined && this.exitCode !== 0) {
+      throw new Error(`pane exited with code ${this.exitCode}\n--- stderr ---\n${this.errors}`);
+    }
   }
 
   send(keys: string): void {
@@ -114,10 +161,13 @@ export class Pane {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (predicate(this.buffer)) return;
+      this.assertAlive();
       await new Promise((r) => setTimeout(r, 25));
     }
+    this.assertAlive();
     throw new Error(
-      `timed out waiting for condition.\n--- output ---\n${this.buffer.slice(-2500)}`,
+      `timed out waiting for condition.\n--- output ---\n${this.buffer.slice(-2500)}` +
+        (this.errors ? `\n--- stderr ---\n${this.errors}` : ""),
     );
   }
 

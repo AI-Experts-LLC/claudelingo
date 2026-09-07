@@ -1,6 +1,7 @@
 import { MAX_BOX, cardKindForBox } from "../srs.js";
 import type { Pack } from "../types.js";
 import { ANSI_PATTERN, ansi } from "./ansi.js";
+import { sliceToWidth, stringWidth } from "./width.js";
 import { type AppState, isActive, summary } from "./app.js";
 
 export interface Theme {
@@ -34,8 +35,9 @@ export const PLAIN: Theme = {
   yellow: "",
 };
 
+/** Terminal columns a rendered string occupies, ignoring colour sequences. */
 export function visibleWidth(text: string): number {
-  return [...text.replace(ANSI_PATTERN, "")].length;
+  return stringWidth(text.replace(ANSI_PATTERN, ""));
 }
 
 function padTo(text: string, width: number): string {
@@ -57,8 +59,9 @@ export function wrap(text: string, width: number): string[] {
         line = word;
       }
       while (visibleWidth(line) > width) {
-        lines.push([...line].slice(0, width).join(""));
-        line = [...line].slice(width).join("");
+        const head = sliceToWidth(line, width);
+        lines.push(head.text);
+        line = line.slice(head.text.length);
       }
     }
     lines.push(line);
@@ -69,7 +72,10 @@ export function wrap(text: string, width: number): string[] {
 function truncate(text: string, width: number): string {
   if (visibleWidth(text) <= width) return text;
   if (width <= 1) return "";
-  return `${[...text.replace(ANSI_PATTERN, "")].slice(0, width - 1).join("")}…`;
+  const plain = text.replace(ANSI_PATTERN, "");
+  const cut = sliceToWidth(plain, width - 1);
+  // A wide glyph may leave a column short of the ellipsis; pad it back.
+  return `${cut.text}${" ".repeat(width - 1 - cut.width)}…`;
 }
 
 /** Draw the panel border around already-composed content lines. */
@@ -208,6 +214,9 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
         for (const line of state.enrichment ? wrap(state.enrichment, body) : []) {
           push(`${theme.yellow}${line}${theme.reset}`);
         }
+        for (const line of state.enrichError ? wrap(`no hook: ${state.enrichError}`, body) : []) {
+          push(`${theme.red}${line}${theme.reset}`);
+        }
         push();
         break;
       }
@@ -272,6 +281,9 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
         for (const line of state.enrichment ? wrap(state.enrichment, body) : []) {
           push(`${theme.yellow}${line}${theme.reset}`);
         }
+        for (const line of state.enrichError ? wrap(`no hook: ${state.enrichError}`, body) : []) {
+          push(`${theme.red}${line}${theme.reset}`);
+        }
         push();
         break;
       }
@@ -286,6 +298,11 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
     push(progressBar(s.total ? s.learned / s.total : 0, Math.min(24, body), theme));
     push(statusLine(state, pack, theme, body));
     if (state.message) push(`${theme.dim}${state.message}${theme.reset}`);
+    // A problem stays on screen until it is fixed: a pane that has silently
+    // stopped saving must not look identical to one that is working.
+    for (const line of state.problem ? wrap(state.problem, body) : []) {
+      push(`${theme.red}${line}${theme.reset}`);
+    }
   }
 
   const marker =

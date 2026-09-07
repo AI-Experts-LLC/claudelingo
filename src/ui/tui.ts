@@ -13,6 +13,8 @@ export interface RunOptions {
   statusFile: string;
   /** Ask Claude for a memory hook. Injected so tests run without network. */
   enrich?: (word: Word) => Promise<string>;
+  /** Shown in the pane straight away, e.g. an unreadable progress file. */
+  initialProblem?: string;
   stdin?: NodeJS.ReadableStream;
   stdout?: NodeJS.WritableStream;
   color?: boolean;
@@ -20,6 +22,10 @@ export interface RunOptions {
   tickMs?: number;
   /** Render plain frames even without a TTY. Used by the end-to-end tests. */
   forceRender?: boolean;
+  /** Tail Codex transcripts for the turn-start edge Codex has no hook for. */
+  watchCodex?: (onState: (state: AgentState) => void, onError: (message: string) => void) => {
+    stop(): void;
+  };
 }
 
 /** Translate one chunk of raw stdin into the key events the reducer understands. */
@@ -82,6 +88,7 @@ export function run(options: RunOptions): Runner {
     initialAgent,
     Date.now(),
   );
+  if (options.initialProblem) state = { ...state, problem: options.initialProblem };
 
   // An agent already working when the pane opens should get a card straight away.
   if (initialAgent === "busy" || options.settings.alwaysOn) {
@@ -100,14 +107,32 @@ export function run(options: RunOptions): Runner {
     const frame = renderFrame(state, options.pack, width(), theme).join("\n");
     if (!force && frame === lastFrame) return;
     lastFrame = frame;
-    if (isTty) stdout.write(`${ansi.clearScreen}${frame}\n`);
-    else if (options.forceRender) stdout.write(`${frame}\n`);
+    try {
+      if (isTty) stdout.write(`${ansi.clearScreen}${frame}\n`);
+      else if (options.forceRender) stdout.write(`${frame}\n`);
+    } catch {
+      // The reader went away (`claudelingo | head`). Leave quietly rather than
+      // dumping an EPIPE stack trace over the user's terminal.
+      stop();
+    }
   };
 
   const applyEffects = (effects: Effect[]) => {
     for (const effect of effects) {
       if (effect.type === "save") {
-        writeJsonAtomic(options.progressFile, effect.progress);
+        try {
+          writeJsonAtomic(options.progressFile, effect.progress);
+          if (state.problem?.startsWith("progress is not saving")) {
+            state = { ...state, problem: null };
+          }
+        } catch (error) {
+          // A read-only home or a full disk must not kill the pane mid-session and
+          // leave the terminal in raw mode. Say so, keep going, keep retrying.
+          state = {
+            ...state,
+            problem: `progress is not saving: ${(error as Error).message}`,
+          };
+        }
       } else if (effect.type === "quit") {
         stop();
       } else if (effect.type === "enrich" && options.enrich) {
@@ -116,7 +141,7 @@ export function run(options: RunOptions): Runner {
           .enrich(word)
           .then((text) => dispatch({ type: "enriched", wordId: word.id, text }))
           .catch((error: Error) =>
-            dispatch({ type: "enriched", wordId: word.id, text: `(no hook: ${error.message})` }),
+            dispatch({ type: "enrichFailed", wordId: word.id, message: error.message }),
           );
       }
     }
@@ -130,6 +155,30 @@ export function run(options: RunOptions): Runner {
     paint();
   };
 
+  // Started before the first paint: the transcript tailer snapshots which Codex
+  // sessions already existed, and anything written after that snapshot counts as a
+  // live turn. Snapshotting after the pane is visible would silently miss a turn
+  // that began in between. It never paints on its own, so it cannot double up the
+  // opening frame.
+  const codexWatcher = options.watchCodex?.(
+    (agent) => {
+      const current = readStatus(options.statusFile);
+      if (current?.state === agent) return;
+      try {
+        writeJsonAtomic(options.statusFile, {
+          state: agent,
+          source: "codex",
+          event: "rollout",
+          ts: Date.now(),
+        });
+      } catch {
+        // The status file is a cache of the agent's state; failing to update it
+        // is reported by the watcher's own error path, not here.
+      }
+    },
+    (message) => dispatch({ type: "problem", message: `Codex watcher stopped: ${message}` }),
+  );
+
   if (isTty) stdout.write(ansi.hideCursor);
   paint(true);
 
@@ -137,6 +186,7 @@ export function run(options: RunOptions): Runner {
   // which would otherwise emit the opening frame twice.
   const watcher = watchStatus(() => dispatch({ type: "agent", state: agentNow() }), {
     file: options.statusFile,
+    onError: (message) => dispatch({ type: "problem", message }),
   });
 
   const ticker = setInterval(() => {
@@ -164,6 +214,7 @@ export function run(options: RunOptions): Runner {
     stopped = true;
     clearInterval(ticker);
     watcher.stop();
+    codexWatcher?.stop();
     stdin.off("data", onData);
     stdin.off("end", onEnd);
     if (typeof tty.setRawMode === "function" && tty.isTTY) tty.setRawMode(false);
@@ -171,7 +222,13 @@ export function run(options: RunOptions): Runner {
     // Reading stdin refs its handle; without this the process stays alive after
     // the user quits, even though there is nothing left to do.
     tty.unref?.();
-    if (isTty) stdout.write(`${ansi.showCursor}\n`);
+    if (isTty) {
+      try {
+        stdout.write(`${ansi.showCursor}\n`);
+      } catch {
+        // Nothing to do if the terminal is already gone.
+      }
+    }
     resolveDone();
   }
 

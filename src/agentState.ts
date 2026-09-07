@@ -73,12 +73,16 @@ export interface StatusWatcher {
 /**
  * Watch the status file for changes.
  *
- * `fs.watch` is the fast path but is unreliable across platforms and editors, so a
- * modest poll runs alongside it and the callback is deduped on content.
+ * The poll is the load-bearing mechanism, not a fallback. Status is written with a
+ * temp file and a rename, which replaces the inode, so an `fs.watch` handle stops
+ * delivering events after the first write. The watch is still attached because it
+ * makes the very first transition feel instant, but correctness rests on the poll.
+ *
+ * The callback is deduped on content, so a rewrite with identical values is quiet.
  */
 export function watchStatus(
   onChange: (status: AgentStatus | null) => void,
-  options: { file?: string; intervalMs?: number } = {},
+  options: { file?: string; intervalMs?: number; onError?: (message: string) => void } = {},
 ): StatusWatcher {
   const file = options.file ?? paths.status();
   const intervalMs = options.intervalMs ?? 250;
@@ -98,6 +102,12 @@ export function watchStatus(
   let watcher: fs.FSWatcher | null = null;
   try {
     watcher = fs.watch(file, { persistent: false }, check);
+    // An `error` event with no listener is thrown, which would take the pane down.
+    // Losing the watch is survivable; the poll carries on regardless.
+    watcher.on("error", () => {
+      watcher?.close();
+      watcher = null;
+    });
   } catch {
     // File may not exist yet; the poll will pick it up.
   }
@@ -106,7 +116,11 @@ export function watchStatus(
   return {
     stop() {
       clearInterval(timer);
-      watcher?.close();
+      try {
+        watcher?.close();
+      } catch {
+        // Already closed.
+      }
     },
   };
 }

@@ -15,49 +15,122 @@ export function codexSessionsDir(): string {
   return path.join(codexHome(), "sessions");
 }
 
-const NOTIFY_LINE = (bin: string) => `notify = ["${bin}", "notify"]`;
+/** TOML basic strings need their backslashes and quotes escaped — Windows paths bite. */
+function tomlString(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function notifyLine(bin: string): string {
+  return `notify = [${tomlString(bin)}, ${tomlString("notify")}]`;
+}
+
+/** Index of the first `[table]` header — a top-level key must live above it. */
+function firstTableIndex(lines: string[]): number {
+  const index = lines.findIndex((line) => /^\s*\[/.test(line));
+  return index === -1 ? lines.length : index;
+}
 
 /**
- * Point Codex's `notify` program at us.
+ * Locate the top-level `notify` assignment, including a value spread over several
+ * lines, and report whose it is.
  *
- * Codex only notifies on turn completion, so this half of the integration supplies
- * the idle edge; `SessionWatcher` below supplies the busy edge.
+ * Only lines above the first table header are considered: a `notify` key inside
+ * `[tui]` is a different setting entirely, and rewriting it destroys the user's
+ * configuration while leaving ours unwritten.
  */
-export function withNotify(toml: string, bin: string): string {
-  const line = NOTIFY_LINE(bin);
+export function findNotify(
+  toml: string,
+  bin: string,
+): { start: number; end: number; ours: boolean } | null {
   const lines = toml.split("\n");
+  const limit = firstTableIndex(lines);
+  const start = lines.findIndex((line, i) => i < limit && /^\s*notify\s*=/.test(line));
+  if (start === -1) return null;
 
-  // `notify` is a top-level key, so it has to land before the first [table] header.
-  let firstTable = lines.findIndex((l) => /^\s*\[/.test(l));
-  if (firstTable === -1) firstTable = lines.length;
-
-  const existing = lines.findIndex((l) => /^\s*notify\s*=/.test(l));
-  if (existing !== -1) {
-    if ((lines[existing] as string).includes(`"${bin}"`)) return toml;
-    lines[existing] = line;
-    return lines.join("\n");
+  // Walk forward until the array closes, so a multi-line value is replaced whole
+  // rather than beheaded — half a replaced array is invalid TOML.
+  let end = start;
+  const opens = (s: string) => (s.match(/\[/g) ?? []).length;
+  const closes = (s: string) => (s.match(/\]/g) ?? []).length;
+  let depth = opens(lines[start] as string) - closes(lines[start] as string);
+  while (depth > 0 && end + 1 < lines.length) {
+    end += 1;
+    depth += opens(lines[end] as string) - closes(lines[end] as string);
   }
 
-  lines.splice(firstTable, 0, line, "");
+  const block = lines.slice(start, end + 1).join("\n");
+  return { start, end, ours: block.includes(tomlString(bin)) };
+}
+
+export class CodexConfigError extends Error {}
+
+/**
+ * Add our `notify` entry to a Codex config.
+ *
+ * Codex supports exactly one notify program, so an entry belonging to something
+ * else is never overwritten — that would silently disable the user's own tooling.
+ * The caller is told instead.
+ */
+export function withNotify(toml: string, bin: string): string {
+  const found = findNotify(toml, bin);
+  if (found?.ours) return toml;
+  if (found) {
+    throw new CodexConfigError(
+      `${codexConfigPath()} already sets a different notify program on line ${found.start + 1}. ` +
+        "Codex allows only one, so claudelingo has left it alone. " +
+        "Remove that line and re-run `claudelingo init` to use claudelingo instead.",
+    );
+  }
+
+  const lines = toml.split("\n");
+  lines.splice(firstTableIndex(lines), 0, notifyLine(bin), "");
   return lines.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
 export function removeNotify(toml: string, bin: string): string {
-  return toml
-    .split("\n")
-    .filter((l) => !(/^\s*notify\s*=/.test(l) && l.includes(`"${bin}"`)))
-    .join("\n");
+  const found = findNotify(toml, bin);
+  if (!found?.ours) return toml;
+  const lines = toml.split("\n");
+  lines.splice(found.start, found.end - found.start + 1);
+  return lines.join("\n");
 }
 
-export function installNotify(bin: string, file = codexConfigPath()): void {
-  const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+function writeTextAtomic(file: string, contents: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, withNotify(current, bin), "utf8");
+  const tmp = `${file}.claudelingo.tmp`;
+  try {
+    const fd = fs.openSync(tmp, "w");
+    fs.writeFileSync(fd, contents, "utf8");
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    fs.rmSync(tmp, { force: true });
+    throw error;
+  }
+}
+
+/** Returns the path of the backup taken, when there was an existing config to back up. */
+export function installNotify(bin: string, file = codexConfigPath()): string | null {
+  const exists = fs.existsSync(file);
+  const current = exists ? fs.readFileSync(file, "utf8") : "";
+  const next = withNotify(current, bin);
+  if (next === current) return null;
+
+  let backup: string | null = null;
+  if (exists) {
+    backup = `${file}.claudelingo-backup`;
+    fs.copyFileSync(file, backup);
+  }
+  writeTextAtomic(file, next);
+  return backup;
 }
 
 export function uninstallNotify(bin: string, file = codexConfigPath()): void {
   if (!fs.existsSync(file)) return;
-  fs.writeFileSync(file, removeNotify(fs.readFileSync(file, "utf8"), bin), "utf8");
+  const current = fs.readFileSync(file, "utf8");
+  const next = removeNotify(current, bin);
+  if (next !== current) writeTextAtomic(file, next);
 }
 
 /**
@@ -82,7 +155,6 @@ export function classifyRolloutLine(line: string): AgentState | null {
   if (type === "task_complete" || type === "turn_complete" || type === "agent-turn-complete") {
     return "idle";
   }
-  if (type === "token_count" || type === "shutdown_complete") return null;
   return null;
 }
 
@@ -90,97 +162,153 @@ export function classifyRolloutLine(line: string): AgentState | null {
 export function classifyNotification(json: string): AgentState | null {
   try {
     const payload = JSON.parse(json) as { type?: string };
-    if (payload.type === "agent-turn-complete") return "idle";
-    return null;
+    return payload.type === "agent-turn-complete" ? "idle" : null;
   } catch {
     return null;
   }
 }
 
-function newestRollout(dir: string): string | null {
-  if (!fs.existsSync(dir)) return null;
-  let best: { file: string; mtime: number } | null = null;
+/** Every rollout transcript under `dir`, newest last. */
+function listRollouts(dir: string): Array<{ file: string; mtime: number }> {
+  const found: Array<{ file: string; mtime: number }> = [];
   const walk = (current: string, depth: number) => {
     if (depth > 5) return;
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(current, { withFileTypes: true });
     } catch {
-      return;
+      return; // Unreadable subtree; repeated read failures are reported separately.
     }
     for (const entry of entries) {
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) walk(full, depth + 1);
       else if (entry.name.endsWith(".jsonl")) {
         try {
-          const mtime = fs.statSync(full).mtimeMs;
-          if (!best || mtime > best.mtime) best = { file: full, mtime };
+          found.push({ file: full, mtime: fs.statSync(full).mtimeMs });
         } catch {
-          // File vanished between readdir and stat; ignore.
+          // Vanished between readdir and stat.
         }
       }
     }
   };
   walk(dir, 0);
-  return best ? (best as { file: string }).file : null;
+  return found.sort((a, b) => a.mtime - b.mtime);
+}
+
+function newestRollout(dir: string): { file: string; mtime: number } | null {
+  return listRollouts(dir).at(-1) ?? null;
 }
 
 export interface SessionWatcher {
   stop(): void;
 }
 
+export interface WatchOptions {
+  dir?: string;
+  intervalMs?: number;
+  /** Reported once when the watcher has failed repeatedly and is no longer reliable. */
+  onError?: (message: string) => void;
+}
+
+/** Consecutive read failures tolerated before the user is told the tailer is broken. */
+const FAILURE_LIMIT = 5;
+
 /**
  * Follow the newest Codex rollout transcript and report busy/idle transitions.
  *
- * Codex has no "turn started" hook, so the transcript is the only signal available
- * for the busy edge. Only bytes appended after the watcher starts are read, so an
- * old session on disk can never trigger a spurious quiz.
+ * Codex has no "turn started" hook, so the transcript is the only signal for the
+ * busy edge. Transcripts that already existed when the watcher started are adopted
+ * at their end — old history must never trigger a quiz — but a transcript that
+ * *appears* afterwards is a new session and is read from the beginning, because
+ * Codex writes the session header and the first user turn together and they would
+ * otherwise be skipped, losing the busy edge for turn one of every session.
  */
 export function watchCodexSession(
   onState: (state: AgentState) => void,
-  options: { dir?: string; intervalMs?: number } = {},
+  options: WatchOptions = {},
 ): SessionWatcher {
   const dir = options.dir ?? codexSessionsDir();
   const intervalMs = options.intervalMs ?? 500;
+
   let file: string | null = null;
   let offset = 0;
   let carry = "";
+  let failures = 0;
+  let reportedFailure = false;
+  // Every transcript that exists at this moment is history and must never trigger
+  // a quiz. Anything appearing afterwards is a live session and is read in full.
+  // This snapshot is taken once, up front: taking it lazily on the first poll that
+  // finds the directory would swallow a session created moments after startup.
+  const preexisting = new Set(listRollouts(dir).map((entry) => entry.file));
+
+  const fail = (message: string) => {
+    failures += 1;
+    if (failures >= FAILURE_LIMIT && !reportedFailure) {
+      reportedFailure = true;
+      options.onError?.(message);
+    }
+  };
 
   const poll = () => {
+    // The directory may not exist yet; keep looking, so opening the pane before
+    // Codex has ever run does not disable the integration for the whole session.
     const newest = newestRollout(dir);
     if (!newest) return;
-    if (newest !== file) {
-      file = newest;
+
+    if (newest.file !== file) {
+      file = newest.file;
       carry = "";
-      // Start at the end of a pre-existing file; a brand-new one is read in full.
-      try {
-        offset = fs.statSync(newest).size;
-      } catch {
-        offset = 0;
+      if (preexisting.has(file)) {
+        try {
+          offset = fs.statSync(file).size;
+        } catch {
+          offset = 0;
+        }
+      } else {
+        offset = 0; // A session that started while we were watching: read it all.
       }
-      return;
     }
 
     let size: number;
     try {
       size = fs.statSync(file).size;
     } catch {
+      fail(`cannot stat ${file}`);
       return;
     }
-    if (size < offset) offset = 0; // truncated or rotated
+    if (size < offset) {
+      // Truncated or rewritten. Re-reading from zero would replay every past turn
+      // and fire a spurious busy, so resync to the new end instead.
+      offset = size;
+      carry = "";
+      return;
+    }
     if (size === offset) return;
 
-    let chunk = "";
+    let chunk: string;
+    let fd: number | null = null;
     try {
-      const fd = fs.openSync(file, "r");
+      fd = fs.openSync(file, "r");
       const buffer = Buffer.alloc(size - offset);
       fs.readSync(fd, buffer, 0, buffer.length, offset);
-      fs.closeSync(fd);
       chunk = buffer.toString("utf8");
-    } catch {
+    } catch (error) {
+      fail(`cannot read ${file}: ${(error as Error).message}`);
+      // Skip the bytes we could not read; retrying the same offset forever would
+      // wedge the watcher silently on a permanently unreadable file.
+      offset = size;
       return;
+    } finally {
+      if (fd !== null) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          // Nothing useful to do; the descriptor is gone either way.
+        }
+      }
     }
     offset = size;
+    failures = 0;
 
     const lines = (carry + chunk).split("\n");
     carry = lines.pop() ?? "";

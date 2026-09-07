@@ -82,7 +82,10 @@ describe("the pane and the agent", () => {
     await cli(["hook", "UserPromptSubmit"], e);
     await pane.waitForLastFrame("new word");
     expect(pane.lastFrame).toContain("agent working");
-    expect(pane.lastFrame).toContain("el");
+    // Assert on the gloss, not the term: "el" is also a substring of the
+    // "claudelingo" in the title bar, so it would match any frame at all.
+    expect(pane.lastFrame).toContain("the (m.)");
+    expect(pane.lastFrame).toContain("#1 most common word");
 
     // Claude finishes; the pane must get out of the way.
     await cli(["hook", "Stop"], e);
@@ -127,7 +130,6 @@ describe("the teaching ramp", () => {
     pane = new Pane(BASE, e);
 
     await pane.waitForText("#1 most common word");
-    expect(pane.lastFrame).toContain("el");
     expect(pane.lastFrame).toContain("the (m.)");
 
     pane.send(" ");
@@ -265,7 +267,8 @@ describe("answering", () => {
     pane.send("ex");
     await pane.waitForText("> ex");
     pane.send(String.fromCharCode(127));
-    await pane.waitForText("> e");
+    const typed = pane;
+    await typed.until(() => /^\s*>\s*e\s*▏?\s*$/m.test(typed.lastFrame.replace(/[│]/g, "")));
     pane.send("l\r");
     await pane.waitForText("correct");
   });
@@ -404,10 +407,11 @@ describe("resilience", () => {
   });
 
   it("runs each shipped language end to end", async () => {
+    // Glosses, not terms: several terms are substrings of the panel chrome.
     for (const [lang, first] of [
-      ["es", "el"],
-      ["fr", "le"],
-      ["it", "il"],
+      ["es", "the (m.)"],
+      ["fr", "the (m.)"],
+      ["it", "the (m.)"],
     ] as const) {
       const e = makeEnv();
       try {
@@ -423,5 +427,93 @@ describe("resilience", () => {
         e.cleanup();
       }
     }
+  });
+});
+
+describe("the answer / idle / next-prompt cycle", () => {
+  /**
+   * The single most common path in the app: answer a card, Claude finishes its
+   * turn, you send the next prompt. Resuming a card that was already graded would
+   * re-ask it and double-count it into the deck on disk.
+   */
+  it("does not re-ask or double-count a card that was already answered", async () => {
+    const e = fresh();
+    seed(e, [
+      { id: "es:1", box: 2, stage: "review" },
+      { id: "es:2", box: 2, stage: "review", dueOffsetMs: -500 },
+    ]);
+    await cli(["hook", "UserPromptSubmit"], e);
+    pane = new Pane(BASE, e);
+    await pane.waitForText("what does");
+
+    const frame = pane.lastFrame;
+    const term = /what does «(.+?)» mean/.exec(frame)?.[1] as string;
+    const gloss = glossForTerm("es", term);
+    const correct = [...parseChoices(frame)].find(([, label]) => label === gloss)?.[0];
+    pane.send(correct as string);
+    await pane.waitForText("correct");
+
+    const afterAnswer = readProgress(e, "es") as {
+      items: Record<string, { seen: number; box: number }>;
+      totalAnswered: number;
+    };
+
+    // Claude finishes its turn, then you send the next prompt.
+    await cli(["hook", "Stop"], e);
+    await pane.waitForLastFrame("Standing by");
+    await cli(["hook", "UserPromptSubmit"], e);
+    const resumed = pane;
+    await resumed.until(() => !resumed.lastFrame.includes("Standing by"));
+
+    // Whatever is on screen, it must not be the graded card awaiting an answer.
+    expect(pane.lastFrame).not.toContain(`what does «${term}»`);
+
+    const answeredId = Object.keys(afterAnswer.items).find(
+      (id) => afterAnswer.items[id]!.seen > 3,
+    ) as string;
+    const now = readProgress(e, "es") as {
+      items: Record<string, { seen: number; box: number }>;
+      totalAnswered: number;
+    };
+    expect(now.items[answeredId]?.seen).toBe(afterAnswer.items[answeredId]?.seen);
+    expect(now.items[answeredId]?.box).toBe(afterAnswer.items[answeredId]?.box);
+    expect(now.totalAnswered).toBe(afterAnswer.totalAnswered);
+  });
+
+  it("puts an unanswered card back exactly where it was", async () => {
+    const e = fresh();
+    seed(e, [{ id: "es:1", box: 1, stage: "learning" }]);
+    await cli(["hook", "UserPromptSubmit"], e);
+    pane = new Pane(BASE, e);
+    await pane.waitForText("what does");
+    const question = /what does «(.+?)» mean/.exec(pane.lastFrame)?.[1];
+
+    await cli(["hook", "Stop"], e);
+    await pane.waitForLastFrame("Standing by");
+    await cli(["hook", "UserPromptSubmit"], e);
+    await pane.waitForLastFrame("what does");
+    expect(/what does «(.+?)» mean/.exec(pane.lastFrame)?.[1]).toBe(question);
+  });
+});
+
+describe("skipping a word never seen before", () => {
+  it("moves on instead of showing the same word straight back", async () => {
+    const e = fresh();
+    await cli(["hook", "UserPromptSubmit"], e);
+    pane = new Pane(BASE, e);
+    await pane.waitForText("#1 most common word");
+
+    pane.send("s");
+    await pane.waitForText("#2 most common word");
+    expect(pane.flatFrame).toContain("skipped el");
+
+    // The deferral is persisted, so it does not reappear on the next launch.
+    const progress = readProgress(e, "es") as {
+      items: Record<string, { stage: string; due: number }>;
+      totalAnswered: number;
+    };
+    expect(progress.items["es:1"]?.stage).toBe("new");
+    expect(progress.items["es:1"]?.due).toBeGreaterThan(Date.now());
+    expect(progress.totalAnswered).toBe(0);
   });
 });

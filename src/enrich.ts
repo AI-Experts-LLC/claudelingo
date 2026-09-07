@@ -62,10 +62,13 @@ function cacheFile(lang: string, term: string): string {
  * A one- or two-line memory hook for a word: an etymology, a cognate, or a vivid
  * image. Cached on disk, because the hook for "tiempo" never changes.
  */
+/** A hung request must not leave "asking Claude…" on screen forever. */
+const HOOK_TIMEOUT_MS = 30_000;
+
 export async function memoryHook(
   word: Word,
   pack: Pack,
-  options: { model?: string; signal?: AbortSignal } = {},
+  options: { model?: string; signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<string> {
   const file = cacheFile(pack.code, word.term);
   if (fs.existsSync(file)) return fs.readFileSync(file, "utf8").trim();
@@ -89,9 +92,11 @@ export async function memoryHook(
     ],
   };
 
+  const timeout = AbortSignal.timeout(options.timeoutMs ?? HOOK_TIMEOUT_MS);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
   const response = await client().beta.messages.create(
     params as Anthropic.Beta.MessageCreateParamsNonStreaming,
-    options.signal ? { signal: options.signal } : {},
+    { signal },
   );
 
   if (response.stop_reason === "refusal") {
@@ -100,8 +105,13 @@ export async function memoryHook(
   const text = textOf(response);
   if (!text) throw new EnrichError("empty response");
 
-  fs.mkdirSync(paths.cache(), { recursive: true });
-  fs.writeFileSync(file, `${text}\n`, "utf8");
+  try {
+    fs.mkdirSync(paths.cache(), { recursive: true });
+    fs.writeFileSync(file, `${text}\n`, "utf8");
+  } catch {
+    // An unwritable cache means paying for this word again next time, which is a
+    // far better outcome than reporting a disk problem as a model failure.
+  }
   return text;
 }
 

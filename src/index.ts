@@ -9,4 +9,14 @@ export { createState, reduce, isActive, summary } from "./ui/app.js";
 export type { AppState, Event, Effect, Mode, Key, Step } from "./ui/app.js";
 export { renderFrame, box, wrap, visibleWidth, COLOR, PLAIN } from "./ui/render.js";
 export { run, parseKeys } from "./ui/tui.js";
-export { paths, loadSettings, saveSettings, DEFAULT_SETTINGS } from "./config.js";
+export {
+  paths,
+  loadSettings,
+  saveSettings,
+  readJsonFile,
+  writeJsonAtomic,
+  quarantine,
+  DEFAULT_SETTINGS,
+} from "./config.js";
+export * as lock from "./lock.js";
+export { stringWidth, charWidth, sliceToWidth } from "./ui/width.js";

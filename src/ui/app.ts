@@ -1,5 +1,13 @@
 import { applyAnswer, buildCard, isCorrect, makeRng, selectNext, stats } from "../srs.js";
-import type { AgentState, Card, Pack, Progress, Settings, Word } from "../types.js";
+import type {
+  AgentState,
+  Card,
+  ItemProgress,
+  Pack,
+  Progress,
+  Settings,
+  Word,
+} from "../types.js";
 
 export type Mode = "waiting" | "teach" | "question" | "feedback" | "caughtup" | "quit";
 
@@ -14,7 +22,9 @@ export type Event =
   | { type: "agent"; state: AgentState }
   | { type: "key"; key: Key }
   | { type: "tick"; now: number }
-  | { type: "enriched"; wordId: string; text: string };
+  | { type: "enriched"; wordId: string; text: string }
+  | { type: "enrichFailed"; wordId: string; message: string }
+  | { type: "problem"; message: string | null };
 
 export type Effect =
   | { type: "save"; progress: Progress }
@@ -37,6 +47,15 @@ export interface AppState {
   enrichPending: boolean;
   /** Transient one-line message under the card. */
   message: string | null;
+  /**
+   * The mode to restore when the agent starts working again. Never `feedback`:
+   * a card that has already been graded must not come back as a live question.
+   */
+  resumeMode: Mode | null;
+  /** A problem the user needs to know about, shown until it is resolved. */
+  problem: string | null;
+  /** Set when a memory hook could not be fetched, so `e` can be pressed again. */
+  enrichError: string | null;
   showHelp: boolean;
   now: number;
   /** Bumped on every card so the renderer can tell two identical frames apart. */
@@ -72,6 +91,9 @@ export function createState(
     enrichment: null,
     enrichPending: false,
     message: null,
+    resumeMode: null,
+    problem: null,
+    enrichError: null,
     showHelp: false,
     now,
     seq: 0,
@@ -98,6 +120,8 @@ function advance(state: AppState, pack: Pack, now: number): AppState {
     lastAnswer: "",
     enrichment: null,
     enrichPending: false,
+    enrichError: null,
+    resumeMode: null,
     seq: state.seq + 1,
   };
   if (!next) return { ...base, mode: "caughtup", card: null };
@@ -128,25 +152,40 @@ function grade(state: AppState, pack: Pack, response: { choice?: number; text?: 
   };
 }
 
-/** A skip costs nothing but a short delay — punishing it would poison the box levels. */
+const SKIP_DELAY_MS = 10 * 60_000;
+
+/**
+ * A skip costs nothing but a delay — punishing it would poison the box levels.
+ *
+ * A word being seen for the first time has no progress row yet, so one is created
+ * in the `new` stage. Without it `selectNext` would just hand back the same word
+ * and the "skipped" message would be a lie.
+ */
 function skip(state: AppState, pack: Pack): Step {
   const card = state.card;
   if (!card) return { state, effects: [] };
   const existing = state.progress.items[card.word.id];
-  let progress = state.progress;
-  if (existing) {
-    progress = {
-      ...state.progress,
-      items: {
-        ...state.progress.items,
-        [card.word.id]: { ...existing, due: state.now + 60_000 },
-      },
-    };
-  }
+  const deferred: ItemProgress = existing
+    ? { ...existing, due: state.now + SKIP_DELAY_MS }
+    : {
+        id: card.word.id,
+        stage: "new",
+        box: 0,
+        step: 0,
+        due: state.now + SKIP_DELAY_MS,
+        lastSeen: 0,
+        seen: 0,
+        correct: 0,
+        lapses: 0,
+      };
+  const progress: Progress = {
+    ...state.progress,
+    items: { ...state.progress.items, [card.word.id]: deferred },
+  };
   const next = advance({ ...state, progress }, pack, state.now);
   return {
     state: { ...next, message: `skipped ${card.word.term}` },
-    effects: existing ? [{ type: "save", progress }] : [],
+    effects: [{ type: "save", progress }],
   };
 }
 
@@ -169,12 +208,11 @@ export function reduce(state: AppState, event: Event, pack: Pack): Step {
       if (event.state === state.agent) return { state, effects: [] };
       const next = { ...state, agent: event.state };
       if (event.state === "busy") {
-        // Resume the card that was on screen when the agent last went quiet.
-        if (state.card && (state.mode === "waiting" || state.mode === "caughtup")) {
-          return {
-            state: { ...next, mode: state.card.kind === "teach" ? "teach" : "question" },
-            effects: [],
-          };
+        // Put back exactly the screen the user was on, and only if it was an
+        // unanswered card. A graded card resumed as a question would be answered
+        // twice, double-counting `seen` and double-promoting the box.
+        if (state.card && state.resumeMode && next.mode === "waiting") {
+          return { state: { ...next, mode: state.resumeMode, resumeMode: null }, effects: [] };
         }
         if (next.mode === "waiting" || next.mode === "caughtup") {
           return { state: advance(next, pack, next.now), effects: [] };
@@ -183,13 +221,34 @@ export function reduce(state: AppState, event: Event, pack: Pack): Step {
       }
       // Agent went idle: stand down unless the user asked to keep practising.
       if (next.settings.alwaysOn) return { state: next, effects: [] };
-      return { state: { ...next, mode: "waiting", message: null }, effects: [] };
+      const resumable = next.mode === "teach" || next.mode === "question";
+      return {
+        state: {
+          ...next,
+          mode: "waiting",
+          message: null,
+          resumeMode: resumable ? next.mode : null,
+        },
+        effects: [],
+      };
     }
 
     case "enriched": {
       if (state.card?.word.id !== event.wordId) return { state, effects: [] };
-      return { state: { ...state, enrichment: event.text, enrichPending: false }, effects: [] };
+      return {
+        state: { ...state, enrichment: event.text, enrichPending: false, enrichError: null },
+        effects: [],
+      };
     }
+
+    case "enrichFailed": {
+      if (state.card?.word.id !== event.wordId) return { state, effects: [] };
+      // enrichment stays null so `e` works again — a blip must not lock the card.
+      return { state: { ...state, enrichPending: false, enrichError: event.message }, effects: [] };
+    }
+
+    case "problem":
+      return { state: { ...state, problem: event.message }, effects: [] };
 
     case "key":
       return reduceKey(state, event.key, pack);
@@ -236,7 +295,7 @@ function reduceKey(state: AppState, key: Key, pack: Pack): Step {
     if (key.ch === "e" && state.card && state.settings.enrich) {
       if (state.enrichment || state.enrichPending) return { state, effects: [] };
       return {
-        state: { ...state, enrichPending: true },
+        state: { ...state, enrichPending: true, enrichError: null },
         effects: [{ type: "enrich", word: state.card.word }],
       };
     }
@@ -275,6 +334,12 @@ function reduceKey(state: AppState, key: Key, pack: Pack): Step {
       }
       if (key.name === "backspace") {
         return { state: { ...state, input: state.input.slice(0, -1) }, effects: [] };
+      }
+      if (key.name === "escape") {
+        // Clear a half-typed answer; a second press skips the card entirely, which
+        // is otherwise unreachable while shortcuts are suppressed for typing.
+        if (state.input) return { state: { ...state, input: "" }, effects: [] };
+        return skip(state, pack);
       }
       if (key.name === "space") return { state: { ...state, input: `${state.input} ` }, effects: [] };
       if (key.ch) return { state: { ...state, input: state.input + key.ch }, effects: [] };

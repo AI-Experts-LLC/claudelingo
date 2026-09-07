@@ -300,9 +300,179 @@ describe("caught up", () => {
   });
 });
 
-describe("card construction still matches the engine", () => {
-  it("uses the same rng contract as buildCard", () => {
-    const card = buildCard(pack, pack.words[0]!, null, makeRng(5));
-    expect(card.word.term).toBe("uno");
+describe("card construction", () => {
+  it("varies the distractors with the seed, and repeats them for the same seed", () => {
+    const word = pack.words[3]!;
+    const item = {
+      id: word.id, stage: "learning" as const, box: 1, step: 0,
+      due: T0, lastSeen: T0, seen: 1, correct: 1, lapses: 0,
+    };
+    const a = buildCard(pack, word, item, makeRng(5));
+    const b = buildCard(pack, word, item, makeRng(5));
+    const c = buildCard(pack, word, item, makeRng(6));
+    expect(a.choices).toEqual(b.choices);
+    expect(c.choices).not.toEqual(a.choices);
+  });
+});
+
+describe("resuming after the agent goes quiet", () => {
+  const dueItem = (box: number, stage: "learning" | "review" = "learning"): Progress => ({
+    ...testProgress(),
+    items: {
+      "xx:1": {
+        id: "xx:1", stage, box, step: 0,
+        due: T0 - MINUTE, lastSeen: T0, seen: 4, correct: 4, lapses: 0,
+      },
+    },
+  });
+
+  it("puts an unanswered question back exactly as it was", () => {
+    const asked = feed(start({ progress: dueItem(1) }), [{ type: "agent", state: "busy" }]).state;
+    expect(asked.mode).toBe("question");
+    const resumed = feed(asked, [
+      { type: "agent", state: "idle" },
+      { type: "agent", state: "busy" },
+    ]).state;
+    expect(resumed.mode).toBe("question");
+    expect(resumed.card?.word.id).toBe(asked.card?.word.id);
+  });
+
+  it("puts an unacknowledged teach card back", () => {
+    const taught = feed(start(), [{ type: "agent", state: "busy" }]).state;
+    const resumed = feed(taught, [
+      { type: "agent", state: "idle" },
+      { type: "agent", state: "busy" },
+    ]).state;
+    expect(resumed.mode).toBe("teach");
+  });
+
+  it("never re-asks a card that was already graded", () => {
+    // The most common path in the app: answer a card, Claude finishes its turn,
+    // you send the next prompt. Replaying the graded card double-counts it.
+    const asked = feed(start({ progress: dueItem(2, "review") }), [
+      { type: "agent", state: "busy" },
+    ]).state;
+    const graded = feed(asked, [press(String((asked.card?.answerIndex ?? 0) + 1))]).state;
+    expect(graded.mode).toBe("feedback");
+
+    const before = graded.progress.items["xx:1"]!;
+    const resumed = feed(graded, [
+      { type: "agent", state: "idle" },
+      { type: "agent", state: "busy" },
+    ]).state;
+
+    expect(resumed.mode).not.toBe("feedback");
+    expect(resumed.mode).not.toBe("question");
+    const after = resumed.progress.items["xx:1"];
+    // Untouched: same box, same counters. No second grading.
+    if (after) {
+      expect(after.seen).toBe(before.seen);
+      expect(after.box).toBe(before.box);
+    }
+    expect(resumed.progress.totalAnswered).toBe(graded.progress.totalAnswered);
+  });
+
+  it("does not double-count across repeated idle/busy cycles", () => {
+    const asked = feed(start({ progress: dueItem(2, "review") }), [
+      { type: "agent", state: "busy" },
+    ]).state;
+    let state = feed(asked, [press(String((asked.card?.answerIndex ?? 0) + 1))]).state;
+    const answered = state.progress.totalAnswered;
+    for (let i = 0; i < 5; i++) {
+      state = feed(state, [
+        { type: "agent", state: "idle" },
+        { type: "agent", state: "busy" },
+      ]).state;
+    }
+    expect(state.progress.totalAnswered).toBe(answered);
+  });
+});
+
+describe("skipping a brand-new word", () => {
+  it("actually defers it instead of showing it straight back", () => {
+    const busy = feed(start(), [{ type: "agent", state: "busy" }]).state;
+    const first = busy.card?.word.id;
+    const { state, effects } = feed(busy, [press("s")]);
+    expect(state.card?.word.id).not.toBe(first);
+    expect(state.message).toContain("skipped");
+    // The deferral has to be persisted, or the next launch shows it again.
+    expect(effects.some((e) => e.type === "save")).toBe(true);
+    expect(state.progress.items[first as string]?.due).toBeGreaterThan(state.now);
+    // and it must not count as learned or answered
+    expect(state.progress.items[first as string]?.stage).toBe("new");
+    expect(state.progress.totalAnswered).toBe(0);
+  });
+});
+
+describe("escaping a typed answer", () => {
+  const recallProgress: Progress = {
+    ...testProgress(),
+    items: {
+      "xx:1": {
+        id: "xx:1", stage: "review", box: 5, step: 0,
+        due: T0 - MINUTE, lastSeen: T0, seen: 9, correct: 9, lapses: 0,
+      },
+    },
+  };
+
+  it("clears a half-typed answer on the first press", () => {
+    const open = feed(start({ progress: recallProgress }), [
+      { type: "agent", state: "busy" },
+    ]).state;
+    const typed = feed(open, [press("u"), press("n")]).state;
+    const cleared = feed(typed, [named("escape")]).state;
+    expect(cleared.input).toBe("");
+    expect(cleared.mode).toBe("question");
+  });
+
+  it("skips the card on a second press, the one mode with no other way out", () => {
+    const open = feed(start({ progress: recallProgress }), [
+      { type: "agent", state: "busy" },
+    ]).state;
+    const skipped = feed(open, [named("escape")]).state;
+    expect(skipped.message).toContain("skipped");
+    expect(skipped.progress.totalAnswered).toBe(0);
+  });
+});
+
+describe("surfacing failures", () => {
+  it("keeps a memory-hook failure retryable and out of the content slot", () => {
+    const busy = feed(start({ settings: { enrich: true } }), [
+      { type: "agent", state: "busy" },
+    ]).state;
+    const asked = feed(busy, [press("e")]).state;
+    const failed = feed(asked, [
+      { type: "enrichFailed", wordId: asked.card!.word.id, message: "Connection error" },
+    ]).state;
+
+    expect(failed.enrichPending).toBe(false);
+    expect(failed.enrichError).toBe("Connection error");
+    // enrichment must stay null, or `e` is locked out for the rest of the card
+    expect(failed.enrichment).toBeNull();
+
+    const retried = feed(failed, [press("e")]);
+    expect(retried.effects.some((e) => e.type === "enrich")).toBe(true);
+    expect(retried.state.enrichError).toBeNull();
+  });
+
+  it("ignores a failure that arrives after the card moved on", () => {
+    const busy = feed(start({ settings: { enrich: true } }), [
+      { type: "agent", state: "busy" },
+    ]).state;
+    const later = feed(busy, [named("space")]).state;
+    const stale = feed(later, [
+      { type: "enrichFailed", wordId: "xx:1", message: "too late" },
+    ]).state;
+    expect(stale.enrichError).toBeNull();
+  });
+
+  it("carries a problem until it is cleared", () => {
+    const busy = feed(start(), [{ type: "agent", state: "busy" }]).state;
+    const broken = feed(busy, [{ type: "problem", message: "progress is not saving: EACCES" }]).state;
+    expect(broken.problem).toContain("EACCES");
+    // and it survives moving to the next card
+    const next = feed(broken, [named("space")]).state;
+    expect(next.problem).toContain("EACCES");
+    expect(feed(next, [{ type: "problem", message: null }]).state.problem).toBeNull();
   });
 });

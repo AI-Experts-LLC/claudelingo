@@ -11,12 +11,8 @@ export const ansi = {
   cyan: `${CSI}36m`,
   yellow: `${CSI}33m`,
   clearScreen: `${CSI}2J${CSI}H`,
-  home: `${CSI}H`,
-  clearLine: `${CSI}2K`,
   hideCursor: `${CSI}?25l`,
   showCursor: `${CSI}?25h`,
-  altScreenOn: `${CSI}?1049h`,
-  altScreenOff: `${CSI}?1049l`,
 };
 
 /** Matches any SGR sequence, for width calculations. */

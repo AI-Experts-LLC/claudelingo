@@ -90,15 +90,42 @@ describe("Codex notify config", () => {
   });
 
   it("puts notify above the first table, where a top-level key belongs", () => {
-    const toml = '[tui]\nnotifications = true\n';
-    const out = codex.withNotify(toml, "claudelingo");
+    const out = codex.withNotify("[tui]\nnotifications = true\n", "claudelingo");
     expect(out.indexOf("notify =")).toBeLessThan(out.indexOf("[tui]"));
   });
 
-  it("replaces someone else's notify rather than adding a second one", () => {
-    const out = codex.withNotify('notify = ["other-tool"]\n', "claudelingo");
-    expect(out.match(/notify =/g)).toHaveLength(1);
-    expect(out).toContain("claudelingo");
+  it("refuses to overwrite another tool's notify program", () => {
+    // Codex allows exactly one notify program, so replacing it would silently
+    // disable whatever the user already had wired up.
+    const toml = 'notify = ["/usr/local/bin/my-notifier", "--flag"]\n';
+    expect(() => codex.withNotify(toml, "claudelingo")).toThrow(codex.CodexConfigError);
+    expect(() => codex.withNotify(toml, "claudelingo")).toThrow(/already sets a different notify/);
+  });
+
+  it("leaves a table-scoped notify key alone", () => {
+    // `[tui] notify` is a completely different setting; rewriting it would destroy
+    // the user's config AND fail to install ours.
+    const toml = "[tui]\nnotify = true\n";
+    const out = codex.withNotify(toml, "claudelingo");
+    expect(out).toContain("[tui]");
+    expect(out).toContain("notify = true");
+    expect(out.indexOf('notify = ["claudelingo"')).toBeLessThan(out.indexOf("[tui]"));
+  });
+
+  it("sees a notify value spread over several lines as one entry", () => {
+    const toml = 'notify = [\n  "my-notifier",\n  "--flag"\n]\n';
+    const found = codex.findNotify(toml, "claudelingo");
+    expect(found).toMatchObject({ start: 0, end: 3, ours: false });
+    // and therefore refuses rather than beheading it into invalid TOML
+    expect(() => codex.withNotify(toml, "claudelingo")).toThrow(codex.CodexConfigError);
+  });
+
+  it("removes its own multi-line entry whole", () => {
+    const toml = 'notify = [\n  "claudelingo",\n  "notify"\n]\nmodel = "gpt"\n';
+    const cleaned = codex.removeNotify(toml, "claudelingo");
+    expect(cleaned).not.toContain("claudelingo");
+    expect(cleaned).not.toContain("notify");
+    expect(cleaned).toContain('model = "gpt"');
   });
 
   it("is idempotent", () => {
@@ -106,11 +133,32 @@ describe("Codex notify config", () => {
     expect(codex.withNotify(once, "claudelingo")).toBe(once);
   });
 
-  it("removes only its own line", () => {
-    const toml = codex.withNotify("model = \"gpt\"\n", "claudelingo");
-    const cleaned = codex.removeNotify(toml, "claudelingo");
-    expect(cleaned).not.toContain("claudelingo");
-    expect(cleaned).toContain('model = "gpt"');
+  it("leaves a foreign notify alone on uninstall", () => {
+    const toml = 'notify = ["someone-else"]\n';
+    expect(codex.removeNotify(toml, "claudelingo")).toBe(toml);
+  });
+
+  it("escapes a path that would otherwise break the TOML", () => {
+    const out = codex.withNotify("", String.raw`C:\tools\claudelingo.exe`);
+    expect(out).toContain(String.raw`"C:\\tools\\claudelingo.exe"`);
+  });
+
+  it("backs the config up before writing, and writes atomically", () => {
+    const file = path.join(dir(), "config.toml");
+    fs.writeFileSync(file, 'model = "gpt"\n');
+    const backup = codex.installNotify("claudelingo", file);
+    expect(backup).toBeTruthy();
+    expect(fs.readFileSync(backup as string, "utf8")).toBe('model = "gpt"\n');
+    expect(fs.readFileSync(file, "utf8")).toContain("claudelingo");
+    expect(fs.readdirSync(path.dirname(file)).some((f) => f.endsWith(".tmp"))).toBe(false);
+  });
+
+  it("reports rather than writes when the config already has a foreign notify", () => {
+    const file = path.join(dir(), "config.toml");
+    const original = 'notify = ["other"]\n';
+    fs.writeFileSync(file, original);
+    expect(() => codex.installNotify("claudelingo", file)).toThrow(codex.CodexConfigError);
+    expect(fs.readFileSync(file, "utf8")).toBe(original);
   });
 });
 
@@ -211,6 +259,143 @@ describe("Codex session watcher", () => {
 
     fs.appendFileSync(file, `${line.slice(10)}\n`);
     await vi.waitFor(() => expect(seen).toContain("busy"), { timeout: 3000, interval: 20 });
+    watcher.stop();
+  });
+});
+
+describe("Codex watcher: which bytes it reads", () => {
+  async function settle(ms = 150) {
+    await new Promise((r) => setTimeout(r, ms));
+  }
+
+  it("reads a session that starts after the watcher, from its very first line", async () => {
+    // Codex writes the session header and the first user turn together, so seeking
+    // to EOF on a newly-seen file loses the busy edge for turn one of every session.
+    const sessions = path.join(dir(), "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+
+    const seen: string[] = [];
+    const watcher = codex.watchCodexSession((s) => seen.push(s), {
+      dir: sessions, intervalMs: 20,
+    });
+    await settle(60);
+
+    fs.writeFileSync(
+      path.join(sessions, "rollout-new.jsonl"),
+      `${JSON.stringify({ type: "session_meta" })}\n${JSON.stringify({ type: "task_started" })}\n`,
+    );
+    await vi.waitFor(() => expect(seen).toContain("busy"), { timeout: 3000, interval: 20 });
+    watcher.stop();
+  });
+
+  it("still ignores a session that already existed", async () => {
+    const sessions = path.join(dir(), "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessions, "rollout-old.jsonl"),
+      `${JSON.stringify({ type: "task_started" })}\n`,
+    );
+
+    const seen: string[] = [];
+    const watcher = codex.watchCodexSession((s) => seen.push(s), {
+      dir: sessions, intervalMs: 20,
+    });
+    await settle(200);
+    expect(seen).toEqual([]);
+    watcher.stop();
+  });
+
+  it("follows a rotation to a new session file", async () => {
+    const sessions = path.join(dir(), "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const first = path.join(sessions, "rollout-1.jsonl");
+    fs.writeFileSync(first, `${JSON.stringify({ type: "task_started" })}\n`);
+
+    const seen: string[] = [];
+    const watcher = codex.watchCodexSession((s) => seen.push(s), {
+      dir: sessions, intervalMs: 20,
+    });
+    await settle(80);
+    expect(seen).toEqual([]); // pre-existing history ignored
+
+    // A new session rotates in; its first turn must register.
+    await settle(20);
+    fs.writeFileSync(
+      path.join(sessions, "rollout-2.jsonl"),
+      `${JSON.stringify({ type: "task_started" })}\n`,
+    );
+    await vi.waitFor(() => expect(seen).toEqual(["busy"]), { timeout: 3000, interval: 20 });
+    watcher.stop();
+  });
+
+  it("does not replay history when a transcript is truncated", async () => {
+    const sessions = path.join(dir(), "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const file = path.join(sessions, "rollout-t.jsonl");
+    fs.writeFileSync(file, "");
+
+    const seen: string[] = [];
+    const watcher = codex.watchCodexSession((s) => seen.push(s), {
+      dir: sessions, intervalMs: 20,
+    });
+    await settle(60);
+
+    fs.appendFileSync(file, `${JSON.stringify({ type: "task_started" })}\n`);
+    await vi.waitFor(() => expect(seen).toEqual(["busy"]), { timeout: 3000, interval: 20 });
+
+    // A rewrite that shrinks the file must resync, not re-read from zero and fire
+    // a second busy while the user is typing.
+    fs.writeFileSync(file, "");
+    await settle(200);
+    expect(seen).toEqual(["busy"]);
+    watcher.stop();
+  });
+
+  it("starts working when the sessions directory appears later", async () => {
+    // Opening the pane before Codex has ever run must not disable the integration
+    // for the life of the pane.
+    const home = dir();
+    const sessions = path.join(home, "sessions");
+    const seen: string[] = [];
+    const watcher = codex.watchCodexSession((s) => seen.push(s), {
+      dir: sessions, intervalMs: 20,
+    });
+    await settle(60);
+
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessions, "rollout-late.jsonl"),
+      `${JSON.stringify({ type: "task_started" })}\n`,
+    );
+    await vi.waitFor(() => expect(seen).toContain("busy"), { timeout: 3000, interval: 20 });
+    watcher.stop();
+  });
+
+  it("reports once when it can no longer read the transcript", async () => {
+    const sessions = path.join(dir(), "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const file = path.join(sessions, "rollout-x.jsonl");
+    fs.writeFileSync(file, "");
+
+    const errors: string[] = [];
+    const watcher = codex.watchCodexSession(() => {}, {
+      dir: sessions, intervalMs: 10, onError: (m) => errors.push(m),
+    });
+    await settle(40);
+
+    // Make it unreadable, then keep giving it new bytes to try to read.
+    fs.appendFileSync(file, `${JSON.stringify({ type: "task_started" })}\n`);
+    fs.chmodSync(file, 0o000);
+    for (let i = 0; i < 8; i++) {
+      fs.chmodSync(file, 0o200);
+      fs.appendFileSync(file, `${JSON.stringify({ type: "task_started" })}\n`);
+      fs.chmodSync(file, 0o000);
+      await settle(30);
+    }
+    fs.chmodSync(file, 0o600);
+    // A silent watcher is the failure mode this guards against.
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.length).toBeLessThanOrEqual(1);
     watcher.stop();
   });
 });

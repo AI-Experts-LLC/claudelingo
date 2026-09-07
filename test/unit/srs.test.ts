@@ -285,3 +285,49 @@ describe("determinism", () => {
     expect(a.answerIndex).toBe(b.answerIndex);
   });
 });
+
+describe("the daily new-word cap across days", () => {
+  const settings = testSettings({ newPerDay: 2 });
+  const nextDay = T0 + DAY;
+
+  it("keys the count on the local calendar day", () => {
+    expect(dayKey(T0)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(dayKey(T0)).not.toBe(dayKey(nextDay));
+    // Same day, different hours, must be one bucket.
+    expect(dayKey(T0)).toBe(dayKey(T0 + 60 * 60 * 1000));
+  });
+
+  it("stops introducing once the cap is hit, and starts again tomorrow", () => {
+    let progress = testProgress();
+    for (let i = 0; i < 2; i++) {
+      const next = selectNext(pack, progress, settings, T0);
+      expect(next, `introduction ${i + 1} should be allowed`).not.toBeNull();
+      const card = buildCard(pack, next!.word, next!.item, rng());
+      progress = applyAnswer(progress, next!.word, card, true, T0);
+    }
+    expect(progress.introducedByDay[dayKey(T0)]).toBe(2);
+    expect(selectNext(pack, progress, settings, T0)).toBeNull();
+
+    // A new day resets the allowance without any explicit rollover step.
+    expect(selectNext(pack, progress, settings, nextDay)).not.toBeNull();
+  });
+
+  it("keeps only the current day, so the file does not grow forever", () => {
+    let progress = testProgress();
+    let now = T0;
+    for (let day = 0; day < 5; day++) {
+      const next = selectNext(pack, progress, settings, now);
+      const card = buildCard(pack, next!.word, next!.item, rng());
+      progress = applyAnswer(progress, next!.word, card, true, now);
+      now += DAY;
+    }
+    expect(Object.keys(progress.introducedByDay)).toEqual([dayKey(now - DAY)]);
+  });
+
+  it("counts only genuinely new words, not review answers", () => {
+    let progress = withItem(testProgress(), { id: "xx:1", stage: "review", box: 2 });
+    const card = buildCard(pack, pack.words[0]!, progress.items["xx:1"]!, rng());
+    progress = applyAnswer(progress, pack.words[0]!, card, true, T0);
+    expect(progress.introducedByDay[dayKey(T0)]).toBeUndefined();
+  });
+});

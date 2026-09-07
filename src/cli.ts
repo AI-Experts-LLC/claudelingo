@@ -1,7 +1,18 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import process from "node:process";
-import { DEFAULT_SETTINGS, ensureHome, loadSettings, paths, readJson, saveSettings, writeJsonAtomic } from "./config.js";
+import { fileURLToPath } from "node:url";
+import {
+  DEFAULT_SETTINGS,
+  ensureHome,
+  loadSettings,
+  paths,
+  quarantine,
+  readJsonFile,
+  saveSettings,
+  writeJsonAtomic,
+} from "./config.js";
+import * as lock from "./lock.js";
 import { emptyProgress, stats } from "./srs.js";
 import { listPacks, loadPack, savePack } from "./packs/index.js";
 import { readStatus, stateForEvent, writeStatus } from "./agentState.js";
@@ -72,21 +83,64 @@ export function parseArgs(argv: string[]): Args {
   return { command, rest: command === "run" ? positional : positional.slice(1), flags };
 }
 
-function settingsFrom(flags: Args["flags"]): Settings {
-  const stored = loadSettings();
-  const settings: Settings = { ...stored };
+interface Resolved {
+  settings: Settings;
+  /** Set when an existing settings file could not be parsed. */
+  problem?: string;
+}
+
+function settingsFrom(flags: Args["flags"]): Resolved {
+  const loaded = loadSettings();
+  const settings: Settings = { ...loaded.settings };
   if (typeof flags.lang === "string" && flags.lang) settings.lang = flags.lang;
   if (flags["always-on"] === true) settings.alwaysOn = true;
   if (flags["always-on"] === false) settings.alwaysOn = false;
   if (flags.enrich === false) settings.enrich = false;
   if (typeof flags.model === "string" && flags.model) settings.model = flags.model;
-  return settings;
+  return loaded.problem ? { settings, problem: loaded.problem } : { settings };
 }
 
-function loadProgress(lang: string): Progress {
-  const stored = readJson<Progress>(paths.progress(lang));
-  if (stored?.items && stored.version === 1) return { ...emptyProgress(lang), ...stored };
-  return emptyProgress(lang);
+interface LoadedProgress {
+  progress: Progress;
+  /** Set when an existing progress file was unusable and had to be set aside. */
+  problem?: string;
+}
+
+/**
+ * Load a deck, never destroying one we failed to understand.
+ *
+ * A truncated, half-synced, or future-versioned file is moved aside before a blank
+ * deck is handed back, so the first answer cannot overwrite a real learning history
+ * with an empty one. The user is told where it went.
+ */
+function loadProgress(lang: string): LoadedProgress {
+  const file = paths.progress(lang);
+  const result = readJsonFile<Progress>(file);
+
+  if (result.ok) {
+    const stored = result.value;
+    if (stored?.items && stored.version === 1) {
+      return { progress: { ...emptyProgress(lang), ...stored } };
+    }
+    const moved = quarantine(file);
+    return {
+      progress: emptyProgress(lang),
+      problem: moved
+        ? `${file} was not a version 1 deck; kept a copy at ${moved} and started fresh.`
+        : `${file} was not a version 1 deck and could not be set aside — not saving.`,
+    };
+  }
+
+  if (result.reason === "missing") return { progress: emptyProgress(lang) };
+
+  const moved = quarantine(file);
+  return {
+    progress: emptyProgress(lang),
+    problem: moved
+      ? `${file} could not be read (${result.error?.message ?? "unknown error"}); ` +
+        `kept a copy at ${moved} and started fresh.`
+      : `${file} could not be read and could not be set aside — not saving over it.`,
+  };
 }
 
 function fail(message: string): never {
@@ -134,6 +188,7 @@ function cmdNotify(args: Args): void {
 function cmdInit(args: Args): void {
   const scope = args.flags.project ? "project" : "user";
   ensureHome();
+  const failed: string[] = [];
 
   const settingsFile = claudeCode.settingsPath(scope as "user" | "project");
   try {
@@ -141,19 +196,37 @@ function cmdInit(args: Args): void {
     process.stdout.write(`Claude Code hooks installed in ${settingsFile}\n`);
     process.stdout.write(`  ${claudeCode.HOOK_EVENTS.join(", ")}\n`);
   } catch (error) {
-    process.stderr.write(`Claude Code hooks skipped: ${(error as Error).message}\n`);
+    failed.push("Claude Code");
+    process.stderr.write(`Claude Code hooks NOT installed: ${(error as Error).message}\n`);
   }
 
   try {
-    codex.installNotify(BIN);
+    const backup = codex.installNotify(BIN);
     process.stdout.write(`Codex notify installed in ${codex.codexConfigPath()}\n`);
+    if (backup) process.stdout.write(`  previous config backed up to ${backup}\n`);
   } catch (error) {
-    process.stderr.write(`Codex notify skipped: ${(error as Error).message}\n`);
+    failed.push("Codex");
+    process.stderr.write(`Codex notify NOT installed: ${(error as Error).message}\n`);
   }
 
-  const settings = settingsFrom(args.flags);
-  saveSettings(settings);
+  const { settings, problem } = settingsFrom(args.flags);
+  if (problem) {
+    // Overwriting a settings file we could not parse would discard the user's
+    // language and model choice without them ever knowing.
+    process.stderr.write(`${problem}\n  leaving it alone; fix or delete it, then re-run.\n`);
+  } else {
+    saveSettings(settings);
+  }
+
   process.stdout.write(`\nStudying ${resolvePack(settings.lang).englishName}.\n`);
+  if (failed.length) {
+    // Exiting 0 here is how a user ends up staring at a pane that never wakes up.
+    process.stderr.write(
+      `\n${failed.join(" and ")} integration${failed.length > 1 ? "s are" : " is"} not active — ` +
+        "the pane will not wake up for it.\n",
+    );
+    process.exit(1);
+  }
   process.stdout.write(`Open the pane in a second terminal with: ${BIN}\n`);
 }
 
@@ -165,9 +238,16 @@ function cmdUninit(args: Args): void {
 }
 
 function cmdStatus(): void {
+  const file = paths.status();
+  const raw = readJsonFile<unknown>(file);
+  if (!raw.ok && raw.reason === "missing") {
+    process.stdout.write("no agent state recorded yet — run `claudelingo init`\n");
+    return;
+  }
   const status = readStatus();
   if (!status) {
-    process.stdout.write("no agent state recorded yet — run `claudelingo init`\n");
+    // The file exists but is unusable; re-running init would not help.
+    process.stdout.write(`${file} is unreadable — delete it and it will be rebuilt\n`);
     return;
   }
   const age = Math.round((Date.now() - status.ts) / 1000);
@@ -175,9 +255,10 @@ function cmdStatus(): void {
 }
 
 function cmdStats(args: Args): void {
-  const settings = settingsFrom(args.flags);
+  const { settings } = settingsFrom(args.flags);
   const pack = resolvePack(settings.lang);
-  const progress = loadProgress(settings.lang);
+  const { progress, problem } = loadProgress(settings.lang);
+  if (problem) process.stderr.write(`${problem}\n`);
   const s = stats(pack, progress, Date.now());
   const rows: Array<[string, string]> = [
     ["language", `${pack.englishName} (${pack.code})`],
@@ -214,7 +295,7 @@ async function cmdPack(args: Args): Promise<void> {
   if (!language) fail("pack generate needs --lang, e.g. --lang Portuguese");
   const code = (args.flags.code as string) || language.slice(0, 2).toLowerCase();
   const count = Number(args.flags.count ?? 300);
-  const model = (args.flags.model as string) || loadSettings().model;
+  const model = (args.flags.model as string) || loadSettings().settings.model;
 
   if (!hasCredentials()) {
     process.stdout.write("No ANTHROPIC_API_KEY found; trying the `ant auth login` profile…\n");
@@ -231,7 +312,7 @@ async function cmdPack(args: Args): Promise<void> {
 }
 
 function cmdReset(args: Args): void {
-  const settings = settingsFrom(args.flags);
+  const { settings } = settingsFrom(args.flags);
   if (!args.flags.yes) {
     fail(`this erases your ${settings.lang} progress. Re-run with --yes to confirm.`);
   }
@@ -242,28 +323,48 @@ function cmdReset(args: Args): void {
 
 async function cmdRun(args: Args): Promise<void> {
   ensureHome();
-  const settings = settingsFrom(args.flags);
+  const { settings, problem: settingsProblem } = settingsFrom(args.flags);
   const pack = resolvePack(settings.lang);
-  const progress = loadProgress(settings.lang);
+  const { progress, problem: progressProblem } = loadProgress(settings.lang);
   const progressFile = paths.progress(settings.lang);
   const statusFile = paths.status();
 
-  if (!fs.existsSync(statusFile)) {
-    writeStatus({ state: "idle", source: "manual", event: "startup", ts: Date.now() });
+  // One pane per language: two would each hold the whole deck in memory and the
+  // second to save would erase the first's work.
+  const held = lock.acquire(paths.lock(settings.lang));
+  if (!held) {
+    fail(
+      `another claudelingo pane (pid ${lock.holderPid(paths.lock(settings.lang))}) is already ` +
+        `studying ${pack.englishName}. Close it, or run this one with a different --lang.`,
+    );
   }
 
-  // Codex only tells us when a turn ends, so tail its transcript for the start.
-  const codexWatcher = fs.existsSync(codex.codexSessionsDir())
-    ? codex.watchCodexSession((state) => {
-        const current = readStatus(statusFile);
-        if (current?.state === state) return;
-        writeStatus({ state, source: "codex", event: "rollout", ts: Date.now() }, statusFile);
-      })
-    : null;
+  if (!fs.existsSync(statusFile)) {
+    try {
+      writeStatus({ state: "idle", source: "manual", event: "startup", ts: Date.now() });
+    } catch {
+      // Reported through the pane's problem banner once the first save is tried.
+    }
+  }
 
-  const enrich = settings.enrich
-    ? (word: Word) => memoryHook(word, pack, { model: settings.model })
+  const enrich =
+    settings.enrich && hasCredentials()
+      ? (word: Word) => memoryHook(word, pack, { model: settings.model })
+      : undefined;
+
+  const problems = [settingsProblem, progressProblem].filter(Boolean);
+  if (settings.enrich && !enrich) {
+    // Told once, up front, rather than as a fresh auth error on every card.
+    problems.push("no Anthropic credential found, so memory hooks (e) are unavailable.");
+  }
+
+  const rawWidth = args.flags.width === undefined ? undefined : Number(args.flags.width);
+  const width = rawWidth !== undefined && Number.isFinite(rawWidth) && rawWidth >= 20
+    ? Math.floor(rawWidth)
     : undefined;
+  if (args.flags.width !== undefined && width === undefined) {
+    process.stderr.write(`claudelingo: ignoring --width ${args.flags.width} (needs a number >= 20)\n`);
+  }
 
   const runner = run({
     pack,
@@ -271,9 +372,13 @@ async function cmdRun(args: Args): Promise<void> {
     settings,
     progressFile,
     statusFile,
+    // Codex has no turn-start hook, so its transcript is tailed for that edge.
+    watchCodex: (onState, onError) =>
+      codex.watchCodexSession(onState, { onError }),
     ...(enrich ? { enrich } : {}),
+    ...(problems.length ? { initialProblem: problems.join(" ") } : {}),
     ...(args.flags.color === false ? { color: false } : {}),
-    ...(args.flags.width ? { width: Number(args.flags.width) } : {}),
+    ...(width !== undefined ? { width } : {}),
     ...(process.env.CLAUDELINGO_FORCE_RENDER ? { forceRender: true } : {}),
   });
 
@@ -281,10 +386,13 @@ async function cmdRun(args: Args): Promise<void> {
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
 
-  await runner.done;
-  codexWatcher?.stop();
-  process.off("SIGINT", onSignal);
-  process.off("SIGTERM", onSignal);
+  try {
+    await runner.done;
+  } finally {
+    held.release();
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  }
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
@@ -307,7 +415,23 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 }
 
-const invokedDirectly = process.argv[1] && /claudelingo|cli\.(js|ts)$/.test(process.argv[1]);
-if (invokedDirectly) {
+/**
+ * Only run when this file *is* the entry point.
+ *
+ * Matching on the path containing "claudelingo" was far too loose: under a test
+ * runner `argv[1]` is the worker script, whose path contains the project name, so
+ * importing anything from this module started a pane against the user's real home.
+ */
+function invokedDirectly(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return fs.realpathSync(entry) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedDirectly()) {
   main().catch((error: Error) => fail(error.message));
 }

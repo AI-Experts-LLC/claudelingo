@@ -207,6 +207,11 @@ export function applyAnswer(
   if (card.kind === "teach") {
     const key = dayKey(now);
     introducedByDay[key] = (introducedByDay[key] ?? 0) + 1;
+    // Only today's count is ever read; keeping every day since install would grow
+    // the progress file by one key a day for the life of the deck.
+    for (const day of Object.keys(introducedByDay)) {
+      if (day !== key) delete introducedByDay[day];
+    }
     item.stage = "learning";
     item.box = 1;
     item.step = 0;
