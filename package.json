@@ -1,0 +1,34 @@
+{
+  "name": "claudelingo",
+  "version": "0.1.0",
+  "description": "Learn a language in the dead time while Claude Code or Codex is working. A terminal companion pane that teaches and quizzes you on high-frequency vocabulary while your coding agent thinks.",
+  "type": "module",
+  "license": "MIT",
+  "author": "AI Experts LLC",
+  "repository": { "type": "git", "url": "git+https://github.com/AI-Experts-LLC/claudelingo.git" },
+  "keywords": ["claude-code", "codex", "language-learning", "spaced-repetition", "tui", "vocabulary"],
+  "engines": { "node": ">=20.11" },
+  "bin": { "claudelingo": "dist/cli.js" },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-packs.mjs",
+    "dev": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && vitest run",
+    "test:unit": "vitest run test/unit",
+    "test:e2e": "npm run build && vitest run test/e2e",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
