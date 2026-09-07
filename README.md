@@ -49,10 +49,16 @@ Then start Claude Code with the pane already beside it:
 claudelingo claude          # any claude arguments pass straight through
 ```
 
+Ctrl-C goes to Claude Code, where it interrupts the turn as usual; the wrapper
+stays out of the way and exits with whatever Claude Code exits with.
+
 That opens a tmux split: Claude Code on the left, the quiz pane on the right. If
 you are already inside tmux it splits the window you are in; if not, it creates a
-session holding both. Without tmux it starts Claude Code as normal and tells you
-how to open the pane yourself:
+session holding both and hands it your environment, so Claude Code sees the PATH
+and variables you launched with rather than whatever a long-running tmux server
+started with. Without tmux — or without a terminal to attach to, as in a script or
+a pipe — it starts Claude Code as normal and tells you how to open the pane
+yourself:
 
 ```bash
 claudelingo --lang es       # the pane, standalone, in any second terminal

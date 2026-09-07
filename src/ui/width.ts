@@ -560,57 +560,57 @@ export function sliceToWidth(text: string, columns: number): { text: string; wid
   return { text: out, width };
 }
 
-/**
- * Truncate to a column budget while keeping ANSI styling intact.
- *
- * Slicing a styled string by characters cuts escape sequences in half and drops
- * the closing reset, which leaves the terminal stuck in whatever colour the last
- * complete sequence set. Escapes cost no columns, so they are copied across
- * whole and only visible characters count against the budget.
- */
-export function truncateStyled(text: string, columns: number, ellipsis = "\u2026"): string {
-  if (columns <= 0) return "";
-  const esc = String.fromCharCode(27);
-  let out = "";
-  let used = 0;
-  let sawStyle = false;
-  let truncated = false;
+/** One piece of a styled string: either an escape sequence or a visible character. */
+type Token = { ansi: true; text: string } | { ansi: false; text: string; width: number };
 
+const ESC = String.fromCharCode(27);
+
+function tokenize(text: string): Token[] {
+  const tokens: Token[] = [];
   for (let i = 0; i < text.length; ) {
-    if (text[i] === esc) {
-      // Copy the whole sequence; it occupies no columns.
+    if (text[i] === ESC) {
       let end = i + 1;
       while (end < text.length && !/[A-Za-z]/.test(text[end] as string)) end++;
-      out += text.slice(i, end + 1);
-      sawStyle = true;
+      tokens.push({ ansi: true, text: text.slice(i, end + 1) });
       i = end + 1;
       continue;
     }
     const char = String.fromCodePoint(text.codePointAt(i) as number);
-    const w = charWidth(char.codePointAt(0) as number);
-    if (used + w > columns - 1 && used + w > columns) {
-      truncated = true;
-      break;
-    }
-    if (used + w > columns) {
-      truncated = true;
-      break;
-    }
-    out += char;
-    used += w;
+    tokens.push({ ansi: false, text: char, width: charWidth(char.codePointAt(0) as number) });
     i += char.length;
   }
-
-  if (!truncated) return text;
-  // Make room for the marker, then close any styling we cut through.
-  while (used + 1 > columns && out.length) {
-    const chars = [...out.replace(ANSI_ONLY, "")];
-    const last = chars.at(-1);
-    if (!last) break;
-    out = out.slice(0, out.lastIndexOf(last));
-    used -= charWidth(last.codePointAt(0) as number);
-  }
-  return `${out}${ellipsis}${sawStyle ? `${esc}[0m` : ""}`;
+  return tokens;
 }
 
-const ANSI_ONLY = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+/**
+ * Truncate to a column budget while keeping ANSI styling intact.
+ *
+ * Escapes cost no columns but are not characters you can slice around: cutting one
+ * in half leaves a bare `ESC[` that the terminal swallows along with whatever
+ * follows, and dropping the closing reset leaves everything after the line styled.
+ * So the string is split into escape and visible tokens first and reassembled —
+ * index arithmetic over the raw string gets this wrong in ways that only show up
+ * at particular widths.
+ */
+export function truncateStyled(text: string, columns: number, ellipsis = "\u2026"): string {
+  if (columns <= 0) return "";
+  const tokens = tokenize(text);
+  const total = tokens.reduce((sum, t) => sum + (t.ansi ? 0 : t.width), 0);
+  const styled = tokens.some((t) => t.ansi);
+  if (total <= columns) return text;
+
+  // Room for the marker itself.
+  const budget = columns - charWidth(ellipsis.codePointAt(0) as number);
+  let used = 0;
+  let out = "";
+  for (const token of tokens) {
+    if (token.ansi) {
+      out += token.text; // free, and dropping it would strand the styling
+      continue;
+    }
+    if (used + token.width > budget) break;
+    out += token.text;
+    used += token.width;
+  }
+  return `${out}${ellipsis}${styled ? `${ESC}[0m` : ""}`;
+}

@@ -617,11 +617,29 @@ async function cmdRun(args: Args): Promise<void> {
   }
 }
 
+/**
+ * Index of `name` only if it is the first positional argument.
+ *
+ * Mirrors `parseArgs`'s idea of which flags consume the token after them, so a
+ * flag *value* that happens to read like a subcommand is not mistaken for one.
+ */
+function subcommandIndex(argv: string[], name: string): number {
+  const takesValue = new Set(["lang", "width", "source", "model", "count", "code", "home"]);
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i] as string;
+    if (!arg.startsWith("-")) return arg === name ? i : -1;
+    const flag = arg.slice(2);
+    if (arg.startsWith("--") && !flag.includes("=") && takesValue.has(flag)) i++;
+  }
+  return -1;
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
-  // Split before parsing: everything after a bare `claude` belongs to Claude Code.
-  // Parsing first would let `claudelingo claude --help` print OUR usage and never
-  // start the agent, and would swallow `--model` on the way past.
-  const split = argv.indexOf("claude");
+  // Split before parsing: everything after the `claude` SUBCOMMAND belongs to
+  // Claude Code. Parsing first would let `claudelingo claude --help` print OUR
+  // usage and never start the agent; splitting on any `claude` token would
+  // truncate `claudelingo hook Stop --source claude`.
+  const split = subcommandIndex(argv, "claude");
   const own = split === -1 ? argv : argv.slice(0, split + 1);
   const forwarded = split === -1 ? [] : argv.slice(split + 1);
   const args = parseArgs(own);

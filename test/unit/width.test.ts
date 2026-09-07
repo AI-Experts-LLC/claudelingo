@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { RANGE_TABLES, charWidth, sliceToWidth, stringWidth } from "../../src/ui/width.js";
+import {
+  RANGE_TABLES,
+  charWidth,
+  sliceToWidth,
+  stringWidth,
+  truncateStyled,
+} from "../../src/ui/width.js";
 import { COLOR, PLAIN, box, renderFrame, visibleWidth } from "../../src/ui/render.js";
 import { materialize } from "../../src/packs/index.js";
 import { createState, reduce } from "../../src/ui/app.js";
@@ -191,5 +197,79 @@ describe("the range tables themselves", () => {
     for (const emoji of ["🚀", "✅", "🎴", "🔥", "📚", "🩰"]) {
       expect(stringWidth(emoji), `${emoji} should be two columns`).toBe(2);
     }
+  });
+});
+
+describe("truncating styled text", () => {
+  const ESC = String.fromCharCode(27);
+  const SGR = new RegExp(`${ESC}\\[[0-9;]*m`, "g");
+  const plain = (s: string) => s.replace(SGR, "");
+
+  const samples = [
+    `${ESC}[36m«el»${ESC}[0m ${ESC}[2m=${ESC}[0m ${ESC}[1mthe (m.)${ESC}[0m  ${ESC}[2m20/312${ESC}[0m`,
+    `${ESC}[36m«日本語»${ESC}[0m ${ESC}[1mJapanese${ESC}[0m`,
+    `café ${ESC}[2mcombining${ESC}[0m`,
+    `${ESC}[31m${"x".repeat(50)}${ESC}[0m`,
+    "no styling at all, just text",
+  ];
+
+  it("never leaves a half-written escape sequence", () => {
+    // Slicing a styled string by character index cuts through escapes, and the
+    // terminal then swallows the bare ESC[ along with whatever follows it.
+    for (const sample of samples) {
+      for (let width = 1; width <= 60; width++) {
+        expect(plain(truncateStyled(sample, width)), `${width}`).not.toContain(ESC);
+      }
+    }
+  });
+
+  it("never exceeds the column budget", () => {
+    for (const sample of samples) {
+      for (let width = 1; width <= 60; width++) {
+        expect(stringWidth(plain(truncateStyled(sample, width))), `${width}`).toBeLessThanOrEqual(
+          width,
+        );
+      }
+    }
+  });
+
+  it("always closes the styling it cut through", () => {
+    for (const sample of samples.filter((s) => s.includes(ESC))) {
+      for (let width = 2; width <= 60; width++) {
+        const out = truncateStyled(sample, width);
+        if (out.includes(ESC)) expect(out.endsWith(`${ESC}[0m`), `${width}`).toBe(true);
+      }
+    }
+  });
+
+  it("keeps the styling of the text it kept", () => {
+    // Closing the styling is not enough: dropping the escapes would produce a
+    // correctly-terminated but entirely colourless line.
+    const styled = `${ESC}[36mcyan${ESC}[0m ${ESC}[1mbold${ESC}[0m tail`;
+    for (let width = 6; width <= 14; width++) {
+      const out = truncateStyled(styled, width);
+      expect(out, `width ${width}`).toContain(`${ESC}[36m`);
+      expect(plain(out).startsWith("cyan"), `width ${width}`).toBe(true);
+    }
+    // And a later run of styling survives when it is inside the budget.
+    const wide = truncateStyled(styled, 12);
+    expect(wide).toContain(`${ESC}[1m`);
+  });
+
+  it("leaves a string that already fits completely alone", () => {
+    for (const sample of samples) {
+      expect(truncateStyled(sample, 200)).toBe(sample);
+    }
+  });
+
+  it("does not split a wide glyph across the boundary", () => {
+    const out = truncateStyled("日本語です", 5);
+    expect(stringWidth(plain(out))).toBeLessThanOrEqual(5);
+    expect(plain(out)).not.toContain("�");
+  });
+
+  it("returns nothing for a nonsensical budget", () => {
+    expect(truncateStyled("anything", 0)).toBe("");
+    expect(truncateStyled("anything", -5)).toBe("");
   });
 });

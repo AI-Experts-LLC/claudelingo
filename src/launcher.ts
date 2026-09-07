@@ -51,11 +51,17 @@ export interface LaunchOptions {
   passEnv?: Record<string, string>;
   paneWidthPercent?: number;
   env?: NodeJS.ProcessEnv;
+  /** Whether this process owns a terminal. Injected for tests. */
+  isTty?: boolean;
   /** Injected for tests; every tmux call goes through this. */
   run?: Runner;
 }
 
-export function planLaunch(env: NodeJS.ProcessEnv = process.env, run: Runner = defaultRun): LaunchPlan {
+export function planLaunch(
+  env: NodeJS.ProcessEnv = process.env,
+  run: Runner = defaultRun,
+  isTty = Boolean(process.stdout.isTTY && process.stdin.isTTY),
+): LaunchPlan {
   if (run("tmux", ["-V"]).status !== 0) {
     return {
       kind: "none",
@@ -64,6 +70,15 @@ export function planLaunch(env: NodeJS.ProcessEnv = process.env, run: Runner = d
   }
   // Already inside tmux: split the window we are in, keeping the user's layout.
   if (env.TMUX) return { kind: "tmux-split" };
+  // Building a session means attaching to it, and attaching needs a terminal.
+  // Finding that out afterwards would mean the agent had already started inside
+  // a session we then have to tear down.
+  if (!isTty) {
+    return {
+      kind: "none",
+      reason: "not running in a terminal, so tmux cannot open a pane",
+    };
+  }
   return { kind: "tmux-session" };
 }
 
@@ -164,6 +179,45 @@ function runAgent(agent: string[], env: NodeJS.ProcessEnv): Promise<number> {
 }
 
 /**
+ * Write the caller's environment as a sourceable script.
+ *
+ * A process started inside tmux inherits the tmux *server's* environment, which
+ * on any machine where tmux is already running is whatever it was when that
+ * server started. That is not a cosmetic difference: if `claude` is on the user's
+ * PATH but not the old server's, the agent silently never starts. Forwarding via
+ * `-e` per variable would need one flag each and hit argv limits, so the
+ * environment is written out and sourced instead.
+ */
+function writeEnvScript(dir: string, env: NodeJS.ProcessEnv): string {
+  const file = path.join(dir, "env.sh");
+  const lines = Object.entries(env)
+    // tmux sets these for the pane it is in; carrying ours across would lie.
+    .filter(([key]) => key !== "TMUX" && key !== "TMUX_PANE")
+    // Anything not a plain shell identifier cannot be exported portably.
+    .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+    .map(([key, value]) => `export ${key}=${shellQuote(value ?? "")}`);
+  fs.writeFileSync(file, `${lines.join("\n")}\n`, { mode: 0o600 });
+  return file;
+}
+
+/**
+ * The session could not be used.
+ *
+ * `agentStarted` is the important part: once tmux has run the agent, falling back
+ * to running it again would put two Claude Code instances in the same directory —
+ * so a failure after that point is reported, never retried.
+ */
+class SessionUnavailable extends Error {
+  constructor(
+    message: string,
+    readonly agentStarted: boolean,
+    readonly code = 1,
+  ) {
+    super(message);
+  }
+}
+
+/**
  * Outside tmux: build the session around the agent.
  *
  * The agent goes in first, detached, so the pane can be split off beside it and
@@ -171,53 +225,87 @@ function runAgent(agent: string[], env: NodeJS.ProcessEnv): Promise<number> {
  * file and the session is killed the moment it finishes, so the pane cannot keep
  * the terminal hostage after Claude Code is done.
  */
-async function launchSession(options: LaunchOptions, run: Runner): Promise<number> {
+async function launchSession(
+  options: LaunchOptions,
+  run: Runner,
+  env: NodeJS.ProcessEnv,
+  plan: LaunchPlan,
+): Promise<number> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claudelingo-launch-"));
-  const rcFile = path.join(dir, "agent.rc");
-  const session = `claudelingo-${process.pid}`;
-  const agent = options.agent.map(shellQuote).join(" ");
-  const wrapped = `${agent}; printf %s $? > ${shellQuote(rcFile)}; tmux kill-session -t ${shellQuote(session)}`;
+  const cleanup = () => fs.rmSync(dir, { recursive: true, force: true });
 
-  const env = Object.entries(options.passEnv ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
-  let created = run("tmux", ["new-session", "-d", "-s", session, ...env, wrapped]);
-  if (created.status !== 0 && env.length) {
-    created = run("tmux", ["new-session", "-d", "-s", session, wrapped]);
-  }
-  if (created.status !== 0) {
-    // The session never came up, so the agent has NOT started. Say so rather than
-    // leaving the user with tmux's raw error and no agent.
-    fs.rmSync(dir, { recursive: true, force: true });
-    throw new Error((created.stderr || "tmux could not create a session").trim());
-  }
-
-  openPane(options, run, session);
-
-  // Attach in the foreground; this returns when the session ends, which the
-  // agent's own exit brings about.
-  run("tmux", ["attach", "-t", session]);
-
-  let code = 0;
   try {
-    code = Number(fs.readFileSync(rcFile, "utf8").trim()) || 0;
-  } catch {
-    // The session was killed some other way; nothing better to report.
+    const rcFile = path.join(dir, "agent.rc");
+    const envFile = writeEnvScript(dir, env);
+    // A pid alone collides after a crash, and a stale session of the same name
+    // would make every later launch fall back to the bare agent.
+    const session = `claudelingo-${process.pid}-${Date.now().toString(36)}`;
+    const agent = options.agent.map(shellQuote).join(" ");
+    const script =
+      `. ${shellQuote(envFile)}; ${agent}; printf %s $? > ${shellQuote(rcFile)}; ` +
+      `tmux kill-session -t ${shellQuote(session)}`;
+
+    // `sh -c` explicitly: tmux would otherwise hand the string to the user's
+    // default shell, and `$?` is a parse error in fish and csh.
+    const created = run("tmux", ["new-session", "-d", "-s", session, "sh", "-c", script]);
+    if (created.status !== 0) {
+      // Nothing ran: safe for the caller to start the agent itself.
+      throw new SessionUnavailable(
+        (created.stderr || "tmux could not create a session").trim(),
+        false,
+      );
+    }
+
+    if (openPane(options, run, session) === null) {
+      plan.reason = "tmux could not split the window, so the pane was not opened";
+    }
+
+    // Attach in the foreground; this returns when the session ends, which the
+    // agent's own exit brings about.
+    const attached = run("tmux", ["attach", "-t", session]);
+    if (attached.status !== 0) {
+      // The session exists, so the agent is already running inside it. Take it
+      // down rather than orphaning it — but do NOT start it again.
+      run("tmux", ["kill-session", "-t", session]);
+      let code = 1;
+      try {
+        code = Number(fs.readFileSync(rcFile, "utf8").trim());
+      } catch {
+        // It never got far enough to record anything.
+      }
+      throw new SessionUnavailable(
+        (attached.stderr || "tmux could not attach to the session").trim(),
+        true,
+        code,
+      );
+    }
+
+    try {
+      return Number(fs.readFileSync(rcFile, "utf8").trim());
+    } catch {
+      // The session ended without the agent recording anything — killed from
+      // outside, or the server died. Reporting success would be a lie.
+      return 130;
+    }
+  } finally {
+    cleanup();
   }
-  fs.rmSync(dir, { recursive: true, force: true });
-  return code;
 }
 
 export async function launch(options: LaunchOptions): Promise<LaunchResult> {
   const env = options.env ?? process.env;
   const run = options.run ?? defaultRun;
-  const plan = planLaunch(env, run);
+  const plan = planLaunch(env, run, options.isTty ?? Boolean(process.stdout.isTTY && process.stdin.isTTY));
 
   if (plan.kind === "tmux-session") {
     try {
-      return { plan, code: await launchSession(options, run) };
+      return { plan, code: await launchSession(options, run, env, plan) };
     } catch (error) {
-      // Fall through to running the agent bare: losing the pane must never cost
-      // the user their agent.
-      plan.reason = `${(error as Error).message}; the pane was not opened`;
+      const failure = error as SessionUnavailable;
+      plan.reason = `${failure.message}; the pane was not opened`;
+      // Only start the agent here if tmux never did. Losing the pane must not
+      // cost the user their agent — and must not hand them two of them.
+      if (failure.agentStarted) return { plan, code: failure.code ?? 1 };
       return { plan, code: await runAgent(options.agent, env) };
     }
   }

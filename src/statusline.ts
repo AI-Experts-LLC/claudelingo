@@ -110,7 +110,10 @@ function trim(text: string, width: number | undefined): string {
  */
 export function defaultWidth(env: NodeJS.ProcessEnv = process.env): number | undefined {
   const columns = Number(env.COLUMNS);
-  return Number.isFinite(columns) && columns > 10 ? Math.floor(columns) : undefined;
+  if (!Number.isFinite(columns) || columns <= 0) return undefined;
+  // A very narrow terminal still wants truncation; disabling it there would wrap
+  // the line, which is worse than a short one.
+  return Math.max(8, Math.floor(columns));
 }
 
 export function renderStatusLine(

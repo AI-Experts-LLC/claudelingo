@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { launch, planLaunch, shellQuote, splitCommand } from "../../src/launcher.js";
 
@@ -28,9 +29,9 @@ describe("choosing how to open the pane", () => {
     expect(planLaunch({ TMUX: "/tmp/tmux-1000/default,123,0" }, run).kind).toBe("tmux-split");
   });
 
-  it("starts a session when outside tmux", () => {
+  it("starts a session when outside tmux, given a terminal", () => {
     const { run } = fakeTmux();
-    expect(planLaunch({}, run).kind).toBe("tmux-session");
+    expect(planLaunch({}, run, true).kind).toBe("tmux-session");
   });
 
   it("gives up on the pane when tmux is missing", () => {
@@ -134,7 +135,7 @@ describe("launching inside tmux", () => {
 describe("launching outside tmux", () => {
   it("creates the session around the agent, then splits the pane off", async () => {
     const tmux = fakeTmux();
-    await launch({ ...base, env: {}, run: tmux.run });
+    await launch({ ...base, env: {}, isTty: true, run: tmux.run });
     const created = tmux.of("new-session");
     expect(created).toHaveLength(1);
     // The agent lives in the session, detached, and is started exactly once.
@@ -150,22 +151,47 @@ describe("launching outside tmux", () => {
     // The blocker this guards: a retry of a command containing the agent starts a
     // second Claude Code in the same working directory.
     const tmux = fakeTmux({ "split-window": [1, 1, 0] });
-    await launch({ ...base, env: {}, passEnv: { CLAUDELINGO_HOME: "/tmp/h" }, run: tmux.run });
+    await launch({ ...base, env: {}, isTty: true, passEnv: { CLAUDELINGO_HOME: "/tmp/h" }, run: tmux.run });
     expect(tmux.of("new-session")).toHaveLength(1);
   });
 
-  it("retries the session without env flags, still only once with the agent", async () => {
-    const tmux = fakeTmux({ "new-session": [1, 0] });
-    await launch({ ...base, env: {}, passEnv: { CLAUDELINGO_HOME: "/tmp/h" }, run: tmux.run });
-    const created = tmux.of("new-session");
-    expect(created).toHaveLength(2);
-    expect(created[0]).toContain("-e");
-    expect(created[1]).not.toContain("-e");
+  it("gives the agent the caller's environment, not the tmux server's", async () => {
+    // A process started inside tmux inherits the SERVER's environment, which on
+    // any machine where tmux is already running is whatever it was back then —
+    // so if `claude` is on the user's PATH but not the server's, nothing runs.
+    let exported = "";
+    let envPath = "";
+    const tmux = fakeTmux();
+    const capture = vi.fn((command: string, args: string[]) => {
+      if (args[0] === "new-session") {
+        // Read it here: the file is deleted as soon as the launch finishes,
+        // because it holds the user's entire environment.
+        const match = /^\. '([^']+)'/.exec(args.at(-1) as string);
+        envPath = match?.[1] ?? "";
+        exported = envPath ? fs.readFileSync(envPath, "utf8") : "";
+      }
+      return tmux.run(command, args);
+    });
+
+    await launch({
+      ...base,
+      // No TMUX here — its presence would select the split path instead.
+      env: { PATH: "/opt/mine:/usr/bin", ANTHROPIC_API_KEY: "fresh", TMUX_PANE: "%9" },
+      isTty: true,
+      run: capture as never,
+    });
+
+    expect(exported).toContain("export PATH='/opt/mine:/usr/bin'");
+    expect(exported).toContain("export ANTHROPIC_API_KEY='fresh'");
+    // tmux sets these per pane; carrying ours across would lie about where we are.
+    expect(exported).not.toContain("TMUX_PANE=");
+    // And it does not outlive the launch: it is a copy of the environment.
+    expect(fs.existsSync(envPath)).toBe(false);
   });
 
   it("kills the session when the agent finishes, so the pane cannot hold the terminal", async () => {
     const tmux = fakeTmux();
-    await launch({ ...base, env: {}, run: tmux.run });
+    await launch({ ...base, env: {}, isTty: true, run: tmux.run });
     const script = tmux.of("new-session")[0]?.at(-1) as string;
     expect(script).toContain("kill-session");
     expect(script).toContain("$?"); // and records the agent's exit code
@@ -174,8 +200,73 @@ describe("launching outside tmux", () => {
   it("runs the agent bare when the session cannot be created at all", async () => {
     // Otherwise the user gets tmux's raw error and no agent whatsoever.
     const tmux = fakeTmux({ "new-session": [1, 1] });
-    const result = await launch({ ...base, agent: ["false"], env: {}, run: tmux.run });
+    const result = await launch({ ...base, agent: ["false"], env: {}, isTty: true, run: tmux.run });
     expect(result.plan.reason).toContain("was not opened");
     expect(result.code).toBe(1); // the agent still ran, and its code came back
+  });
+});
+
+describe("what the agent inherits and when it is started", () => {
+  it("will not build a session without a terminal to attach to", async () => {
+    // Attaching needs a tty. Discovering that afterwards would mean the agent
+    // had already started inside a session we then have to tear down.
+    const tmux = fakeTmux();
+    const plan = planLaunch({}, tmux.run, false);
+    expect(plan.kind).toBe("none");
+    expect(plan.reason).toContain("not running in a terminal");
+
+    const result = await launch({ ...base, agent: ["true"], env: {}, isTty: false, run: tmux.run });
+    expect(tmux.of("new-session")).toHaveLength(0);
+    expect(result.code).toBe(0);
+  });
+
+  it("does not start the agent a second time when attaching fails", async () => {
+    // By then tmux has already run it; running it again is two Claude Codes in
+    // one directory.
+    const tmux = fakeTmux({ attach: [1] });
+    const result = await launch({
+      ...base, agent: ["definitely-not-a-real-binary-xyz"], env: {}, isTty: true, run: tmux.run,
+    });
+    expect(tmux.of("new-session")).toHaveLength(1);
+    // 127 would mean we spawned it ourselves; we must not have.
+    expect(result.code).not.toBe(127);
+    // And the session is torn down rather than left running detached.
+    expect(tmux.of("kill-session")).toHaveLength(1);
+    expect(result.plan.reason).toContain("attach");
+  });
+
+  it("does start the agent itself when the session never came up", async () => {
+    const tmux = fakeTmux({ "new-session": [1] });
+    const result = await launch({ ...base, agent: ["false"], env: {}, isTty: true, run: tmux.run });
+    expect(result.code).toBe(1); // ran bare, code propagated
+    expect(result.plan.reason).toContain("was not opened");
+  });
+
+  it("runs the agent through sh, not the user's login shell", async () => {
+    // tmux would otherwise hand the string to `default-shell`, and `$?` is a
+    // parse error in fish and csh.
+    const tmux = fakeTmux();
+    await launch({ ...base, env: {}, isTty: true, run: tmux.run });
+    const args = tmux.of("new-session")[0] as string[];
+    expect(args).toContain("sh");
+    expect(args[args.indexOf("sh") + 1]).toBe("-c");
+  });
+
+  it("says so when the pane cannot be opened outside tmux", async () => {
+    // The inside-tmux path warns; this one used to stay silent.
+    const tmux = fakeTmux({ "split-window": [1, 1, 1, 1] });
+    const result = await launch({ ...base, env: {}, isTty: true, run: tmux.run });
+    expect(result.plan.reason).toContain("could not split");
+  });
+
+  it("gives each session a name that cannot collide with a stale one", async () => {
+    const first = fakeTmux();
+    const second = fakeTmux();
+    await launch({ ...base, env: {}, isTty: true, run: first.run });
+    await new Promise((r) => setTimeout(r, 2));
+    await launch({ ...base, env: {}, isTty: true, run: second.run });
+    const nameOf = (t: typeof first) =>
+      (t.of("new-session")[0] as string[])[(t.of("new-session")[0] as string[]).indexOf("-s") + 1];
+    expect(nameOf(first)).not.toBe(nameOf(second));
   });
 });

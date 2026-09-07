@@ -104,8 +104,9 @@ describe("what the status line shows", () => {
     for (let width = 12; width <= 70; width++) {
       const line = renderStatusLine(pack, progress, shown, { color: true, width });
       expect(visible(line).length, `width ${width}`).toBeLessThanOrEqual(width);
-      // No half-written escape, and styling always closed.
-      expect(line, `width ${width}`).not.toMatch(new RegExp(`${ESC}\\[[0-9;]*$`));
+      // No half-written escape ANYWHERE — an end-anchored check cannot fail,
+      // because the defect this guards emits a bare ESC[ mid-line.
+      expect(line.replace(ANSI, ""), `width ${width}`).not.toContain(ESC);
       if (line.includes(ESC)) expect(line.endsWith(`${ESC}[0m`), `width ${width}`).toBe(true);
     }
   });
@@ -114,7 +115,9 @@ describe("what the status line shows", () => {
     expect(defaultWidth({ COLUMNS: "80" })).toBe(80);
     expect(defaultWidth({ COLUMNS: "not a number" })).toBeUndefined();
     expect(defaultWidth({})).toBeUndefined();
-    expect(defaultWidth({ COLUMNS: "4" })).toBeUndefined();
+    // A very narrow terminal still wants truncating — an untruncated line there
+    // would wrap, which is worse than a short one.
+    expect(defaultWidth({ COLUMNS: "4" })).toBe(8);
   });
 
   it("does not throw for a nonsense clock", () => {
