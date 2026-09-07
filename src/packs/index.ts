@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { paths } from "../config.js";
+import { paths, writeJsonAtomic } from "../config.js";
 import type { Pack, RawPack, Word } from "../types.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -67,10 +67,10 @@ export function listPacks(): string[] {
 }
 
 export function savePack(raw: RawPack): string {
-  materialize(raw); // validate before it reaches disk
-  const dir = paths.packs();
-  fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, `${raw.code}.json`);
-  fs.writeFileSync(file, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+  // Validate first: a half-valid generated pack must never land on disk, where
+  // it would fail on every later load instead of once, here, with a reason.
+  materialize(raw);
+  const file = path.join(paths.packs(), `${raw.code}.json`);
+  writeJsonAtomic(file, raw);
   return file;
 }

@@ -105,7 +105,11 @@ function writeTextAtomic(file: string, contents: string): void {
     fs.closeSync(fd);
     fs.renameSync(tmp, file);
   } catch (error) {
-    fs.rmSync(tmp, { force: true });
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      // Never let a cleanup failure replace the write failure being reported.
+    }
     throw error;
   }
 }
@@ -168,35 +172,51 @@ export function classifyNotification(json: string): AgentState | null {
   }
 }
 
-/** Every rollout transcript under `dir`, newest last. */
-function listRollouts(dir: string): Array<{ file: string; mtime: number }> {
-  const found: Array<{ file: string; mtime: number }> = [];
+interface RolloutScan {
+  files: Array<{ file: string; mtime: number; size: number }>;
+  /** Set when the sessions root itself could not be listed. */
+  error: Error | null;
+}
+
+/**
+ * Every rollout transcript under `dir`, newest last.
+ *
+ * A failure to read the root is reported rather than swallowed: an unreadable
+ * sessions directory silently kills the only signal that a Codex turn started,
+ * and the pane would simply never wake up again.
+ */
+function scanRollouts(dir: string): RolloutScan {
+  const files: RolloutScan["files"] = [];
+  let rootError: Error | null = null;
+
   const walk = (current: string, depth: number) => {
     if (depth > 5) return;
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch {
-      return; // Unreadable subtree; repeated read failures are reported separately.
+    } catch (error) {
+      // A missing root is normal (Codex not installed yet); anything else is not.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (depth === 0 && code !== "ENOENT") rootError = error as Error;
+      return;
     }
     for (const entry of entries) {
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) walk(full, depth + 1);
       else if (entry.name.endsWith(".jsonl")) {
         try {
-          found.push({ file: full, mtime: fs.statSync(full).mtimeMs });
+          const stat = fs.statSync(full);
+          files.push({ file: full, mtime: stat.mtimeMs, size: stat.size });
         } catch {
           // Vanished between readdir and stat.
         }
       }
     }
   };
-  walk(dir, 0);
-  return found.sort((a, b) => a.mtime - b.mtime);
-}
 
-function newestRollout(dir: string): { file: string; mtime: number } | null {
-  return listRollouts(dir).at(-1) ?? null;
+  walk(dir, 0);
+  files.sort((a, b) => a.mtime - b.mtime);
+  return { files, error: rootError };
 }
 
 export interface SessionWatcher {
@@ -234,46 +254,63 @@ export function watchCodexSession(
   let offset = 0;
   let carry = "";
   let failures = 0;
-  let reportedFailure = false;
-  // Every transcript that exists at this moment is history and must never trigger
-  // a quiz. Anything appearing afterwards is a live session and is read in full.
-  // This snapshot is taken once, up front: taking it lazily on the first poll that
-  // finds the directory would swallow a session created moments after startup.
-  const preexisting = new Set(listRollouts(dir).map((entry) => entry.file));
+  let reported = false;
+
+  /**
+   * Every transcript that exists right now, with the size it had, is history and
+   * must never trigger a quiz. Anything written past that size — or in a file that
+   * appears later — is a live turn.
+   *
+   * Sizes matter as well as names: a session resumed in an older transcript would
+   * otherwise only be noticed once that file became the newest one.
+   */
+  const historySize = new Map(scanRollouts(dir).files.map((f) => [f.file, f.size] as const));
 
   const fail = (message: string) => {
     failures += 1;
-    if (failures >= FAILURE_LIMIT && !reportedFailure) {
-      reportedFailure = true;
+    if (failures >= FAILURE_LIMIT && !reported) {
+      reported = true;
       options.onError?.(message);
     }
+  };
+
+  /**
+   * Called only after transcript bytes are genuinely read.
+   *
+   * A poll that finds nothing new is not evidence that reading works again, so it
+   * must not clear the failure count — otherwise a watcher failing on every
+   * append never reaches the reporting threshold, because the quiet polls in
+   * between keep resetting it.
+   */
+  const recovered = () => {
+    failures = 0;
+    // Allow a later, different failure to be reported too.
+    reported = false;
   };
 
   const poll = () => {
     // The directory may not exist yet; keep looking, so opening the pane before
     // Codex has ever run does not disable the integration for the whole session.
-    const newest = newestRollout(dir);
+    const scan = scanRollouts(dir);
+    if (scan.error) {
+      fail(`cannot read ${dir}: ${scan.error.message}`);
+      return;
+    }
+    const newest = scan.files.at(-1);
     if (!newest) return;
 
     if (newest.file !== file) {
       file = newest.file;
       carry = "";
-      if (preexisting.has(file)) {
-        try {
-          offset = fs.statSync(file).size;
-        } catch {
-          offset = 0;
-        }
-      } else {
-        offset = 0; // A session that started while we were watching: read it all.
-      }
+      // Resume where history ended; a file we have never seen starts at zero.
+      offset = historySize.get(file) ?? 0;
     }
 
     let size: number;
     try {
       size = fs.statSync(file).size;
-    } catch {
-      fail(`cannot stat ${file}`);
+    } catch (error) {
+      fail(`cannot stat ${file}: ${(error as Error).message}`);
       return;
     }
     if (size < offset) {
@@ -290,8 +327,11 @@ export function watchCodexSession(
     try {
       fd = fs.openSync(file, "r");
       const buffer = Buffer.alloc(size - offset);
-      fs.readSync(fd, buffer, 0, buffer.length, offset);
-      chunk = buffer.toString("utf8");
+      // Honour the byte count actually read; the tail of the buffer would
+      // otherwise be zero-fill parsed as transcript content.
+      const read = fs.readSync(fd, buffer, 0, buffer.length, offset);
+      chunk = buffer.subarray(0, read).toString("utf8");
+      size = offset + read;
     } catch (error) {
       fail(`cannot read ${file}: ${(error as Error).message}`);
       // Skip the bytes we could not read; retrying the same offset forever would
@@ -308,7 +348,7 @@ export function watchCodexSession(
       }
     }
     offset = size;
-    failures = 0;
+    recovered();
 
     const lines = (carry + chunk).split("\n");
     carry = lines.pop() ?? "";

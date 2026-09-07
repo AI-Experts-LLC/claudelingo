@@ -76,6 +76,8 @@ describe("card progression", () => {
     };
     const glosses = new Set(pack.words.filter((w) => w.pos === "verb").map((w) => w.gloss));
     const card = buildCard(pack, word, item, rng());
+    // Guard the loop: with no choices the assertions below would never run.
+    expect(card.choices).toHaveLength(4);
     // Four verbs exist, so every choice should be one.
     for (const choice of card.choices) expect(glosses.has(choice)).toBe(true);
   });

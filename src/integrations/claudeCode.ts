@@ -97,8 +97,22 @@ export function readSettings(file: string): Settings {
 export function writeSettings(file: string, settings: Settings): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.claudelingo.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
-  fs.renameSync(tmp, file);
+  try {
+    const fd = fs.openSync(tmp, "w");
+    fs.writeFileSync(fd, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    // Never leave an orphan temp file in the user's config directory, and never
+    // let a cleanup failure mask the write failure.
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      // Nothing further to do.
+    }
+    throw error;
+  }
 }
 
 export function install(file: string, bin: string): void {

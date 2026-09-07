@@ -118,7 +118,7 @@ export class Pane {
     return this.buffer
       .split(/(?=┌)/)
       .map((f) => f.trim())
-      .filter((f) => f.startsWith("┌") && f.includes("└"));
+      .filter((f) => f.startsWith("┌") && f.includes("└") && f.trimEnd().endsWith("┘"));
   }
 
   get lastFrame(): string {
@@ -147,9 +147,13 @@ export class Pane {
 
   /** Fails loudly if the pane died, rather than timing out on a missing frame. */
   private assertAlive(): void {
-    if (this.exitCode !== undefined && this.exitCode !== 0) {
-      throw new Error(`pane exited with code ${this.exitCode}\n--- stderr ---\n${this.errors}`);
-    }
+    if (this.exitCode === undefined) return;
+    // A clean exit is just as wrong as a crash when a test is still driving the
+    // pane; without this the failure shows up as an unexplained timeout.
+    throw new Error(
+      `pane exited with code ${this.exitCode} while the test was still waiting` +
+        (this.errors ? `\n--- stderr ---\n${this.errors}` : ""),
+    );
   }
 
   send(keys: string): void {
@@ -186,9 +190,19 @@ export class Pane {
     return this.until(() => this.lastFrame.includes(text), timeoutMs);
   }
 
-  /** Wait for a new frame to be painted after the current count. */
-  async waitForFrames(count: number, timeoutMs = 8000): Promise<void> {
-    await this.until(() => this.frames.length >= count, timeoutMs);
+  /**
+   * Wait a fixed period, failing early if the pane dies.
+   *
+   * For asserting that something does NOT happen: waiting on text the pane has
+   * already displayed returns immediately and proves nothing.
+   */
+  async settle(ms: number): Promise<void> {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      this.assertAlive();
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    this.assertAlive();
   }
 
   kill(): void {

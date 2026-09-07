@@ -20,6 +20,7 @@ import * as claudeCode from "./integrations/claudeCode.js";
 import * as codex from "./integrations/codex.js";
 import { DEFAULT_MODEL, generatePack, hasCredentials, memoryHook } from "./enrich.js";
 import { run } from "./ui/tui.js";
+import type { ProblemKey } from "./ui/app.js";
 import type { Pack, Progress, Settings, Word } from "./types.js";
 
 const BIN = "claudelingo";
@@ -102,18 +103,28 @@ function settingsFrom(flags: Args["flags"]): Resolved {
 
 interface LoadedProgress {
   progress: Progress;
-  /** Set when an existing progress file was unusable and had to be set aside. */
+  /** Set when an existing deck was unusable. */
   problem?: string;
+  /** True when a deck we could not read is still on disk and must not be written over. */
+  readOnly?: boolean;
 }
 
 /**
  * Load a deck, never destroying one we failed to understand.
  *
- * A truncated, half-synced, or future-versioned file is moved aside before a blank
- * deck is handed back, so the first answer cannot overwrite a real learning history
- * with an empty one. The user is told where it went.
+ * Two separate cases, deliberately handled differently:
+ *
+ * - The file is genuinely unparseable (bad JSON, wrong shape, future version). It
+ *   is moved aside so a fresh deck can be started without overwriting real
+ *   history, and the user is told where it went.
+ * - The file could not be *read* — a permission problem, too many open files, a
+ *   home directory not mounted yet. That is transient and says nothing about the
+ *   contents, so the file is left exactly where it is and the pane runs read-only
+ *   rather than replacing a deck that is probably fine.
+ *
+ * `mutate` is false for read-only commands: `stats` must never move a user's deck.
  */
-function loadProgress(lang: string): LoadedProgress {
+function loadProgress(lang: string, mutate = true): LoadedProgress {
   const file = paths.progress(lang);
   const result = readJsonFile<Progress>(file);
 
@@ -122,25 +133,61 @@ function loadProgress(lang: string): LoadedProgress {
     if (stored?.items && stored.version === 1) {
       return { progress: { ...emptyProgress(lang), ...stored } };
     }
+    // Readable but not a deck we understand: genuinely unusable content.
+    if (!mutate) {
+      return {
+        progress: emptyProgress(lang),
+        problem: `${file} is not a version 1 deck.`,
+        readOnly: true,
+      };
+    }
     const moved = quarantine(file);
-    return {
-      progress: emptyProgress(lang),
-      problem: moved
-        ? `${file} was not a version 1 deck; kept a copy at ${moved} and started fresh.`
-        : `${file} was not a version 1 deck and could not be set aside — not saving.`,
-    };
+    return moved
+      ? {
+          progress: emptyProgress(lang),
+          problem: `${file} was not a version 1 deck; kept a copy at ${moved} and started fresh.`,
+        }
+      : {
+          progress: emptyProgress(lang),
+          problem: `${file} is not a version 1 deck and could not be set aside — not saving.`,
+          readOnly: true,
+        };
   }
 
   if (result.reason === "missing") return { progress: emptyProgress(lang) };
 
+  const detail = result.error?.message ?? "unknown error";
+  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  if (code === "EACCES" || code === "EPERM" || code === "EISDIR" || code === "EMFILE" ||
+      code === "ENFILE" || code === "EIO" || code === "ENOMEM" || code === "EBUSY") {
+    // Transient or environmental: the deck is very likely intact. Touching it
+    // would turn a permissions glitch into permanent data loss.
+    return {
+      progress: emptyProgress(lang),
+      problem: `${file} could not be read (${detail}). Not saving, so your deck is left untouched.`,
+      readOnly: true,
+    };
+  }
+
+  if (!mutate) {
+    return {
+      progress: emptyProgress(lang),
+      problem: `${file} could not be read (${detail}).`,
+      readOnly: true,
+    };
+  }
+
   const moved = quarantine(file);
-  return {
-    progress: emptyProgress(lang),
-    problem: moved
-      ? `${file} could not be read (${result.error?.message ?? "unknown error"}); ` +
-        `kept a copy at ${moved} and started fresh.`
-      : `${file} could not be read and could not be set aside — not saving over it.`,
-  };
+  return moved
+    ? {
+        progress: emptyProgress(lang),
+        problem: `${file} could not be read (${detail}); kept a copy at ${moved} and started fresh.`,
+      }
+    : {
+        progress: emptyProgress(lang),
+        problem: `${file} could not be read and could not be set aside — not saving over it.`,
+        readOnly: true,
+      };
 }
 
 function fail(message: string): never {
@@ -257,7 +304,7 @@ function cmdStatus(): void {
 function cmdStats(args: Args): void {
   const { settings } = settingsFrom(args.flags);
   const pack = resolvePack(settings.lang);
-  const { progress, problem } = loadProgress(settings.lang);
+  const { progress, problem } = loadProgress(settings.lang, false);
   if (problem) process.stderr.write(`${problem}\n`);
   const s = stats(pack, progress, Date.now());
   const rows: Array<[string, string]> = [
@@ -283,8 +330,8 @@ function cmdLangs(): void {
     try {
       const pack = loadPack(code);
       process.stdout.write(`${code.padEnd(6)}${pack.englishName.padEnd(14)}${pack.words.length} words\n`);
-    } catch {
-      process.stdout.write(`${code.padEnd(6)}(unreadable pack)\n`);
+    } catch (error) {
+      process.stdout.write(`${code.padEnd(6)}unreadable: ${(error as Error).message}\n`);
     }
   }
 }
@@ -321,29 +368,55 @@ function cmdReset(args: Args): void {
   process.stdout.write(`Reset progress for ${settings.lang}.\n`);
 }
 
+/** Panel width the terminal could plausibly have; guards against `"─".repeat(1e9)`. */
+const MIN_WIDTH = 20;
+const MAX_WIDTH = 1000;
+
+function resolveWidth(raw: unknown): number | undefined {
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < MIN_WIDTH) return undefined;
+  return Math.min(Math.floor(value), MAX_WIDTH);
+}
+
 async function cmdRun(args: Args): Promise<void> {
   ensureHome();
   const { settings, problem: settingsProblem } = settingsFrom(args.flags);
   const pack = resolvePack(settings.lang);
-  const { progress, problem: progressProblem } = loadProgress(settings.lang);
+  const { progress, problem: progressProblem, readOnly } = loadProgress(settings.lang);
   const progressFile = paths.progress(settings.lang);
   const statusFile = paths.status();
 
   // One pane per language: two would each hold the whole deck in memory and the
   // second to save would erase the first's work.
-  const held = lock.acquire(paths.lock(settings.lang));
-  if (!held) {
+  const lockFile = paths.lock(settings.lang);
+  const acquired = lock.acquire(lockFile);
+  if (!acquired.ok && acquired.reason === "held") {
+    const who = acquired.pid === null ? "another claudelingo pane" : `pid ${acquired.pid}`;
     fail(
-      `another claudelingo pane (pid ${lock.holderPid(paths.lock(settings.lang))}) is already ` +
-        `studying ${pack.englishName}. Close it, or run this one with a different --lang.`,
+      `${who} is already studying ${pack.englishName}. ` +
+        "Close it, or run this one with a different --lang.",
     );
+  }
+
+  const problems: Partial<Record<ProblemKey, string>> = {};
+  if (settingsProblem) problems.deck = settingsProblem;
+  if (progressProblem) problems.deck = [problems.deck, progressProblem].filter(Boolean).join(" ");
+  if (!acquired.ok) {
+    // The guarantee is off, and staying quiet about it is how two panes end up
+    // silently overwriting each other.
+    problems.save =
+      `could not take the single-pane lock (${acquired.error.message}); ` +
+      "close any other claudelingo pane for this language.";
   }
 
   if (!fs.existsSync(statusFile)) {
     try {
       writeStatus({ state: "idle", source: "manual", event: "startup", ts: Date.now() });
-    } catch {
-      // Reported through the pane's problem banner once the first save is tried.
+    } catch (error) {
+      // Nothing else can see this: without a status file the pane is blind to
+      // the agent, and no later write of a *different* file would reveal it.
+      problems.status = `cannot record agent state: ${(error as Error).message}`;
     }
   }
 
@@ -351,37 +424,39 @@ async function cmdRun(args: Args): Promise<void> {
     settings.enrich && hasCredentials()
       ? (word: Word) => memoryHook(word, pack, { model: settings.model })
       : undefined;
-
-  const problems = [settingsProblem, progressProblem].filter(Boolean);
   if (settings.enrich && !enrich) {
     // Told once, up front, rather than as a fresh auth error on every card.
-    problems.push("no Anthropic credential found, so memory hooks (e) are unavailable.");
+    problems.credentials = "no Anthropic credential found, so memory hooks (e) are unavailable.";
   }
 
-  const rawWidth = args.flags.width === undefined ? undefined : Number(args.flags.width);
-  const width = rawWidth !== undefined && Number.isFinite(rawWidth) && rawWidth >= 20
-    ? Math.floor(rawWidth)
-    : undefined;
+  const width = resolveWidth(args.flags.width);
   if (args.flags.width !== undefined && width === undefined) {
-    process.stderr.write(`claudelingo: ignoring --width ${args.flags.width} (needs a number >= 20)\n`);
+    process.stderr.write(
+      `claudelingo: ignoring --width ${args.flags.width} (needs a number >= ${MIN_WIDTH})\n`,
+    );
   }
 
   const runner = run({
     pack,
     progress,
-    settings,
+    // With no fetcher wired, the pane must not offer `e` at all — otherwise it
+    // shows "asking Claude…" against a request that will never be made.
+    settings: enrich ? settings : { ...settings, enrich: false },
     progressFile,
     statusFile,
     // Codex has no turn-start hook, so its transcript is tailed for that edge.
-    watchCodex: (onState, onError) =>
-      codex.watchCodexSession(onState, { onError }),
+    watchCodex: (onState, onError) => codex.watchCodexSession(onState, { onError }),
     ...(enrich ? { enrich } : {}),
-    ...(problems.length ? { initialProblem: problems.join(" ") } : {}),
+    ...(Object.keys(problems).length ? { initialProblems: problems } : {}),
+    ...(readOnly ? { readOnly: true } : {}),
     ...(args.flags.color === false ? { color: false } : {}),
     ...(width !== undefined ? { width } : {}),
     ...(process.env.CLAUDELINGO_FORCE_RENDER ? { forceRender: true } : {}),
   });
 
+  const release = () => {
+    if (acquired.ok) acquired.lock.release();
+  };
   const onSignal = () => runner.stop();
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
@@ -389,7 +464,7 @@ async function cmdRun(args: Args): Promise<void> {
   try {
     await runner.done;
   } finally {
-    held.release();
+    release();
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
   }

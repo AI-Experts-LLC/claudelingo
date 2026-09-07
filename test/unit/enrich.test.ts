@@ -47,7 +47,24 @@ describe("memory hooks", () => {
   it("omits the thinking parameter, which Fable 5.1 rejects", async () => {
     create.mockResolvedValue(textReply("hook"));
     await memoryHook(word, pack);
-    expect(create.mock.calls[0]?.[0]).not.toHaveProperty("thinking");
+    // Assert the call happened first: `not.toHaveProperty` on undefined passes
+    // vacuously, so without this the test proves nothing if nothing was called.
+    expect(create).toHaveBeenCalledTimes(1);
+    const params = create.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(params).toBeDefined();
+    expect(params).not.toHaveProperty("thinking");
+  });
+
+  it("reports a timeout as a timeout, not as a bare abort", async () => {
+    // The SDK surfaces every abort as "Request was aborted", which tells the
+    // user nothing about why the hook never arrived.
+    create.mockImplementation(
+      (_params: unknown, options: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          options.signal?.addEventListener("abort", () => reject(new Error("Request was aborted.")));
+        }),
+    );
+    await expect(memoryHook(word, pack, { timeoutMs: 30 })).rejects.toThrow(/no reply within/);
   });
 
   it("opts into a server-side fallback so a refusal is rescued in-call", async () => {

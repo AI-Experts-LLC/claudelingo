@@ -1,7 +1,8 @@
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { type Env, cli, makeEnv, readProgress, requireBuild, statusFile } from "./harness.js";
+import { type Env, Pane, cli, makeEnv, readProgress, requireBuild, statusFile } from "./harness.js";
 
 let env: Env;
 beforeAll(requireBuild);
@@ -220,5 +221,122 @@ describe("unknown language", () => {
     expect(code).toBe(1);
     expect(stderr).toContain('no pack for "qq"');
     expect(stderr).toContain("pack generate");
+  });
+});
+
+describe("claudelingo pack generate", () => {
+  /** Serve one Anthropic streaming response, so the real client path runs. */
+  function stubStream(body: unknown): Promise<{ url: string; close(): void; calls: number }> {
+    return new Promise((resolve) => {
+      const state = { calls: 0 };
+      const server = http.createServer((req, res) => {
+        state.calls += 1;
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        });
+        const send = (event: string, data: unknown) =>
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+        send("message_start", {
+          type: "message_start",
+          message: {
+            id: "msg_1", type: "message", role: "assistant", model: "claude-fable-5-1",
+            content: [], stop_reason: null, stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        });
+        send("content_block_start", {
+          type: "content_block_start", index: 0, content_block: { type: "text", text: "" },
+        });
+        send("content_block_delta", {
+          type: "content_block_delta", index: 0,
+          delta: { type: "text_delta", text: JSON.stringify(body) },
+        });
+        send("content_block_stop", { type: "content_block_stop", index: 0 });
+        send("message_delta", {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 20 },
+        });
+        send("message_stop", { type: "message_stop" });
+        res.end();
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const port = (server.address() as { port: number }).port;
+        resolve({
+          url: `http://127.0.0.1:${port}`,
+          close: () => server.close(),
+          get calls() {
+            return state.calls;
+          },
+        } as { url: string; close(): void; calls: number });
+      });
+    });
+  }
+
+  it("writes a pack that loads back and can be studied", async () => {
+    const e = fresh();
+    const server = await stubStream({
+      code: "pt",
+      name: "Português",
+      englishName: "Portuguese",
+      words: [
+        { term: "de", gloss: "of, from", pos: "prep" },
+        { term: "casa", gloss: "house", pos: "noun", note: "feminine" },
+        { term: "ser", gloss: "to be", pos: "verb" },
+        { term: "grande", gloss: "big", pos: "adj" },
+        { term: "de", gloss: "duplicate to be dropped", pos: "prep" },
+      ],
+    });
+    try {
+      const generated = await cli(
+        ["pack", "generate", "--lang", "Portuguese", "--code", "pt", "--count", "4"],
+        e,
+        { ANTHROPIC_API_KEY: "test-key-not-real", ANTHROPIC_BASE_URL: server.url },
+      );
+      expect(generated.code).toBe(0);
+      expect(generated.stdout).toContain("Wrote 4 words");
+      expect(generated.stdout).toContain("--lang pt");
+
+      const written = JSON.parse(
+        fs.readFileSync(path.join(e.home, "packs", "pt.json"), "utf8"),
+      ) as { words: string[][] };
+      // The duplicate the model slipped in must have been dropped before writing.
+      expect(written.words).toHaveLength(4);
+      expect(written.words[1]).toEqual(["casa", "house", "noun", "feminine"]);
+
+      // It is a real pack now: listed, and studiable.
+      const langs = await cli(["langs"], e);
+      expect(langs.stdout).toMatch(/pt\s+Portuguese\s+4 words/);
+
+      await cli(["hook", "UserPromptSubmit"], e);
+      const pane = new Pane(["--lang", "pt", "--width", "58", "--no-color", "--no-enrich"], e);
+      try {
+        await pane.waitForText("#1 most common word in Portuguese");
+        expect(pane.lastFrame).toContain("of, from");
+      } finally {
+        pane.kill();
+      }
+    } finally {
+      server.close();
+    }
+  });
+
+  it("writes nothing when the model returns something unusable", async () => {
+    const e = fresh();
+    const server = await stubStream({ code: "pt", name: "P", englishName: "Portuguese", words: [] });
+    try {
+      const result = await cli(["pack", "generate", "--lang", "Portuguese", "--code", "pt"], e, {
+        ANTHROPIC_API_KEY: "test-key-not-real",
+        ANTHROPIC_BASE_URL: server.url,
+      });
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("no words");
+      expect(fs.existsSync(path.join(e.home, "packs", "pt.json"))).toBe(false);
+    } finally {
+      server.close();
+    }
   });
 });

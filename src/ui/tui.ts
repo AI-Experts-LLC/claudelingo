@@ -2,7 +2,15 @@ import { writeJsonAtomic } from "../config.js";
 import type { AgentState, Pack, Progress, Settings, Word } from "../types.js";
 import { effectiveState, readStatus, watchStatus } from "../agentState.js";
 import { ansi, keys as CTRL } from "./ansi.js";
-import { type AppState, type Effect, type Event, type Key, createState, reduce } from "./app.js";
+import {
+  type AppState,
+  type Effect,
+  type Event,
+  type Key,
+  type ProblemKey,
+  createState,
+  reduce,
+} from "./app.js";
 import { COLOR, PLAIN, type Theme, renderFrame } from "./render.js";
 
 export interface RunOptions {
@@ -14,7 +22,9 @@ export interface RunOptions {
   /** Ask Claude for a memory hook. Injected so tests run without network. */
   enrich?: (word: Word) => Promise<string>;
   /** Shown in the pane straight away, e.g. an unreadable progress file. */
-  initialProblem?: string;
+  initialProblems?: Partial<Record<ProblemKey, string>>;
+  /** Suppress saving entirely — set when a deck we could not read is still on disk. */
+  readOnly?: boolean;
   stdin?: NodeJS.ReadableStream;
   stdout?: NodeJS.WritableStream;
   color?: boolean;
@@ -88,7 +98,9 @@ export function run(options: RunOptions): Runner {
     initialAgent,
     Date.now(),
   );
-  if (options.initialProblem) state = { ...state, problem: options.initialProblem };
+  if (options.initialProblems) {
+    state = { ...state, problems: { ...state.problems, ...options.initialProblems } };
+  }
 
   // An agent already working when the pane opens should get a card straight away.
   if (initialAgent === "busy" || options.settings.alwaysOn) {
@@ -110,9 +122,21 @@ export function run(options: RunOptions): Runner {
     try {
       if (isTty) stdout.write(`${ansi.clearScreen}${frame}\n`);
       else if (options.forceRender) stdout.write(`${frame}\n`);
-    } catch {
-      // The reader went away (`claudelingo | head`). Leave quietly rather than
-      // dumping an EPIPE stack trace over the user's terminal.
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EPIPE") {
+        // The reader went away (`claudelingo | head`). Leave quietly rather than
+        // dumping a stack trace over the user's terminal.
+        stop();
+        return;
+      }
+      // Anything else is unexpected and the user deserves to know why the pane
+      // stopped rather than watching it vanish.
+      try {
+        process.stderr.write(`claudelingo: cannot draw the pane: ${(error as Error).message}\n`);
+      } catch {
+        // stderr is gone too; there is nowhere left to report.
+      }
       stop();
     }
   };
@@ -120,23 +144,30 @@ export function run(options: RunOptions): Runner {
   const applyEffects = (effects: Effect[]) => {
     for (const effect of effects) {
       if (effect.type === "save") {
+        // A deck we could not read is still on disk; writing would destroy it.
+        if (options.readOnly) continue;
         try {
           writeJsonAtomic(options.progressFile, effect.progress);
-          if (state.problem?.startsWith("progress is not saving")) {
-            state = { ...state, problem: null };
-          }
+          setProblem("save", null);
         } catch (error) {
           // A read-only home or a full disk must not kill the pane mid-session and
           // leave the terminal in raw mode. Say so, keep going, keep retrying.
-          state = {
-            ...state,
-            problem: `progress is not saving: ${(error as Error).message}`,
-          };
+          setProblem("save", `progress is not saving: ${(error as Error).message}`);
         }
       } else if (effect.type === "quit") {
         stop();
-      } else if (effect.type === "enrich" && options.enrich) {
+      } else if (effect.type === "enrich") {
         const word = effect.word;
+        if (!options.enrich) {
+          // Nothing to call. Clear the spinner rather than leaving "asking
+          // Claude…" on screen against a request that will never happen.
+          dispatch({
+            type: "enrichFailed",
+            wordId: word.id,
+            message: "memory hooks are not available",
+          });
+          continue;
+        }
         options
           .enrich(word)
           .then((text) => dispatch({ type: "enriched", wordId: word.id, text }))
@@ -145,6 +176,14 @@ export function run(options: RunOptions): Runner {
           );
       }
     }
+  };
+
+  /** Set or clear one problem without disturbing the others. */
+  const setProblem = (key: ProblemKey, message: string | null) => {
+    const problems = { ...state.problems };
+    if (message === null) delete problems[key];
+    else problems[key] = message;
+    state = { ...state, problems };
   };
 
   const dispatch = (event: Event) => {
@@ -171,12 +210,20 @@ export function run(options: RunOptions): Runner {
           event: "rollout",
           ts: Date.now(),
         });
-      } catch {
-        // The status file is a cache of the agent's state; failing to update it
-        // is reported by the watcher's own error path, not here.
+        dispatch({ type: "problem", key: "status", message: null });
+      } catch (error) {
+        // Nothing else can see this failure: the transcript watcher only reports
+        // problems reading transcripts, and without a status write the pane will
+        // never notice a Codex turn.
+        dispatch({
+          type: "problem",
+          key: "status",
+          message: `cannot record agent state: ${(error as Error).message}`,
+        });
       }
     },
-    (message) => dispatch({ type: "problem", message: `Codex watcher stopped: ${message}` }),
+    (message) =>
+      dispatch({ type: "problem", key: "codex", message: `Codex watcher stopped: ${message}` }),
   );
 
   if (isTty) stdout.write(ansi.hideCursor);
@@ -186,7 +233,7 @@ export function run(options: RunOptions): Runner {
   // which would otherwise emit the opening frame twice.
   const watcher = watchStatus(() => dispatch({ type: "agent", state: agentNow() }), {
     file: options.statusFile,
-    onError: (message) => dispatch({ type: "problem", message }),
+    onError: (message) => dispatch({ type: "problem", key: "status", message }),
   });
 
   const ticker = setInterval(() => {

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { stateForEvent } from "../../src/agentState.js";
 import * as claudeCode from "../../src/integrations/claudeCode.js";
 import * as codex from "../../src/integrations/codex.js";
 import { tempHome } from "../helpers.js";
@@ -16,13 +17,35 @@ afterEach(() => {
 });
 
 describe("Claude Code hooks", () => {
-  it("installs a hook for every event it models", () => {
+  /**
+   * Written out literally rather than looped over `HOOK_EVENTS`, which would be
+   * the implementation compared against itself — deleting an event from the list
+   * would then silently disable that behaviour with a green suite.
+   */
+  const EXPECTED_HOOKS = [
+    "UserPromptSubmit",
+    "Stop",
+    "SubagentStop",
+    "SessionEnd",
+    "Notification",
+  ];
+
+  it("installs exactly the hooks the product depends on", () => {
     const settings = claudeCode.withHooks({}, "claudelingo");
-    for (const event of claudeCode.HOOK_EVENTS) {
+    expect(Object.keys(settings.hooks ?? {}).sort()).toEqual([...EXPECTED_HOOKS].sort());
+    for (const event of EXPECTED_HOOKS) {
       expect(settings.hooks?.[event]?.[0]?.hooks[0]?.command).toBe(
         `claudelingo hook ${event} --source claude`,
       );
     }
+  });
+
+  it("installs Notification, which is what stands the pane down for a prompt", () => {
+    // Called out on its own because it is the least obvious of the five and the
+    // easiest to drop: Claude fires it when it wants a permission decision.
+    const settings = claudeCode.withHooks({}, "claudelingo");
+    expect(settings.hooks?.Notification?.[0]?.hooks[0]?.command).toContain("hook Notification");
+    expect(stateForEvent("Notification")).toBe("idle");
   });
 
   it("leaves unrelated settings and other people's hooks alone", () => {
@@ -234,12 +257,40 @@ describe("Codex session watcher", () => {
     watcher.stop();
   });
 
-  it("survives a missing sessions directory", () => {
-    const watcher = codex.watchCodexSession(() => {}, {
+  it("survives a missing sessions directory without reporting it as a fault", async () => {
+    // Codex simply may not be installed; that is not something to warn about.
+    const states: string[] = [];
+    const errors: string[] = [];
+    const watcher = codex.watchCodexSession((s) => states.push(s), {
       dir: path.join(dir(), "does-not-exist"),
       intervalMs: 20,
+      onError: (m) => errors.push(m),
     });
-    watcher.stop();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(states).toEqual([]);
+    expect(errors).toEqual([]);
+    expect(() => watcher.stop()).not.toThrow();
+  });
+
+  it("reports a sessions directory it cannot read", async () => {
+    // Distinct from "not installed": Codex IS there and the watcher is blind.
+    const home = dir();
+    const sessions = path.join(home, "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.chmodSync(sessions, 0o000);
+    const errors: string[] = [];
+    const watcher = codex.watchCodexSession(() => {}, {
+      dir: sessions, intervalMs: 10, onError: (m) => errors.push(m),
+    });
+    try {
+      await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0), {
+        timeout: 3000, interval: 20,
+      });
+      expect(errors[0]).toContain("cannot read");
+    } finally {
+      fs.chmodSync(sessions, 0o700);
+      watcher.stop();
+    }
   });
 
   it("handles a partial line split across two appends", async () => {
@@ -340,14 +391,22 @@ describe("Codex watcher: which bytes it reads", () => {
     });
     await settle(60);
 
-    fs.appendFileSync(file, `${JSON.stringify({ type: "task_started" })}\n`);
-    await vi.waitFor(() => expect(seen).toEqual(["busy"]), { timeout: 3000, interval: 20 });
+    // Two turns, so the read offset ends up well past what the shorter rewrite
+    // below will contain.
+    const started = `${JSON.stringify({ type: "task_started" })}\n`;
+    fs.appendFileSync(file, started + `${JSON.stringify({ type: "task_complete" })}\n` + started);
+    await vi.waitFor(() => expect(seen).toEqual(["busy", "idle", "busy"]), {
+      timeout: 3000, interval: 20,
+    });
 
     // A rewrite that shrinks the file must resync, not re-read from zero and fire
-    // a second busy while the user is typing.
-    fs.writeFileSync(file, "");
-    await settle(200);
-    expect(seen).toEqual(["busy"]);
+    // a spurious busy while the user is typing. The replacement is deliberately
+    // SHORTER than the current offset and still contains a turn marker — an empty
+    // truncation, or one no shorter than the offset, would pass either way.
+    fs.writeFileSync(file, started);
+    expect(fs.statSync(file).size).toBeLessThan(started.length * 2);
+    await settle(400);
+    expect(seen).toEqual(["busy", "idle", "busy"]);
     watcher.stop();
   });
 

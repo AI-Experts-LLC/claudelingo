@@ -11,6 +11,9 @@ import type {
 
 export type Mode = "waiting" | "teach" | "question" | "feedback" | "caughtup" | "quit";
 
+/** Every distinct thing that can go wrong and needs saying. */
+export type ProblemKey = "save" | "deck" | "status" | "codex" | "credentials";
+
 export interface Key {
   /** The character typed, if it was a printable one. */
   ch?: string;
@@ -24,7 +27,7 @@ export type Event =
   | { type: "tick"; now: number }
   | { type: "enriched"; wordId: string; text: string }
   | { type: "enrichFailed"; wordId: string; message: string }
-  | { type: "problem"; message: string | null };
+  | { type: "problem"; key: ProblemKey; message: string | null };
 
 export type Effect =
   | { type: "save"; progress: Progress }
@@ -52,8 +55,12 @@ export interface AppState {
    * a card that has already been graded must not come back as a live question.
    */
   resumeMode: Mode | null;
-  /** A problem the user needs to know about, shown until it is resolved. */
-  problem: string | null;
+  /**
+   * Live problems, keyed by source. A set rather than one slot: a failing save
+   * must not erase a still-true "the Codex watcher is dead" notice, and fixing
+   * one must not clear the other.
+   */
+  problems: Record<ProblemKey, string>;
   /** Set when a memory hook could not be fetched, so `e` can be pressed again. */
   enrichError: string | null;
   showHelp: boolean;
@@ -92,7 +99,7 @@ export function createState(
     enrichPending: false,
     message: null,
     resumeMode: null,
-    problem: null,
+    problems: {} as Record<ProblemKey, string>,
     enrichError: null,
     showHelp: false,
     now,
@@ -247,8 +254,12 @@ export function reduce(state: AppState, event: Event, pack: Pack): Step {
       return { state: { ...state, enrichPending: false, enrichError: event.message }, effects: [] };
     }
 
-    case "problem":
-      return { state: { ...state, problem: event.message }, effects: [] };
+    case "problem": {
+      const problems = { ...state.problems };
+      if (event.message === null) delete problems[event.key];
+      else problems[event.key] = event.message;
+      return { state: { ...state, problems }, effects: [] };
+    }
 
     case "key":
       return reduceKey(state, event.key, pack);

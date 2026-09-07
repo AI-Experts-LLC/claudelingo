@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { PackError, listPacks, loadPack, materialize } from "../../src/packs/index.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { PackError, listPacks, loadPack, materialize, savePack } from "../../src/packs/index.js";
 import { buildCard, isCorrect, makeRng } from "../../src/srs.js";
 import type { ItemProgress } from "../../src/types.js";
 
@@ -120,5 +123,51 @@ describe("shipped packs", () => {
       ["art", "prep", "conj", "pron", "verb", "adv"].includes(pos),
     );
     expect(functionWords.length).toBeGreaterThanOrEqual(15);
+  });
+});
+
+describe("saving a generated pack", () => {
+  const homes: string[] = [];
+  afterEach(() => {
+    for (const dir of homes.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+    delete process.env.CLAUDELINGO_HOME;
+  });
+
+  function isolate(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claudelingo-packs-"));
+    homes.push(dir);
+    process.env.CLAUDELINGO_HOME = dir;
+    return dir;
+  }
+
+  it("writes a valid pack and loads it straight back", () => {
+    const home = isolate();
+    const file = savePack({
+      code: "pt", name: "Português", englishName: "Portuguese",
+      words: [["de", "of", "prep"], ["casa", "house", "noun", "feminine"]],
+    });
+    expect(file).toBe(path.join(home, "packs", "pt.json"));
+    const pack = loadPack("pt");
+    expect(pack.englishName).toBe("Portuguese");
+    expect(pack.words[1]).toMatchObject({ id: "pt:2", term: "casa", note: "feminine" });
+  });
+
+  it("refuses to write a pack that would fail on every later load", () => {
+    // Validating here turns one clear failure at generation time into zero
+    // mysterious failures later.
+    const home = isolate();
+    expect(() =>
+      savePack({
+        code: "pt", name: "P", englishName: "Portuguese",
+        words: [["de", "of", "prep"], ["de", "from", "prep"]],
+      }),
+    ).toThrow(PackError);
+    expect(fs.existsSync(path.join(home, "packs", "pt.json"))).toBe(false);
+  });
+
+  it("leaves no temp file behind", () => {
+    const home = isolate();
+    savePack({ code: "pt", name: "P", englishName: "Portuguese", words: [["de", "of", "prep"]] });
+    expect(fs.readdirSync(path.join(home, "packs")).filter((f) => f.endsWith(".tmp"))).toEqual([]);
   });
 });

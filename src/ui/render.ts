@@ -298,10 +298,11 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
     push(progressBar(s.total ? s.learned / s.total : 0, Math.min(24, body), theme));
     push(statusLine(state, pack, theme, body));
     if (state.message) push(`${theme.dim}${state.message}${theme.reset}`);
-    // A problem stays on screen until it is fixed: a pane that has silently
-    // stopped saving must not look identical to one that is working.
-    for (const line of state.problem ? wrap(state.problem, body) : []) {
-      push(`${theme.red}${line}${theme.reset}`);
+    // Problems stay on screen until each is fixed: a pane that has silently
+    // stopped saving must not look identical to one that is working, and one
+    // problem clearing must not hide another that is still true.
+    for (const message of Object.values(state.problems)) {
+      for (const line of wrap(message, body)) push(`${theme.red}${line}${theme.reset}`);
     }
   }
 

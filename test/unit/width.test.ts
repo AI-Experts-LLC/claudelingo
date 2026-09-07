@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { charWidth, sliceToWidth, stringWidth } from "../../src/ui/width.js";
+import { RANGE_TABLES, charWidth, sliceToWidth, stringWidth } from "../../src/ui/width.js";
 import { PLAIN, box, renderFrame, visibleWidth } from "../../src/ui/render.js";
 import { materialize } from "../../src/packs/index.js";
 import { createState, reduce } from "../../src/ui/app.js";
+import type { Progress } from "../../src/types.js";
 import { T0, testProgress, testSettings } from "../helpers.js";
 
 /**
@@ -89,21 +90,62 @@ describe("the renderer respects columns, not code points", () => {
   it("keeps a frame exact when the answer is typed in decomposed form", () => {
     const pack = materialize({
       code: "xx", name: "X", englishName: "X",
-      words: [["a", "one", "num"], ["b", "two", "num"], ["c", "three", "num"], ["d", "four", "num"]],
+      words: [["café", "coffee", "noun"], ["b", "two", "num"], ["c", "three", "num"], ["d", "four", "num"]],
     });
-    let state = createState(pack, testProgress(), testSettings(), "idle", T0);
+    // A top-box item, so the card is `recall` and keystrokes reach `state.input`.
+    // Without this the reducer sits in `teach`, discards the keys, and the frame
+    // under test is plain ASCII — an assertion that cannot fail.
+    const progress: Progress = {
+      ...testProgress(),
+      items: {
+        "xx:1": {
+          id: "xx:1", stage: "review", box: 5, step: 0,
+          due: T0 - 1000, lastSeen: T0, seen: 9, correct: 9, lapses: 0,
+        },
+      },
+    };
+    let state = createState(pack, progress, testSettings({ lang: "xx" }), "idle", T0);
     state = reduce(state, { type: "agent", state: "busy" }, pack).state;
-    // NFD "é" — one visible column made of two code points.
-    for (const ch of ["e", "́", "e", "́"]) {
+    expect(state.card?.kind).toBe("recall");
+
+    // NFD "café" — five code points, four columns.
+    for (const ch of ["c", "a", "f", "e", "\u0301"]) {
       state = reduce(state, { type: "key", key: { ch } }, pack).state;
     }
-    for (const line of renderFrame(state, pack, 40, PLAIN)) {
-      expect(stringWidth(line)).toBe(40);
-    }
+    expect(state.input).toBe("cafe\u0301");
+    expect([...state.input].length).toBe(5);
+    expect(stringWidth(state.input)).toBe(4);
+
+    const frame = renderFrame(state, pack, 40, PLAIN);
+    expect(frame.join("\n")).toContain(state.input);
+    for (const line of frame) expect(stringWidth(line)).toBe(40);
   });
 
   it("agrees with the renderer's own measure for plain ASCII", () => {
     // A guard that the two measures have not silently diverged for the common case.
     expect(visibleWidth("hello")).toBe(stringWidth("hello"));
+  });
+});
+
+describe("the range tables themselves", () => {
+  // The binary search returns wrong answers, silently, if either table is
+  // unsorted or has overlapping entries — which is easy to do when adding a block.
+  it.each(Object.entries(RANGE_TABLES))("%s is sorted and non-overlapping", (_name, ranges) => {
+    for (let i = 0; i < ranges.length; i++) {
+      const [start, end] = ranges[i] as [number, number];
+      expect(start).toBeLessThanOrEqual(end);
+      if (i > 0) {
+        const previousEnd = (ranges[i - 1] as [number, number])[1];
+        expect(start).toBeGreaterThan(previousEnd);
+      }
+    }
+  });
+
+  it("measures the emoji a memory hook or a generated pack might contain", () => {
+    // These arrive in model output, so they reach the panel even though the
+    // shipped es/fr/it packs are pure Latin.
+    for (const emoji of ["🚀", "✅", "⚠", "🎴", "🔥", "📚"]) {
+      expect(stringWidth(emoji), `${emoji} should be two columns`).toBe(2);
+    }
   });
 });

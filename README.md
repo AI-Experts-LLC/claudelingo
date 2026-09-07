@@ -105,9 +105,9 @@ at low effort, with a server-side fallback so a policy refusal is rescued inside
 same call rather than surfacing as a blank.
 
 It needs a credential — `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or an
-`ant auth login` profile. Without one the pane says so once, on startup, instead of
-producing an auth error on every card; everything else still works. Run with
-`--no-enrich` to turn the prompt off entirely.
+`ant auth login` profile (all three are detected). Without one the pane says so once,
+on startup, and does not offer `e` at all, instead of producing an auth error on every
+card; everything else still works. Run with `--no-enrich` to turn it off entirely.
 
 ## Other languages
 
@@ -152,7 +152,10 @@ claudelingo reset --yes          erase progress for the current language
 ```
 
 Options: `--lang <code>`, `--always-on`, `--no-enrich`, `--no-color`,
-`--width <n>`, `--model <id>`.
+`--width <n>` (20–1000; anything else is ignored with a warning), `--model <id>`.
+
+`init` exits non-zero if either integration fails to install, so a pane that will
+never wake up is not reported as a success.
 
 ## Keys
 
@@ -187,14 +190,26 @@ cache/               memory hooks already fetched
 Progress is written after every answer to a temp file that is flushed and renamed, so
 quitting — or a crash, or a power cut — never costs you more than the card on screen.
 
-Two rules protect that file. A deck that cannot be parsed is **moved aside**, never
-overwritten: you get a `progress-es.json.corrupt-<timestamp>` copy and the pane tells
-you where it went. And only one pane at a time may study a given language, because two
-would each hold the whole deck in memory and the second to save would erase the first's
-work — run a second pane on a different `--lang` instead.
+Three rules protect that file.
 
-If the pane cannot write at all (read-only home, full disk) it says so in red and keeps
-running rather than crashing out and leaving your terminal in raw mode.
+**A deck that cannot be parsed is moved aside, never overwritten** — you get a
+`progress-es.json.corrupt-<timestamp>` copy and the pane tells you where it went.
+
+**A deck that cannot be read is left exactly where it is.** A permission error or a
+home directory that has not mounted yet says nothing about the contents, so the pane
+runs read-only and saves nothing rather than replacing a deck that is probably fine.
+Read-only commands like `stats` never move a deck aside at all.
+
+**Only one pane at a time may study a given language**, enforced with an exclusive
+file create — two panes each hold the whole deck in memory, so the second to save
+would erase the first's work. Run a second pane on a different `--lang` instead. A
+lock left behind by a crashed pane is reclaimed automatically; if the lock cannot be
+taken at all, the pane says so rather than quietly dropping the guarantee.
+
+Anything that goes wrong is shown in red and stays on screen until it is actually
+fixed — a failing save, a dead Codex watcher, an unreadable `status.json`, a missing
+credential. They are tracked separately, so one clearing never hides another, and the
+pane keeps running rather than crashing out and leaving your terminal in raw mode.
 
 ## Development
 
@@ -218,6 +233,10 @@ Panel width is measured in terminal **columns**, not code points, so a generated
 pack cannot tear the border. `test/unit/width.test.ts` checks that against an
 independent expected-column table rather than the renderer's own measure — otherwise
 the assertion cannot fail.
+
+That principle is applied throughout: several behaviours here are pinned by tests
+written specifically so that deleting the behaviour makes them fail. If you change
+something load-bearing, break it on purpose first and check the suite notices.
 
 ## Licence
 

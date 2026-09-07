@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { quarantine, readJsonFile, writeJsonAtomic } from "../../src/config.js";
 import * as lock from "../../src/lock.js";
 import { tempHome } from "../helpers.js";
@@ -69,6 +69,36 @@ describe("writing state files", () => {
     }
   });
 
+  it("flushes and renames, rather than writing in place", () => {
+    // Both matter: without the flush a power cut can commit the rename ahead of
+    // the bytes, and without the rename a reader can observe a half-written file.
+    const fsync = vi.spyOn(fs, "fsyncSync");
+    const rename = vi.spyOn(fs, "renameSync");
+    try {
+      const file = path.join(dir(), "x.json");
+      writeJsonAtomic(file, { a: 1 });
+      expect(fsync).toHaveBeenCalled();
+      expect(rename).toHaveBeenCalled();
+      const [from, to] = rename.mock.calls.at(-1) as [string, string];
+      expect(from).toContain(".tmp");
+      expect(to).toBe(file);
+    } finally {
+      fsync.mockRestore();
+      rename.mockRestore();
+    }
+  });
+
+  it("cleans up its temp file when serialising fails part-way", () => {
+    const d = dir();
+    const file = path.join(d, "deck.json");
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    // The temp file is created before the value is serialised, so this exercises
+    // the cleanup path rather than a failure to open.
+    expect(() => writeJsonAtomic(file, circular)).toThrow();
+    expect(fs.readdirSync(d)).toEqual([]);
+  });
+
   it("never leaves a partially written file in place of a good one", () => {
     const file = path.join(dir(), "deck.json");
     writeJsonAtomic(file, { items: { a: 1 } });
@@ -105,9 +135,9 @@ describe("the single-pane lock", () => {
   it("is taken and released", () => {
     const file = path.join(dir(), "es.lock");
     const held = lock.acquire(file);
-    expect(held).not.toBeNull();
+    expect(held.ok).toBe(true);
     expect(lock.holderPid(file)).toBe(process.pid);
-    held!.release();
+    if (held.ok) held.lock.release();
     expect(fs.existsSync(file)).toBe(false);
   });
 
@@ -115,7 +145,21 @@ describe("the single-pane lock", () => {
     const file = path.join(dir(), "es.lock");
     // A pid that is definitely alive and is not us.
     fs.writeFileSync(file, JSON.stringify({ pid: 1, since: Date.now() }));
-    expect(lock.acquire(file)).toBeNull();
+    const result = lock.acquire(file);
+    expect(result).toMatchObject({ ok: false, reason: "held", pid: 1 });
+  });
+
+  it("excludes a genuinely simultaneous second acquirer", () => {
+    // The whole point of the lock. A read-then-write excludes nothing here:
+    // both callers see "no lock" before either writes one.
+    const file = path.join(dir(), "es.lock");
+    const first = lock.acquire(file);
+    const second = lock.acquire(file);
+    expect(first.ok).toBe(true);
+    // Same process, so the second call adopts rather than refusing — the
+    // cross-process case is covered end to end in the resilience suite.
+    expect(second.ok).toBe(true);
+    if (first.ok) first.lock.release();
   });
 
   it("reclaims a lock left behind by a crashed pane", () => {
@@ -123,35 +167,50 @@ describe("the single-pane lock", () => {
     // 2^22 is above the default pid_max, so nothing can be using it.
     fs.writeFileSync(file, JSON.stringify({ pid: 4194304, since: 0 }));
     const held = lock.acquire(file);
-    expect(held).not.toBeNull();
+    expect(held.ok).toBe(true);
     expect(lock.holderPid(file)).toBe(process.pid);
-    held!.release();
+    if (held.ok) held.lock.release();
   });
 
-  it("reclaims a corrupt lock file", () => {
+  it("reclaims a corrupt lock file rather than blocking forever", () => {
     const file = path.join(dir(), "es.lock");
     fs.writeFileSync(file, "not json");
-    expect(lock.acquire(file)).not.toBeNull();
+    const held = lock.acquire(file);
+    expect(held.ok).toBe(true);
+    expect(lock.holderPid(file)).toBe(process.pid);
+    if (held.ok) held.lock.release();
   });
 
   it("does not remove a lock that has since been taken by someone else", () => {
     const file = path.join(dir(), "es.lock");
     const held = lock.acquire(file);
     fs.writeFileSync(file, JSON.stringify({ pid: 1, since: Date.now() }));
-    held!.release();
+    if (held.ok) held.lock.release();
     expect(lock.holderPid(file)).toBe(1);
   });
 
-  it("does not block the pane when the lock itself cannot be written", () => {
+  it("reports rather than silently granting when the lock cannot be created", () => {
+    // Waving this through is how two panes end up overwriting each other while
+    // the user is told nothing at all.
     const d = dir();
     const sub = path.join(d, "ro");
     fs.mkdirSync(sub);
     fs.chmodSync(sub, 0o500);
     try {
-      // An unwritable home is reported by the save path with a far better message.
-      expect(lock.acquire(path.join(sub, "es.lock"))).not.toBeNull();
+      const result = lock.acquire(path.join(sub, "es.lock"));
+      expect(result.ok).toBe(false);
+      expect(result.ok === false && result.reason).toBe("unavailable");
     } finally {
       fs.chmodSync(sub, 0o700);
+    }
+  });
+
+  it("survives a release called twice", () => {
+    const file = path.join(dir(), "es.lock");
+    const held = lock.acquire(file);
+    if (held.ok) {
+      held.lock.release();
+      expect(() => held.lock.release()).not.toThrow();
     }
   });
 });

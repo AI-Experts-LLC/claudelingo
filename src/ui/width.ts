@@ -44,6 +44,7 @@ const ZERO_WIDTH: Array<[number, number]> = [
 /** East Asian Wide and Fullwidth, plus the emoji blocks that render double-width. */
 const WIDE: Array<[number, number]> = [
   [0x1100, 0x115f], // Hangul Jamo
+  [0x2600, 0x27bf], // misc symbols and dingbats, incl. warning and tick marks
   [0x2e80, 0x303e], // CJK radicals, Kangxi, CJK symbols
   [0x3041, 0x33ff], // Hiragana, Katakana, Bopomofo, CJK compatibility
   [0x3400, 0x4dbf], // CJK extension A
@@ -56,11 +57,19 @@ const WIDE: Array<[number, number]> = [
   [0xfe30, 0xfe6f], // CJK compatibility forms
   [0xff00, 0xff60], // fullwidth forms
   [0xffe0, 0xffe6],
-  [0x1f300, 0x1f64f], // emoji
+  [0x1f000, 0x1f0ff], // playing cards, mahjong
+  [0x1f300, 0x1f64f], // emoji: symbols and people
+  [0x1f680, 0x1f6ff], // transport and map symbols
   [0x1f900, 0x1f9ff],
   [0x20000, 0x2fffd], // CJK extension B and beyond
   [0x30000, 0x3fffd],
 ];
+
+/**
+ * The tables above MUST stay sorted and non-overlapping — the binary search below
+ * silently returns wrong answers otherwise. `width.test.ts` asserts this.
+ */
+export const RANGE_TABLES = { ZERO_WIDTH, WIDE } as const;
 
 function inRanges(code: number, ranges: Array<[number, number]>): boolean {
   let low = 0;

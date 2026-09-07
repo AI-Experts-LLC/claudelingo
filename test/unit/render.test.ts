@@ -188,3 +188,39 @@ describe("frames", () => {
     expect(text).not.toMatch(new RegExp(String.fromCharCode(27)));
   });
 });
+
+describe("the title bar", () => {
+  it("marks practice mode in the title, not only in the body message", () => {
+    // The body message is transient; the title is what tells you, at a glance and
+    // for as long as it lasts, that cards are running with no agent working.
+    const state = drive(idle(), [{ type: "key", key: { ch: "p" } }]);
+    const title = frame(state)[0] as string;
+    expect(title).toContain("practice");
+    expect(title).toContain("agent idle");
+  });
+
+  it("shows the agent as working without a practice marker when it really is", () => {
+    const title = frame(busy())[0] as string;
+    expect(title).toContain("agent working");
+    expect(title).not.toContain("practice");
+  });
+});
+
+describe("caught up", () => {
+  it("moves from waiting to caught up on a tick when nothing is due", () => {
+    const full: Progress = { ...testProgress(), items: {} };
+    for (let i = 1; i <= 8; i++) {
+      full.items[`xx:${i}`] = {
+        id: `xx:${i}`, stage: "learning", box: 1, step: 0,
+        due: T0 + 30 * MINUTE, lastSeen: T0, seen: 1, correct: 1, lapses: 0,
+      };
+    }
+    // Practice mode makes the pane active without an agent, so the tick path is
+    // the only thing that can move it off "waiting".
+    const state = createState(pack, full, testSettings({ alwaysOn: true }), "idle", T0);
+    expect(state.mode).toBe("waiting");
+    const ticked = drive(state, [{ type: "tick", now: T0 + MINUTE }]);
+    expect(ticked.mode).toBe("caughtup");
+    expect(frame(ticked).join("\n")).toContain("All caught up");
+  });
+});

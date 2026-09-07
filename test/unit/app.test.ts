@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { type AppState, type Event, createState, isActive, reduce } from "../../src/ui/app.js";
-import { buildCard, makeRng } from "../../src/srs.js";
+import { buildCard, makeRng, selectNext } from "../../src/srs.js";
 import type { Progress } from "../../src/types.js";
 import { MINUTE, T0, testPack, testProgress, testSettings } from "../helpers.js";
 
@@ -326,15 +326,59 @@ describe("resuming after the agent goes quiet", () => {
     },
   });
 
+  /**
+   * Several due cards, so restoring the one on screen is distinguishable from
+   * simply selecting the next due card. With a single due item, `advance()`
+   * re-picks the same word and a broken restore looks identical to a working one.
+   */
+  function manyDue(): Progress {
+    const items: Progress["items"] = {};
+    for (let i = 1; i <= 4; i++) {
+      items[`xx:${i}`] = {
+        id: `xx:${i}`, stage: "review", box: 2, step: 0,
+        // Staggered, so selection order is deterministic and NOT the card we
+        // will be sitting on when the agent goes idle.
+        due: T0 - i * MINUTE, lastSeen: T0, seen: 4, correct: 4, lapses: 0,
+      };
+    }
+    return { ...testProgress(), items };
+  }
+
   it("puts an unanswered question back exactly as it was", () => {
-    const asked = feed(start({ progress: dueItem(1) }), [{ type: "agent", state: "busy" }]).state;
-    expect(asked.mode).toBe("question");
-    const resumed = feed(asked, [
+    let state = feed(start({ progress: manyDue() }), [{ type: "agent", state: "busy" }]).state;
+    expect(state.mode).toBe("question");
+
+    // Move off the first-selected card so a restore and a re-selection differ.
+    state = feed(state, [press("s")]).state;
+    const onScreen = state.card?.word.id;
+    const wouldBeSelectedNext = selectNext(pack, state.progress, state.settings, state.now)?.word.id;
+    expect(onScreen).toBe(wouldBeSelectedNext);
+
+    state = feed(state, [press("s")]).state;
+    const parked = state.card?.word.id;
+    expect(parked).not.toBe(onScreen);
+
+    const resumed = feed(state, [
       { type: "agent", state: "idle" },
       { type: "agent", state: "busy" },
     ]).state;
     expect(resumed.mode).toBe("question");
-    expect(resumed.card?.word.id).toBe(asked.card?.word.id);
+    expect(resumed.card?.word.id).toBe(parked);
+    // And it is the same card object, not a freshly built one for the same word.
+    expect(resumed.card?.choices).toEqual(state.card?.choices);
+  });
+
+  it("keeps the parked card even when another falls due while the agent is away", () => {
+    let state = feed(start({ progress: manyDue() }), [{ type: "agent", state: "busy" }]).state;
+    const parked = state.card?.word.id;
+    state = feed(state, [{ type: "agent", state: "idle" }]).state;
+    expect(state.resumeMode).toBe("question");
+
+    // Time passes and more work becomes due; the parked card still wins.
+    state = feed(state, [{ type: "tick", now: T0 + 30 * MINUTE }]).state;
+    const resumed = feed(state, [{ type: "agent", state: "busy" }]).state;
+    expect(resumed.card?.word.id).toBe(parked);
+    expect(resumed.resumeMode).toBeNull();
   });
 
   it("puts an unacknowledged teach card back", () => {
@@ -363,12 +407,12 @@ describe("resuming after the agent goes quiet", () => {
 
     expect(resumed.mode).not.toBe("feedback");
     expect(resumed.mode).not.toBe("question");
+    // Untouched: same box, same counters. No second grading. Asserted
+    // unconditionally — behind an `if`, a missing item would hide the failure.
     const after = resumed.progress.items["xx:1"];
-    // Untouched: same box, same counters. No second grading.
-    if (after) {
-      expect(after.seen).toBe(before.seen);
-      expect(after.box).toBe(before.box);
-    }
+    expect(after).toBeDefined();
+    expect(after?.seen).toBe(before.seen);
+    expect(after?.box).toBe(before.box);
     expect(resumed.progress.totalAnswered).toBe(graded.progress.totalAnswered);
   });
 
@@ -468,11 +512,31 @@ describe("surfacing failures", () => {
 
   it("carries a problem until it is cleared", () => {
     const busy = feed(start(), [{ type: "agent", state: "busy" }]).state;
-    const broken = feed(busy, [{ type: "problem", message: "progress is not saving: EACCES" }]).state;
-    expect(broken.problem).toContain("EACCES");
+    const broken = feed(busy, [
+      { type: "problem", key: "save", message: "progress is not saving: EACCES" },
+    ]).state;
+    expect(broken.problems.save).toContain("EACCES");
     // and it survives moving to the next card
     const next = feed(broken, [named("space")]).state;
-    expect(next.problem).toContain("EACCES");
-    expect(feed(next, [{ type: "problem", message: null }]).state.problem).toBeNull();
+    expect(next.problems.save).toContain("EACCES");
+    const cleared = feed(next, [{ type: "problem", key: "save", message: null }]).state;
+    expect(cleared.problems.save).toBeUndefined();
+  });
+
+  it("keeps problems from different sources apart", () => {
+    // One slot would let a recovering save erase a still-dead Codex watcher.
+    let state = feed(start(), [{ type: "agent", state: "busy" }]).state;
+    state = feed(state, [
+      { type: "problem", key: "codex", message: "Codex watcher stopped: EACCES" },
+      { type: "problem", key: "save", message: "progress is not saving: ENOSPC" },
+      { type: "problem", key: "credentials", message: "no Anthropic credential found" },
+    ]).state;
+    expect(Object.keys(state.problems).sort()).toEqual(["codex", "credentials", "save"]);
+
+    // The save recovers; the other two are still true and must remain.
+    const after = feed(state, [{ type: "problem", key: "save", message: null }]).state;
+    expect(after.problems.save).toBeUndefined();
+    expect(after.problems.codex).toContain("Codex watcher stopped");
+    expect(after.problems.credentials).toContain("no Anthropic credential");
   });
 });

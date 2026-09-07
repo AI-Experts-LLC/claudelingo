@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { paths, readJson, writeJsonAtomic } from "./config.js";
+import { paths, readJsonFile, writeJsonAtomic } from "./config.js";
 import type { AgentState, AgentStatus } from "./types.js";
 
 /**
@@ -35,15 +35,44 @@ export function stateForEvent(event: string): AgentState | null {
   return null;
 }
 
-export function readStatus(file = paths.status()): AgentStatus | null {
-  const raw = readJson<Partial<AgentStatus>>(file);
-  if (!raw || (raw.state !== "busy" && raw.state !== "idle")) return null;
+export type StatusRead =
+  | { ok: true; status: AgentStatus }
+  /** No status file yet — the hooks have simply not fired. Normal. */
+  | { ok: false; reason: "missing" }
+  /** A file exists but is unusable. NOT normal: the pane is now blind. */
+  | { ok: false; reason: "unreadable"; detail: string };
+
+/**
+ * Read the agent's state, keeping "the hooks have not fired yet" apart from "I
+ * cannot read this file".
+ *
+ * Collapsing the two would make a corrupt status file look exactly like an idle
+ * agent, and the pane would sit on "Standing by" forever while Claude worked.
+ */
+export function readStatusResult(file = paths.status()): StatusRead {
+  const raw = readJsonFile<Partial<AgentStatus>>(file);
+  if (!raw.ok) {
+    if (raw.reason === "missing") return { ok: false, reason: "missing" };
+    return { ok: false, reason: "unreadable", detail: raw.error?.message ?? "unknown error" };
+  }
+  const value = raw.value;
+  if (!value || (value.state !== "busy" && value.state !== "idle")) {
+    return { ok: false, reason: "unreadable", detail: "no recognisable agent state" };
+  }
   return {
-    state: raw.state,
-    source: raw.source === "claude" || raw.source === "codex" ? raw.source : "manual",
-    event: typeof raw.event === "string" ? raw.event : "unknown",
-    ts: typeof raw.ts === "number" ? raw.ts : 0,
+    ok: true,
+    status: {
+      state: value.state,
+      source: value.source === "claude" || value.source === "codex" ? value.source : "manual",
+      event: typeof value.event === "string" ? value.event : "unknown",
+      ts: typeof value.ts === "number" ? value.ts : 0,
+    },
   };
+}
+
+export function readStatus(file = paths.status()): AgentStatus | null {
+  const result = readStatusResult(file);
+  return result.ok ? result.status : null;
 }
 
 export function writeStatus(status: AgentStatus, file = paths.status()): void {
@@ -82,14 +111,37 @@ export interface StatusWatcher {
  */
 export function watchStatus(
   onChange: (status: AgentStatus | null) => void,
-  options: { file?: string; intervalMs?: number; onError?: (message: string) => void } = {},
+  options: {
+    file?: string;
+    intervalMs?: number;
+    /** Called with a message when the status file becomes unreadable, null when it recovers. */
+    onError?: (message: string | null) => void;
+  } = {},
 ): StatusWatcher {
   const file = options.file ?? paths.status();
   const intervalMs = options.intervalMs ?? 250;
   let last = "";
 
+  let reportedUnreadable = false;
+
   const check = () => {
-    const status = readStatus(file);
+    const result = readStatusResult(file);
+
+    // An unreadable status file leaves the pane blind, so it has to be said. A
+    // missing one is just "no hook has fired yet" and is silent.
+    if (!result.ok && result.reason === "unreadable") {
+      if (!reportedUnreadable) {
+        reportedUnreadable = true;
+        options.onError?.(
+          `cannot read ${file} (${result.detail}) — the pane cannot see the agent`,
+        );
+      }
+    } else if (reportedUnreadable) {
+      reportedUnreadable = false;
+      options.onError?.(null);
+    }
+
+    const status = result.ok ? result.status : null;
     const key = status ? `${status.state}:${status.ts}:${status.event}` : "";
     if (key === last) return;
     last = key;

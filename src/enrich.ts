@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import { paths } from "./config.js";
@@ -92,12 +93,22 @@ export async function memoryHook(
     ],
   };
 
-  const timeout = AbortSignal.timeout(options.timeoutMs ?? HOOK_TIMEOUT_MS);
+  const limit = options.timeoutMs ?? HOOK_TIMEOUT_MS;
+  const timeout = AbortSignal.timeout(limit);
   const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-  const response = await client().beta.messages.create(
-    params as Anthropic.Beta.MessageCreateParamsNonStreaming,
-    { signal },
-  );
+
+  let response: Anthropic.Beta.BetaMessage;
+  try {
+    response = await client().beta.messages.create(
+      params as Anthropic.Beta.MessageCreateParamsNonStreaming,
+      { signal },
+    );
+  } catch (error) {
+    // The SDK reports every abort as "Request was aborted", which tells the user
+    // nothing about why the hook never arrived.
+    if (timeout.aborted) throw new EnrichError(`no reply within ${Math.round(limit / 1000)}s`);
+    throw error;
+  }
 
   if (response.stop_reason === "refusal") {
     throw new EnrichError("the model declined this request");
@@ -229,7 +240,16 @@ export async function generatePack(
   };
 }
 
-/** True when a credential is reachable without prompting the user. */
+/**
+ * True when a credential is reachable without prompting the user.
+ *
+ * The SDK also resolves an `ant auth login` profile from disk, so checking only
+ * the environment would tell a profile-authenticated user that hooks are
+ * unavailable and disable them for the whole session.
+ */
 export function hasCredentials(): boolean {
-  return Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
+  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) return true;
+  const configHome =
+    process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+  return fs.existsSync(path.join(configHome, "anthropic"));
 }
