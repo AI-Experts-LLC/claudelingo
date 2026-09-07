@@ -53,8 +53,16 @@ export interface LaunchOptions {
   env?: NodeJS.ProcessEnv;
   /** Whether this process owns a terminal. Injected for tests. */
   isTty?: boolean;
-  /** Injected for tests; every tmux call goes through this. */
+  /** Injected for tests; every short tmux call goes through this. */
   run?: Runner;
+  /**
+   * Attach to a session and resolve when it ends.
+   *
+   * Separate from `run` because it must NOT block: a synchronous attach freezes
+   * the event loop, so a SIGHUP from a closing terminal is queued and never
+   * handled, leaving the session detached and the agent orphaned.
+   */
+  attach?: (session: string) => Promise<number>;
 }
 
 export function planLaunch(
@@ -145,6 +153,14 @@ export interface LaunchResult {
   code: number;
 }
 
+function attachTo(session: string): Promise<number> {
+  return new Promise((resolve) => {
+    const child = spawn("tmux", ["attach", "-t", session], { stdio: "inherit" });
+    child.on("error", () => resolve(1));
+    child.on("close", (status) => resolve(status ?? 0));
+  });
+}
+
 /** Run the agent in this terminal and wait for it. */
 function runAgent(agent: string[], env: NodeJS.ProcessEnv): Promise<number> {
   const [command, ...args] = agent;
@@ -200,6 +216,15 @@ function writeEnvScript(dir: string, env: NodeJS.ProcessEnv): string {
   return file;
 }
 
+/** The agent's recorded exit code as text, or "nan" if it never got that far. */
+function readRc(file: string): string {
+  try {
+    return fs.readFileSync(file, "utf8").trim() || "nan";
+  } catch {
+    return "nan";
+  }
+}
+
 /**
  * The session could not be used.
  *
@@ -233,6 +258,7 @@ async function launchSession(
 ): Promise<number> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claudelingo-launch-"));
   const cleanup = () => fs.rmSync(dir, { recursive: true, force: true });
+  let signalsAttached: Array<[NodeJS.Signals, () => void]> = [];
 
   try {
     const rcFile = path.join(dir, "agent.rc");
@@ -241,8 +267,12 @@ async function launchSession(
     // would make every later launch fall back to the bare agent.
     const session = `claudelingo-${process.pid}-${Date.now().toString(36)}`;
     const agent = options.agent.map(shellQuote).join(" ");
+    // The environment file is removed by the shell that sources it, so the
+    // caller's whole environment — API key included — exists on disk only for the
+    // instant it takes to be read, no matter how this process ends.
     const script =
-      `. ${shellQuote(envFile)}; ${agent}; printf %s $? > ${shellQuote(rcFile)}; ` +
+      `. ${shellQuote(envFile)}; rm -f ${shellQuote(envFile)}; ` +
+      `${agent}; printf %s $? > ${shellQuote(rcFile)}; ` +
       `tmux kill-session -t ${shellQuote(session)}`;
 
     // `sh -c` explicitly: tmux would otherwise hand the string to the user's
@@ -260,34 +290,45 @@ async function launchSession(
       plan.reason = "tmux could not split the window, so the pane was not opened";
     }
 
-    // Attach in the foreground; this returns when the session ends, which the
+    // Closing the terminal window is an ordinary way to end a session, and it
+    // arrives as SIGHUP/SIGTERM — which would otherwise kill this process before
+    // its cleanup, stranding a detached session the user was never told the name
+    // of, and leaving the environment file behind.
+    const teardown = () => {
+      run("tmux", ["kill-session", "-t", session]);
+      cleanup();
+    };
+    const onSignal = (signal: NodeJS.Signals) => () => {
+      teardown();
+      process.exit(signal === "SIGTERM" ? 143 : 129);
+    };
+    const onTerm = onSignal("SIGTERM");
+    const onHup = onSignal("SIGHUP");
+    process.on("SIGTERM", onTerm);
+    process.on("SIGHUP", onHup);
+    signalsAttached = [
+      ["SIGTERM", onTerm],
+      ["SIGHUP", onHup],
+    ];
+
+    // Attach in the foreground; this resolves when the session ends, which the
     // agent's own exit brings about.
-    const attached = run("tmux", ["attach", "-t", session]);
-    if (attached.status !== 0) {
+    const attachStatus = await (options.attach ?? attachTo)(session);
+    if (attachStatus !== 0) {
       // The session exists, so the agent is already running inside it. Take it
       // down rather than orphaning it — but do NOT start it again.
       run("tmux", ["kill-session", "-t", session]);
-      let code = 1;
-      try {
-        code = Number(fs.readFileSync(rcFile, "utf8").trim());
-      } catch {
-        // It never got far enough to record anything.
-      }
-      throw new SessionUnavailable(
-        (attached.stderr || "tmux could not attach to the session").trim(),
-        true,
-        code,
-      );
+      const recorded = Number(readRc(rcFile));
+      const code = Number.isInteger(recorded) ? recorded : 1;
+      throw new SessionUnavailable("tmux could not attach to the session", true, code);
     }
 
-    try {
-      return Number(fs.readFileSync(rcFile, "utf8").trim());
-    } catch {
-      // The session ended without the agent recording anything — killed from
-      // outside, or the server died. Reporting success would be a lie.
-      return 130;
-    }
+    const recorded = Number(readRc(rcFile));
+    // An empty or unwritable rc file is not a success; that is the same
+    // "missing status reads as zero" mistake in miniature.
+    return Number.isInteger(recorded) ? recorded : 130;
   } finally {
+    for (const [signal, handler] of signalsAttached) process.off(signal, handler);
     cleanup();
   }
 }

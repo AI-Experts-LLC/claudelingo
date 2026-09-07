@@ -599,8 +599,11 @@ export function truncateStyled(text: string, columns: number, ellipsis = "\u2026
   const styled = tokens.some((t) => t.ansi);
   if (total <= columns) return text;
 
-  // Room for the marker itself.
-  const budget = columns - charWidth(ellipsis.codePointAt(0) as number);
+  // Room for the whole marker, not just its first code point. A marker that will
+  // not fit at all is dropped rather than pushing the line over the budget.
+  const markerWidth = stringWidth(ellipsis);
+  const marker = markerWidth < columns ? ellipsis : "";
+  const budget = columns - stringWidth(marker);
   let used = 0;
   let out = "";
   for (const token of tokens) {
@@ -612,5 +615,5 @@ export function truncateStyled(text: string, columns: number, ellipsis = "\u2026
     out += token.text;
     used += token.width;
   }
-  return `${out}${ellipsis}${styled ? `${ESC}[0m` : ""}`;
+  return `${out}${marker}${styled ? `${ESC}[0m` : ""}`;
 }

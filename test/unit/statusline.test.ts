@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { WORD_MS, defaultWidth, renderStatusLine, statusLineState } from "../../src/statusline.js";
-import { loadPack } from "../../src/packs/index.js";
+import { loadPack, materialize } from "../../src/packs/index.js";
 import type { ItemProgress, Progress } from "../../src/types.js";
 import { MINUTE, T0, testPack, testProgress } from "../helpers.js";
 
@@ -143,6 +143,31 @@ describe("what the status line shows", () => {
       const line = renderStatusLine(real, testProgress(), shown, { color: false });
       expect(line).not.toContain("\n");
       expect(line.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("a pack containing hostile text", () => {
+  it("stays on one line and injects no escapes", () => {
+    // Claude Code renders this line verbatim; a newline would take over a second
+    // row of its UI and a raw ESC would restyle everything after it.
+    const hostile = materialize({
+      code: "zz", name: "Zed", englishName: "Zed",
+      words: [
+        ["ter\nm", "gl\noss", "noun"],
+        [`${ESC}[31mred`, "colour", "adj"],
+        ["ok", "fine", "noun"],
+        ["two", "second", "num"],
+      ],
+    });
+    for (let slot = 0; slot < 6; slot++) {
+      for (const phase of [1, WORD_MS * 0.75]) {
+        const line = renderStatusLine(hostile, testProgress(), slot * WORD_MS + phase, {
+          color: false,
+        });
+        expect(line).not.toContain("\n");
+        expect(line).not.toContain(ESC);
+      }
     }
   });
 });

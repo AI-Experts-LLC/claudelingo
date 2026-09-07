@@ -188,8 +188,10 @@ to `~/.claudelingo/packs/pt.json`. Packs are plain JSON and hand-editable:
 }
 ```
 
-Entries are `[term, gloss, pos, note?]`, ordered most frequent first. Two rules the
-loader enforces: no duplicate terms, and — because a translate card shows only the
+Entries are `[term, gloss, pos, note?]`, ordered most frequent first. Control
+characters are stripped on load, because a newline in a gloss would turn the status
+line into two lines inside Claude Code's UI and a raw escape would restyle
+everything after it. Two further rules the loader enforces: no duplicate terms, and — because a translate card shows only the
 gloss — no two words may share a gloss. Where two words genuinely collide, put the
 distinction in the gloss itself (`"to be (permanent)"` vs `"to be (state, place)"`).
 

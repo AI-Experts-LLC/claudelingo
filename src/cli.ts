@@ -294,8 +294,12 @@ function cmdUninit(args: Args): void {
   // Attempted independently: a throw from one must not skip the other, or the user
   // is left half-uninstalled with no idea which half.
   try {
-    claudeCode.uninstall(claudeCode.settingsPath(scope as "user" | "project"), BIN);
-    removed.push("Claude Code hooks and status line");
+    const file = claudeCode.settingsPath(scope as "user" | "project");
+    const hadOurs = claudeCode.hasOurStatusLine(file, BIN);
+    claudeCode.uninstall(file, BIN);
+    // Saying we removed a status line that was never ours is how someone
+    // concludes their own configuration has been eaten.
+    removed.push(hadOurs ? "Claude Code hooks and status line" : "Claude Code hooks");
   } catch (error) {
     failed.push(`Claude Code hooks: ${(error as Error).message}`);
   }
@@ -627,9 +631,11 @@ function subcommandIndex(argv: string[], name: string): number {
   const takesValue = new Set(["lang", "width", "source", "model", "count", "code", "home"]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string;
-    if (!arg.startsWith("-")) return arg === name ? i : -1;
+    // `parseArgs` treats anything not starting with `--` as a positional, so this
+    // loop must agree with it or the two disagree about what the command is.
+    if (!arg.startsWith("--")) return arg === name ? i : -1;
     const flag = arg.slice(2);
-    if (arg.startsWith("--") && !flag.includes("=") && takesValue.has(flag)) i++;
+    if (!flag.includes("=") && takesValue.has(flag)) i++;
   }
   return -1;
 }

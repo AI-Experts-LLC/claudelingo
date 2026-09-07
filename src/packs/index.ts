@@ -26,26 +26,46 @@ export function bundledCodes(): string[] {
 
 export class PackError extends Error {}
 
+/**
+ * Strip control characters from pack text.
+ *
+ * Packs are model-generated or hand-placed, so their text is untrusted input. A
+ * newline in a gloss turns the status line into two lines inside Claude Code's UI,
+ * and a raw ESC injects arbitrary escape sequences into it — the truncation logic
+ * treats escapes as free, so they pass straight through. Cleaned here so every
+ * surface benefits rather than each one remembering.
+ */
+function clean(value: string): string {
+  return value
+    .replace(/\p{Cc}/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function materialize(raw: RawPack): Pack {
   if (!raw || typeof raw.code !== "string" || !Array.isArray(raw.words)) {
     throw new PackError("pack is missing `code` or `words`");
   }
   const seen = new Set<string>();
   const words: Word[] = raw.words.map((entry, index) => {
-    const [term, gloss, pos, note] = entry;
+    const [rawTerm, rawGloss, rawPos, rawNote] = entry;
+    const term = clean(rawTerm ?? "");
+    const gloss = clean(rawGloss ?? "");
+    const pos = clean(rawPos ?? "");
     if (!term || !gloss || !pos) {
       throw new PackError(`pack ${raw.code}: entry ${index + 1} needs [term, gloss, pos]`);
     }
     if (seen.has(term)) throw new PackError(`pack ${raw.code}: duplicate term "${term}"`);
     seen.add(term);
     const word: Word = { id: `${raw.code}:${index + 1}`, rank: index + 1, term, gloss, pos };
+    const note = clean(rawNote ?? "");
     if (note) word.note = note;
     return word;
   });
   return {
-    code: raw.code,
-    name: raw.name || raw.code,
-    englishName: raw.englishName || raw.name || raw.code,
+    code: clean(raw.code),
+    name: clean(raw.name || raw.code),
+    englishName: clean(raw.englishName || raw.name || raw.code),
     words,
   };
 }

@@ -194,6 +194,16 @@ export function install(
   return result;
 }
 
+/** True when the configured status line is the one we installed. */
+export function hasOurStatusLine(file: string, bin: string): boolean {
+  if (!fs.existsSync(file)) return false;
+  try {
+    return Boolean(readSettings(file).statusLine?.command?.includes(`${bin} statusline`));
+  } catch {
+    return false;
+  }
+}
+
 export function uninstall(file: string, bin: string): void {
   if (!fs.existsSync(file)) return;
   writeSettings(file, removeStatusLine(removeHooks(readSettings(file)), bin));

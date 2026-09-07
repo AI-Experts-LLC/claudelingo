@@ -273,3 +273,15 @@ describe("truncating styled text", () => {
     expect(truncateStyled("anything", -5)).toBe("");
   });
 });
+
+describe("the truncation marker itself", () => {
+  it("budgets for the whole marker, not just its first code point", () => {
+    // A multi-character or wide marker would otherwise push the line over.
+    for (const marker of ["...", "…", "»»", "："]) {
+      for (let width = 2; width <= 12; width++) {
+        const out = truncateStyled("abcdefghijklmnop", width, marker);
+        expect(stringWidth(out), `${JSON.stringify(marker)} at ${width}`).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+});
