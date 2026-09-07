@@ -269,8 +269,71 @@ describe("claudelingo claude", () => {
   }, 30_000);
 
   it("fails cleanly when the language does not exist", async () => {
-    const result = await cli(["claude", "--lang", "qq"], fresh());
+    // Our own flags go BEFORE the `claude` token; everything after it is the
+    // agent's, which is what makes `claudelingo claude --help` work.
+    const result = await cli(["--lang", "qq", "claude"], fresh());
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('no pack for "qq"');
+  });
+
+  it("passes everything after `claude` straight through, including --help", async () => {
+    const e = fresh();
+    const bin = path.join(e.home, "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    const log = path.join(e.home, "agent.log");
+    fs.writeFileSync(
+      path.join(bin, "claude"),
+      `#!/bin/sh\necho "GOT: $*" >> ${log}\n`,
+    );
+    fs.chmodSync(path.join(bin, "claude"), 0o755);
+
+    // `--help` must reach the agent rather than printing claudelingo's usage.
+    for (const args of [["claude", "--help"], ["claude", "--model", "opus", "--print", "hi"]]) {
+      await cli(args, e, { PATH: `${bin}:${process.env.PATH}` });
+    }
+    const recorded = fs.readFileSync(log, "utf8");
+    expect(recorded).toContain("GOT: --help");
+    expect(recorded).toContain("GOT: --model opus --print hi");
+  });
+});
+
+describe("the status line under awkward conditions", () => {
+  it("exits even when the caller never closes stdin", async () => {
+    // Claude Code closes stdin in practice, but with a 3-second refresh any
+    // deviation would leak a node process on every tick.
+    const e = fresh();
+    const code = await new Promise<number | null>((resolve) => {
+      const child = spawn(process.execPath, [CLI, "statusline", "--no-color"], {
+        env: { ...process.env, CLAUDELINGO_HOME: e.home },
+      });
+      child.stdout.on("data", () => {});
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        resolve(-1);
+      }, 6000);
+      child.on("close", (status) => {
+        clearTimeout(timer);
+        resolve(status);
+      });
+      // Payload sent, pipe deliberately left open.
+      child.stdin.write(SESSION_JSON);
+    });
+    expect(code).toBe(0);
+  }, 15_000);
+
+  it("sizes itself to COLUMNS, which Claude Code exports to the script", async () => {
+    const e = fresh();
+    seed(e);
+    const line = await new Promise<string>((resolve) => {
+      const child = spawn(process.execPath, [CLI, "statusline", "--no-color"], {
+        env: { ...process.env, CLAUDELINGO_HOME: e.home, COLUMNS: "28" },
+      });
+      let out = "";
+      child.stdout.on("data", (d) => (out += d.toString()));
+      child.on("close", () => resolve(out.trimEnd()));
+      child.stdin.write(SESSION_JSON);
+      child.stdin.end();
+    });
+    expect([...line].length).toBeLessThanOrEqual(28);
   });
 });

@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { WORD_MS, renderStatusLine, statusLineState } from "../../src/statusline.js";
+import { WORD_MS, defaultWidth, renderStatusLine, statusLineState } from "../../src/statusline.js";
 import { loadPack } from "../../src/packs/index.js";
 import type { ItemProgress, Progress } from "../../src/types.js";
 import { MINUTE, T0, testPack, testProgress } from "../helpers.js";
 
 const pack = testPack();
+const ESC = String.fromCharCode(27);
+const ANSI = new RegExp(`${ESC}\\[[0-9;]*m`, "g");
+const visible = (line: string) => [...line.replace(ANSI, "")];
 
 function withItems(entries: Array<Partial<ItemProgress> & { id: string }>): Progress {
   const items: Progress["items"] = {};
@@ -91,6 +94,34 @@ describe("what the status line shows", () => {
     for (const width of [20, 30, 48, 80]) {
       const line = renderStatusLine(pack, progress, shown, { color: false, width });
       expect([...line].length).toBeLessThanOrEqual(width);
+    }
+  });
+
+  it("counts columns, not escape bytes, when colour is on", () => {
+    // Colour is the default and what Claude Code actually gets. Slicing by
+    // characters would cut through the escapes and leave the terminal styled.
+    const progress = withItems([{ id: "xx:1" }]);
+    for (let width = 12; width <= 70; width++) {
+      const line = renderStatusLine(pack, progress, shown, { color: true, width });
+      expect(visible(line).length, `width ${width}`).toBeLessThanOrEqual(width);
+      // No half-written escape, and styling always closed.
+      expect(line, `width ${width}`).not.toMatch(new RegExp(`${ESC}\\[[0-9;]*$`));
+      if (line.includes(ESC)) expect(line.endsWith(`${ESC}[0m`), `width ${width}`).toBe(true);
+    }
+  });
+
+  it("takes its width from COLUMNS, which Claude Code exports", () => {
+    expect(defaultWidth({ COLUMNS: "80" })).toBe(80);
+    expect(defaultWidth({ COLUMNS: "not a number" })).toBeUndefined();
+    expect(defaultWidth({})).toBeUndefined();
+    expect(defaultWidth({ COLUMNS: "4" })).toBeUndefined();
+  });
+
+  it("does not throw for a nonsense clock", () => {
+    // Public exports, so `now` is not guaranteed to be Date.now().
+    const progress = withItems([{ id: "xx:1" }]);
+    for (const now of [0, -1, -WORD_MS, Number.NaN, Number.POSITIVE_INFINITY, -Infinity, 1.5]) {
+      expect(() => renderStatusLine(pack, progress, now, { color: false })).not.toThrow();
     }
   });
 

@@ -1,41 +1,40 @@
 import { type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 /**
  * Launch Claude Code with the quiz pane beside it.
  *
  * Claude Code draws its own terminal UI and does not host third-party widgets, so
  * an interactive pane has to be a separate process in a separate pane. What this
- * removes is the chore of arranging that by hand: one command, both panes.
+ * removes is the chore of arranging that by hand.
+ *
+ * Two rules shape everything below. The agent is started **exactly once** — no
+ * retry path may contain it, or a failure produces two Claude Code instances in
+ * the same working directory. And the agent's fate is the session's: it owns the
+ * terminal, its exit code is the command's exit code, and its interrupts are its
+ * own.
  */
 
 export interface LaunchPlan {
-  /** How the pane will be opened, or why it will not be. */
   kind: "tmux-split" | "tmux-session" | "none";
   reason?: string;
 }
 
-function hasTmux(): boolean {
-  const probe = spawnSync("tmux", ["-V"], { stdio: "ignore" });
-  return probe.status === 0;
-}
+type Runner = (command: string, args: string[]) => SpawnSyncReturns<string>;
 
-export function planLaunch(env: NodeJS.ProcessEnv = process.env): LaunchPlan {
-  if (!hasTmux()) {
-    return {
-      kind: "none",
-      reason: "tmux is not installed, so the pane cannot be opened automatically",
-    };
-  }
-  // Already inside tmux: split the window we are in, which keeps the user's
-  // existing session and layout.
-  if (env.TMUX) return { kind: "tmux-split" };
-  return { kind: "tmux-session" };
-}
-
-/** Quote one argument for a tmux shell command string. */
-export function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
+/**
+ * Every tmux call goes through this, including the foreground `attach`, so a test
+ * can drive the whole flow without a tmux server — the branch that could not be
+ * injected is the branch whose defects shipped green.
+ */
+const defaultRun: Runner = (command, args) =>
+  spawnSync(command, args, {
+    encoding: "utf8",
+    // `attach` owns the terminal; the others are quiet queries.
+    stdio: args[0] === "attach" ? "inherit" : ["ignore", "pipe", "pipe"],
+  }) as SpawnSyncReturns<string>;
 
 export interface LaunchOptions {
   /** Argv for the agent command, e.g. ["claude", "--model", "opus"]. */
@@ -50,50 +49,79 @@ export interface LaunchOptions {
    * CLAUDELINGO_HOME above all — has to be passed across explicitly.
    */
   passEnv?: Record<string, string>;
-  /** Fraction of the window the pane takes. */
   paneWidthPercent?: number;
   env?: NodeJS.ProcessEnv;
-  /** Injected for tests. */
-  run?: (command: string, args: string[]) => SpawnSyncReturns<Buffer>;
+  /** Injected for tests; every tmux call goes through this. */
+  run?: Runner;
+}
+
+export function planLaunch(env: NodeJS.ProcessEnv = process.env, run: Runner = defaultRun): LaunchPlan {
+  if (run("tmux", ["-V"]).status !== 0) {
+    return {
+      kind: "none",
+      reason: "tmux is not installed, so the pane cannot be opened automatically",
+    };
+  }
+  // Already inside tmux: split the window we are in, keeping the user's layout.
+  if (env.TMUX) return { kind: "tmux-split" };
+  return { kind: "tmux-session" };
+}
+
+/** Quote one argument for a tmux shell command string. */
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+interface SplitOptions {
+  target?: string;
+  legacy?: boolean;
 }
 
 /**
- * Build the tmux command that opens the pane beside the current one.
+ * The tmux command that opens the pane.
  *
- * tmux 3.1 replaced `-p <percent>` with `-l <percent>%`, and 3.4 removed the old
- * form outright — it fails with "size missing". The modern form is tried first and
- * the legacy one is the fallback, so both eras of tmux work.
+ * It starts the pane and nothing else, which is what makes it safe to retry:
+ * tmux 3.1 replaced `-p <percent>` with `-l <percent>%` and 3.4 removed the old
+ * form ("size missing"), and `-e` needs 3.0, so several forms may be attempted.
  */
-export function splitCommand(options: LaunchOptions, legacy = false): string[] {
+export function splitCommand(options: LaunchOptions, split: SplitOptions = {}): string[] {
   const percent = options.paneWidthPercent ?? 40;
-  const size = legacy ? ["-p", String(percent)] : ["-l", `${percent}%`];
+  const size = split.legacy ? ["-p", String(percent)] : ["-l", `${percent}%`];
   const env = Object.entries(options.passEnv ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
   return [
     "split-window",
     "-h",
     ...size,
     ...env,
-    "-d", // stay focused on the agent; the pane is for glancing at
+    ...(split.target ? ["-t", split.target] : []),
+    "-d", // focus stays on the agent; the pane is for glancing at
+    "-P",
+    "-F",
+    "#{pane_id}",
     options.pane.map(shellQuote).join(" "),
   ];
 }
 
-/** Build the tmux command that creates a fresh session holding both. */
-export function sessionCommand(options: LaunchOptions, legacy = false): string[] {
-  const percent = options.paneWidthPercent ?? 40;
-  const size = legacy ? `-p ${percent}` : `-l ${percent}%`;
-  const agent = options.agent.map(shellQuote).join(" ");
-  const pane = options.pane.map(shellQuote).join(" ");
-  const env = Object.entries(options.passEnv ?? {})
-    .map(([k, v]) => `-e ${shellQuote(`${k}=${v}`)}`)
-    .join(" ");
-  // The pane is split off from inside the new session, once it exists.
-  return [
-    "new-session",
-    "-s",
-    `claudelingo-${process.pid}`,
-    `tmux split-window -h ${size} ${env} -d ${shellQuote(pane)} ; ${agent}`,
+/** Try the pane command in each supported tmux dialect. Returns its pane id. */
+function openPane(options: LaunchOptions, run: Runner, target?: string): string | null {
+  const attempts: SplitOptions[] = [
+    { ...(target ? { target } : {}) },
+    { ...(target ? { target } : {}), legacy: true },
   ];
+  for (const attempt of attempts) {
+    const result = run("tmux", splitCommand(options, attempt));
+    if (result.status === 0) return (result.stdout ?? "").trim() || "";
+  }
+  // `-e` needs tmux 3.0; drop it and try once more before giving up on the pane.
+  if (options.passEnv) {
+    const bare: LaunchOptions = { ...options };
+    delete bare.passEnv;
+    for (const attempt of attempts) {
+      const result = run("tmux", splitCommand(bare, attempt));
+      if (result.status === 0) return (result.stdout ?? "").trim() || "";
+    }
+  }
+  return null;
 }
 
 export interface LaunchResult {
@@ -102,52 +130,109 @@ export interface LaunchResult {
   code: number;
 }
 
-/**
- * Open the pane, then run the agent in the foreground.
- *
- * The agent keeps this terminal: it is the thing being typed into, and its exit
- * is what ends the session.
- */
-export async function launch(options: LaunchOptions): Promise<LaunchResult> {
-  const env = options.env ?? process.env;
-  const run = options.run ?? ((command, args) => spawnSync(command, args, { stdio: "ignore" }));
-  const plan = planLaunch(env);
+/** Run the agent in this terminal and wait for it. */
+function runAgent(agent: string[], env: NodeJS.ProcessEnv): Promise<number> {
+  const [command, ...args] = agent;
+  if (!command) return Promise.resolve(0);
 
-  if (plan.kind === "tmux-session") {
-    // Not inside tmux: hand the whole thing to a new tmux session, which then
-    // owns both panes. This call blocks until the session ends.
-    const result = spawnSync("tmux", sessionCommand(options), { stdio: "inherit" });
-    if (result.status !== 0) {
-      const legacy = spawnSync("tmux", sessionCommand(options, true), { stdio: "inherit" });
-      return { plan, code: legacy.status ?? 0 };
-    }
-    return { plan, code: result.status ?? 0 };
+  return new Promise<number>((resolve) => {
+    const child = spawn(command, args, { stdio: "inherit", env: { ...env } });
+
+    // Ctrl-C belongs to the agent: in Claude Code it interrupts the turn rather
+    // than quitting. The terminal delivers SIGINT to the whole foreground group,
+    // so without a listener this wrapper dies and orphans the agent — the shell
+    // prompt returns while Claude Code still owns the tty.
+    const hold = () => {};
+    process.on("SIGINT", hold);
+    const forward = (signal: NodeJS.Signals) => () => {
+      if (!child.killed) child.kill(signal);
+    };
+    const onTerm = forward("SIGTERM");
+    const onHup = forward("SIGHUP");
+    process.on("SIGTERM", onTerm);
+    process.on("SIGHUP", onHup);
+
+    const finish = (code: number) => {
+      process.off("SIGINT", hold);
+      process.off("SIGTERM", onTerm);
+      process.off("SIGHUP", onHup);
+      resolve(code);
+    };
+    child.on("error", () => finish(127));
+    child.on("close", (status, signal) => finish(status ?? (signal ? 130 : 0)));
+  });
+}
+
+/**
+ * Outside tmux: build the session around the agent.
+ *
+ * The agent goes in first, detached, so the pane can be split off beside it and
+ * retried freely without ever re-running the agent. Its exit code is written to a
+ * file and the session is killed the moment it finishes, so the pane cannot keep
+ * the terminal hostage after Claude Code is done.
+ */
+async function launchSession(options: LaunchOptions, run: Runner): Promise<number> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claudelingo-launch-"));
+  const rcFile = path.join(dir, "agent.rc");
+  const session = `claudelingo-${process.pid}`;
+  const agent = options.agent.map(shellQuote).join(" ");
+  const wrapped = `${agent}; printf %s $? > ${shellQuote(rcFile)}; tmux kill-session -t ${shellQuote(session)}`;
+
+  const env = Object.entries(options.passEnv ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
+  let created = run("tmux", ["new-session", "-d", "-s", session, ...env, wrapped]);
+  if (created.status !== 0 && env.length) {
+    created = run("tmux", ["new-session", "-d", "-s", session, wrapped]);
+  }
+  if (created.status !== 0) {
+    // The session never came up, so the agent has NOT started. Say so rather than
+    // leaving the user with tmux's raw error and no agent.
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw new Error((created.stderr || "tmux could not create a session").trim());
   }
 
-  if (plan.kind === "tmux-split") {
-    let result = run("tmux", splitCommand(options));
-    // `-l <percent>%` needs tmux 3.1+, and `-e` needs 3.0+; retry the old sizing,
-    // then without the env pass-through, before giving up on the pane.
-    if (result.status !== 0) result = run("tmux", splitCommand(options, true));
-    if (result.status !== 0) {
-      const bare = { ...options };
-      delete bare.passEnv;
-      result = run("tmux", splitCommand(bare));
-      if (result.status !== 0) result = run("tmux", splitCommand(bare, true));
+  openPane(options, run, session);
+
+  // Attach in the foreground; this returns when the session ends, which the
+  // agent's own exit brings about.
+  run("tmux", ["attach", "-t", session]);
+
+  let code = 0;
+  try {
+    code = Number(fs.readFileSync(rcFile, "utf8").trim()) || 0;
+  } catch {
+    // The session was killed some other way; nothing better to report.
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+  return code;
+}
+
+export async function launch(options: LaunchOptions): Promise<LaunchResult> {
+  const env = options.env ?? process.env;
+  const run = options.run ?? defaultRun;
+  const plan = planLaunch(env, run);
+
+  if (plan.kind === "tmux-session") {
+    try {
+      return { plan, code: await launchSession(options, run) };
+    } catch (error) {
+      // Fall through to running the agent bare: losing the pane must never cost
+      // the user their agent.
+      plan.reason = `${(error as Error).message}; the pane was not opened`;
+      return { plan, code: await runAgent(options.agent, env) };
     }
-    if (result.status !== 0) {
-      // A failure here must not stop the agent starting; the pane is the extra.
+  }
+
+  let pane: string | null = null;
+  if (plan.kind === "tmux-split") {
+    pane = openPane(options, run);
+    if (pane === null) {
       plan.reason = "tmux could not split the window, so the pane was not opened";
     }
   }
 
-  const [command, ...args] = options.agent;
-  if (!command) return { plan, code: 0 };
+  const code = await runAgent(options.agent, env);
 
-  const code = await new Promise<number>((resolve) => {
-    const child = spawn(command, args, { stdio: "inherit", env: { ...env } });
-    child.on("error", () => resolve(127));
-    child.on("close", (status) => resolve(status ?? 0));
-  });
+  // Take the pane away with the agent; three runs should not leave three panes.
+  if (pane) run("tmux", ["kill-pane", "-t", pane]);
   return { plan, code };
 }

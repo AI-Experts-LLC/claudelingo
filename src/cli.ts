@@ -20,7 +20,7 @@ import * as claudeCode from "./integrations/claudeCode.js";
 import * as codex from "./integrations/codex.js";
 import { DEFAULT_MODEL, generatePack, hasCredentials, memoryHook } from "./enrich.js";
 import { run } from "./ui/tui.js";
-import { renderStatusLine } from "./statusline.js";
+import { defaultWidth, renderStatusLine } from "./statusline.js";
 import { launch } from "./launcher.js";
 import type { ProblemKey } from "./ui/app.js";
 import type { Pack, Progress, Settings, Word } from "./types.js";
@@ -330,7 +330,7 @@ async function cmdStatusline(args: Args): Promise<void> {
     const { settings } = settingsFrom(args.flags);
     const pack = loadPack(settings.lang);
     const { progress } = loadProgress(settings.lang, false);
-    const width = resolveWidth(args.flags.width);
+    const width = resolveWidth(args.flags.width) ?? defaultWidth();
     process.stdout.write(
       `${renderStatusLine(pack, progress, Date.now(), {
         color: args.flags.color !== false,
@@ -347,13 +347,24 @@ function readStdin(): Promise<string> {
   return new Promise((resolve) => {
     if (process.stdin.isTTY) return resolve("");
     let data = "";
-    const done = () => resolve(data);
+    let settled = false;
+    const timer = setTimeout(() => done(), 250);
+
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // Resolving is not enough: a stdin still being read keeps the event loop
+      // alive, so a writer that sends the payload and holds the pipe open would
+      // leave a process behind on every refresh tick.
+      process.stdin.destroy();
+      resolve(data);
+    };
+
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => (data += chunk));
     process.stdin.on("end", done);
     process.stdin.on("error", done);
-    // Never hang the status line on a stdin that stays open.
-    const timer = setTimeout(done, 250);
     if (typeof timer.unref === "function") timer.unref();
   });
 }
@@ -606,17 +617,14 @@ async function cmdRun(args: Args): Promise<void> {
   }
 }
 
-/**
- * Everything after the bare `claude` token belongs to Claude Code, not to us —
- * otherwise `claudelingo claude --model opus` would try to parse `--model`.
- */
-function agentArgs(argv: string[]): string[] {
-  const index = argv.indexOf("claude");
-  return index === -1 ? [] : argv.slice(index + 1);
-}
-
 export async function main(argv = process.argv.slice(2)): Promise<void> {
-  const args = parseArgs(argv);
+  // Split before parsing: everything after a bare `claude` belongs to Claude Code.
+  // Parsing first would let `claudelingo claude --help` print OUR usage and never
+  // start the agent, and would swallow `--model` on the way past.
+  const split = argv.indexOf("claude");
+  const own = split === -1 ? argv : argv.slice(0, split + 1);
+  const forwarded = split === -1 ? [] : argv.slice(split + 1);
+  const args = parseArgs(own);
   if (args.flags.help || args.command === "help") {
     process.stdout.write(USAGE);
     return;
@@ -628,7 +636,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     case "uninit": return cmdUninit(args);
     case "status": return cmdStatus();
     case "statusline": return cmdStatusline(args);
-    case "claude": return cmdLaunch(args, agentArgs(argv));
+    case "claude": return cmdLaunch(args, forwarded);
     case "stats": return cmdStats(args);
     case "langs": return cmdLangs();
     case "pack": return cmdPack(args);

@@ -1,6 +1,7 @@
-import { MAX_BOX, cardKindForBox } from "./srs.js";
+import { MAX_BOX } from "./srs.js";
 import type { Pack, Progress, Word } from "./types.js";
 import { ansi } from "./ui/ansi.js";
+import { truncateStyled } from "./ui/width.js";
 
 /**
  * The status line Claude Code draws under your prompt.
@@ -75,23 +76,41 @@ export interface StatusLineState {
 /** The state behind the line, separated so it can be asserted without parsing text. */
 export function statusLineState(pack: Pack, progress: Progress, now: number): StatusLineState {
   const pool = candidates(pack, progress, now);
-  const slot = Math.floor(now / WORD_MS);
-  const word = pool.length ? (pool[slot % pool.length] as Candidate).word : null;
+  // `now` is wall-clock in practice, but this is a public export: a negative or
+  // non-finite value must not index off the end of the pool.
+  const slot = Number.isFinite(now) ? Math.abs(Math.floor(now / WORD_MS)) : 0;
+  const chosen = pool.length ? pool[slot % pool.length] : undefined;
+  const word = chosen ? chosen.word : null;
   return {
     word,
-    revealed: (now % WORD_MS) / WORD_MS >= HIDDEN_FRACTION,
+    revealed: Number.isFinite(now) && (Math.abs(now) % WORD_MS) / WORD_MS >= HIDDEN_FRACTION,
     learned: Object.keys(progress.items).length,
     total: pack.words.length,
     streak: progress.streak,
   };
 }
 
+/**
+ * Trim to the terminal width, counting columns and leaving styling closed.
+ *
+ * Slicing by characters would cut through the colour escapes this very function's
+ * callers just added, dropping the closing reset and leaving the terminal dim.
+ */
 function trim(text: string, width: number | undefined): string {
   if (!width || width <= 4) return text;
-  // Measured in code points; the line carries no wide glyphs of its own, and a
-  // pack that does is trimmed conservatively rather than overflowing.
-  const chars = [...text];
-  return chars.length <= width ? text : `${chars.slice(0, width - 1).join("")}…`;
+  return truncateStyled(text, width);
+}
+
+/**
+ * Columns available for the line.
+ *
+ * Claude Code exports COLUMNS before running a status-line command, so the width
+ * is there for the taking; the installed command is a bare `claudelingo
+ * statusline` with no `--width`.
+ */
+export function defaultWidth(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const columns = Number(env.COLUMNS);
+  return Number.isFinite(columns) && columns > 10 ? Math.floor(columns) : undefined;
 }
 
 export function renderStatusLine(
@@ -119,10 +138,4 @@ export function renderStatusLine(
   const answer = state.revealed ? bold(state.word.gloss) : dim("?");
 
   return trim(`${term} ${dim("=")} ${answer}  ${stats}${streak}${level}`, options.width);
-}
-
-/** Card kind the pane would use next for this word, for the caller's convenience. */
-export function nextKindFor(progress: Progress, word: Word): string {
-  const item = progress.items[word.id];
-  return item ? cardKindForBox(item.box) : "teach";
 }
