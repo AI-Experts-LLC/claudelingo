@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RANGE_TABLES, charWidth, sliceToWidth, stringWidth } from "../../src/ui/width.js";
-import { PLAIN, box, renderFrame, visibleWidth } from "../../src/ui/render.js";
+import { COLOR, PLAIN, box, renderFrame, visibleWidth } from "../../src/ui/render.js";
 import { materialize } from "../../src/packs/index.js";
 import { createState, reduce } from "../../src/ui/app.js";
 import type { Progress } from "../../src/types.js";
@@ -121,9 +121,15 @@ describe("the renderer respects columns, not code points", () => {
     for (const line of frame) expect(stringWidth(line)).toBe(40);
   });
 
-  it("agrees with the renderer's own measure for plain ASCII", () => {
-    // A guard that the two measures have not silently diverged for the common case.
-    expect(visibleWidth("hello")).toBe(stringWidth("hello"));
+  it("strips colour codes before measuring, unlike the raw column measure", () => {
+    // `visibleWidth` is defined in terms of `stringWidth`, so comparing the two on
+    // plain text proves nothing — they are the same call. What is worth pinning is
+    // the difference: the ANSI strip that only `visibleWidth` performs.
+    const coloured = `${COLOR.bold}hi${COLOR.reset}`;
+    expect(visibleWidth(coloured)).toBe(2);
+    expect(stringWidth(coloured)).toBeGreaterThan(2);
+    // and it still counts columns, not code points, once stripped
+    expect(visibleWidth(`${COLOR.cyan}日本${COLOR.reset}`)).toBe(4);
   });
 });
 
@@ -141,10 +147,20 @@ describe("the range tables themselves", () => {
     }
   });
 
+  it("measures a narrow dingbat as one column", () => {
+    // The Misc Symbols block is narrow as a whole; only some code points in it are
+    // wide, so it must not be included wholesale.
+    expect(stringWidth("✓")).toBe(1);
+    expect(stringWidth("✗")).toBe(1);
+    expect(stringWidth("·")).toBe(1);
+  });
+
   it("measures the emoji a memory hook or a generated pack might contain", () => {
     // These arrive in model output, so they reach the panel even though the
     // shipped es/fr/it packs are pure Latin.
-    for (const emoji of ["🚀", "✅", "⚠", "🎴", "🔥", "📚"]) {
+    // Unambiguously double-width code points. Emoji presentation sequences such
+    // as U+26A0 U+FE0F are deliberately excluded: terminals disagree about them.
+    for (const emoji of ["🚀", "✅", "🎴", "🔥", "📚", "🩰"]) {
       expect(stringWidth(emoji), `${emoji} should be two columns`).toBe(2);
     }
   });

@@ -31,7 +31,8 @@ claudelingo init
 ```
 
 `init` writes hooks into `~/.claude/settings.json` and a `notify` entry into
-`~/.codex/config.toml`. It merges into whatever is already there, backs the Codex
+`~/.codex/config.toml`. Both `init` and `uninit` attempt each side independently and
+tell you exactly which succeeded. It merges into whatever is already there, backs the Codex
 config up first, and is safe to run twice; `claudelingo uninit` takes it all back
 out and leaves everyone else's entries alone.
 
@@ -67,7 +68,9 @@ Codex has no "turn started" hook, so claudelingo tails the newest rollout transc
 under `~/.codex/sessions` for that edge. Transcripts that already exist when the pane
 opens are skipped to their end, so yesterday's session can never set it off; a
 transcript that *appears* afterwards is a live session and is read from its first
-line, because Codex writes the session header and your first message together.
+line, because Codex writes the session header and your first message together. Each
+transcript keeps its own read position, so two sessions alternating never replay
+turns you have already seen.
 
 If a session is killed mid-turn its `Stop` hook never fires. A `busy` older than
 fifteen minutes is treated as idle, so the pane can't get stuck quizzing forever.
@@ -195,21 +198,30 @@ Three rules protect that file.
 **A deck that cannot be parsed is moved aside, never overwritten** — you get a
 `progress-es.json.corrupt-<timestamp>` copy and the pane tells you where it went.
 
-**A deck that cannot be read is left exactly where it is.** A permission error or a
-home directory that has not mounted yet says nothing about the contents, so the pane
-runs read-only and saves nothing rather than replacing a deck that is probably fine.
-Read-only commands like `stats` never move a deck aside at all.
+**A deck that cannot be read is left exactly where it is.** The distinction is not
+which error came back but whether the *read* failed or the *content* did — a
+permission error, a full file-descriptor table, or a stale handle on a networked home
+says nothing about what is in the file. In that case the pane runs read-only and saves
+nothing rather than replacing a deck that is almost certainly fine; fix the problem and
+restart to resume saving. Read-only commands like `stats` never move a deck aside at all.
 
-**Only one pane at a time may study a given language**, enforced with an exclusive
-file create — two panes each hold the whole deck in memory, so the second to save
-would erase the first's work. Run a second pane on a different `--lang` instead. A
-lock left behind by a crashed pane is reclaimed automatically; if the lock cannot be
-taken at all, the pane says so rather than quietly dropping the guarantee.
+**Only one pane at a time may study a given language.** Two panes each hold the whole
+deck in memory, so the second to save would erase the first's work. The lock is written
+with its owner's pid already inside it and then linked into place, so it can never
+exist naming nobody — a lock that does is refused rather than reclaimed, because
+guessing wrong there deletes a live pane's lock. Run a second pane on a different
+`--lang` instead. A lock left behind by a crashed pane is reclaimed automatically, and
+the refusal message names the lock file in case a recycled pid ever makes it look
+occupied. If the lock cannot be taken at all, the pane says so rather than quietly
+dropping the guarantee.
 
 Anything that goes wrong is shown in red and stays on screen until it is actually
-fixed — a failing save, a dead Codex watcher, an unreadable `status.json`, a missing
-credential. They are tracked separately, so one clearing never hides another, and the
-pane keeps running rather than crashing out and leaving your terminal in raw mode.
+fixed — a failing save, a Codex watcher that has gone blind, an unreadable
+`status.json`, a missing credential, a lock that could not be taken. Each is tracked
+separately, so one clearing never hides another, and each clears itself when its own
+condition resolves. The pane keeps running rather than crashing out and leaving your
+terminal in raw mode. If stdout is not a terminal there is no panel to draw on, so
+startup problems go to stderr instead of vanishing.
 
 ## Development
 

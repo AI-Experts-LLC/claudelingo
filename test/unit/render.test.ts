@@ -224,3 +224,50 @@ describe("caught up", () => {
     expect(frame(ticked).join("\n")).toContain("All caught up");
   });
 });
+
+describe("problems on screen", () => {
+  it("renders every live problem, not just the first", () => {
+    // The keyed-problems guarantee is only worth anything if the frame shows all
+    // of them; one clearing must never hide another that is still true.
+    let state = busy();
+    state = drive(state, [
+      { type: "problem", key: "save", message: "progress is not saving: ENOSPC" },
+      { type: "problem", key: "codex", message: "Codex turns not detected: EACCES" },
+      { type: "problem", key: "lock", message: "could not take the single-pane lock" },
+    ]);
+    const text = frame(state, 72).join("\n");
+    expect(text).toContain("not saving");
+    expect(text).toContain("Codex turns not detected");
+    expect(text).toContain("single-pane lock");
+  });
+
+  it("drops only the problem that cleared", () => {
+    let state = busy();
+    state = drive(state, [
+      { type: "problem", key: "save", message: "progress is not saving: ENOSPC" },
+      { type: "problem", key: "codex", message: "Codex turns not detected: EACCES" },
+      { type: "problem", key: "save", message: null },
+    ]);
+    const text = frame(state, 72).join("\n");
+    expect(text).not.toContain("not saving");
+    expect(text).toContain("Codex turns not detected");
+  });
+
+  it("keeps the panel exact even with several wrapped problems", () => {
+    let state = busy();
+    state = drive(state, [
+      { type: "problem", key: "deck", message: "a".repeat(120) },
+      { type: "problem", key: "save", message: "b".repeat(90) },
+    ]);
+    for (const line of frame(state, 48)) expect(visibleWidth(line)).toBe(48);
+  });
+});
+
+describe("truncation of wide titles", () => {
+  it("pads back the column a clipped wide glyph would leave short", () => {
+    // Without the pad-back, cutting a two-column glyph in half leaves the border
+    // one column adrift.
+    const lines = box(["x"], { width: 20, title: "日".repeat(30), footer: "f", theme: PLAIN });
+    for (const line of lines) expect(visibleWidth(line)).toBe(20);
+  });
+});

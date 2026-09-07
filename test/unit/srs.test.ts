@@ -333,3 +333,17 @@ describe("the daily new-word cap across days", () => {
     expect(progress.introducedByDay[dayKey(T0)]).toBeUndefined();
   });
 });
+
+describe("selection order is deterministic", () => {
+  it("breaks a due-time tie by weakest box, then by id", () => {
+    // Two items falling due in the same millisecond is common after a seeded
+    // start; without a total order the pane would pick arbitrarily and seeded
+    // tests would be unreproducible.
+    let progress = testProgress();
+    progress = withItem(progress, { id: "xx:3", due: T0, box: 3 });
+    progress = withItem(progress, { id: "xx:2", due: T0, box: 1 });
+    progress = withItem(progress, { id: "xx:1", due: T0, box: 1 });
+    // Weakest box first; among equals, the lowest id.
+    expect(selectNext(pack, progress, testSettings(), T0)?.word.id).toBe("xx:1");
+  });
+});

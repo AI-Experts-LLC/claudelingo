@@ -1,8 +1,19 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { type Env, Pane, cli, makeEnv, progressFile, readProgress, requireBuild } from "./harness.js";
+import {
+  CLI,
+  type Env,
+  Pane,
+  REPO,
+  cli,
+  makeEnv,
+  progressFile,
+  readProgress,
+  requireBuild,
+} from "./harness.js";
 
 let env: Env;
 const panes: Pane[] = [];
@@ -42,7 +53,9 @@ describe("a deck it cannot read", () => {
     await cli(["hook", "UserPromptSubmit"], e);
 
     const pane = open(BASE, e);
-    await pane.waitForProse("could not be read");
+    // The content was read fine and is genuinely bad — that is the one case where
+    // setting the file aside is justified.
+    await pane.waitForProse("is not valid JSON");
     expect(pane.flatFrame).toContain("kept a copy at");
 
     // The original bytes must still exist somewhere.
@@ -443,4 +456,107 @@ describe("an absurd --width", () => {
     expect(await pane.exited).toBe(0);
     expect(fs.existsSync(path.join(e.home, "progress-es.lock"))).toBe(false);
   });
+});
+
+describe("a home with nothing in it yet", () => {
+  it("opens clean on a first-ever launch, with no error banner", async () => {
+    // Every other test fires a hook first, so a genuinely fresh home is never
+    // exercised. Collapsing missing-vs-unreadable would put "cannot read
+    // status.json" on screen at every first launch.
+    const e = fresh();
+    expect(fs.existsSync(path.join(e.home, "status.json"))).toBe(false);
+
+    const pane = open(BASE, e);
+    await pane.waitForText("Standing by");
+    expect(pane.flatFrame).not.toContain("cannot read");
+    expect(pane.flatFrame).not.toContain("could not be read");
+    expect(pane.flatFrame).not.toContain("not saving");
+    // It writes the status file itself so the hooks have somewhere to land.
+    expect(fs.existsSync(path.join(e.home, "status.json"))).toBe(true);
+
+    // And it wakes up normally from there.
+    await cli(["hook", "UserPromptSubmit"], e);
+    await pane.waitForLastFrame("most common word");
+  });
+
+  it("says so when it cannot even record the agent state", async () => {
+    const e = fresh();
+    fs.chmodSync(e.home, 0o500);
+    try {
+      const pane = open(BASE, e);
+      // Nothing else can surface this: no later write of a different file reveals
+      // that the pane is blind to the agent.
+      await pane.waitForProse("cannot record agent state");
+    } finally {
+      fs.chmodSync(e.home, 0o700);
+    }
+  });
+});
+
+describe("problems when nobody is watching the panel", () => {
+  it("reports to stderr when stdout is not a terminal", async () => {
+    // The panel is the only place problems are shown, and it is not drawn without
+    // a TTY — so piping the pane anywhere would hide a quarantined deck entirely.
+    const e = fresh();
+    fs.writeFileSync(progressFile(e, "es"), "{ truncated");
+    await cli(["hook", "UserPromptSubmit"], e);
+
+    const result = await new Promise<{ stderr: string }>((resolve) => {
+      const child = spawn(process.execPath, [CLI, "--lang", "es", "--no-color", "--no-enrich"], {
+        env: { ...process.env, CLAUDELINGO_HOME: e.home, NO_COLOR: "1", ANTHROPIC_API_KEY: "" },
+      });
+      let stderr = "";
+      child.stderr.on("data", (d) => (stderr += d.toString()));
+      child.stdout.on("data", () => {});
+      setTimeout(() => child.kill("SIGTERM"), 1500);
+      child.on("close", () => resolve({ stderr }));
+    });
+    expect(result.stderr).toContain("is not valid JSON");
+    expect(result.stderr).toContain("kept a copy at");
+  });
+});
+
+describe("the lock under real contention", () => {
+  it("never grants two panes at once, hammered across processes", async () => {
+    // The failure this guards against is a create-then-write window: a concurrent
+    // acquirer reads a lock file that exists but names nobody, calls it stale, and
+    // deletes a live pane's lock.
+    const e = fresh();
+    const lockFile = path.join(e.home, "progress-es.lock");
+    const marker = `${lockFile}.holders`;
+    fs.writeFileSync(marker, "");
+
+    const script = path.join(e.home, "stress.mjs");
+    fs.writeFileSync(
+      script,
+      `import { acquire } from ${JSON.stringify(path.join(REPO, "dist", "lock.js"))};\n` +
+        `import fs from "node:fs";\n` +
+        `const [file, marker] = process.argv.slice(2);\n` +
+        `let overlaps = 0;\n` +
+        `for (let i = 0; i < 800; i++) {\n` +
+        `  const r = acquire(file);\n` +
+        `  if (!r.ok) continue;\n` +
+        `  try {\n` +
+        `    fs.appendFileSync(marker, process.pid + "\\n");\n` +
+        `    const held = fs.readFileSync(marker, "utf8").trim().split("\\n").filter(Boolean);\n` +
+        `    if (held.length > 1) overlaps++;\n` +
+        `    fs.writeFileSync(marker, "");\n` +
+        `  } catch {}\n` +
+        `  r.lock.release();\n` +
+        `}\n` +
+        `console.log(overlaps);\n`,
+    );
+
+    const runs = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        new Promise<number>((resolve) => {
+          const child = spawn(process.execPath, [script, lockFile, marker]);
+          let out = "";
+          child.stdout.on("data", (d) => (out += d.toString()));
+          child.on("close", () => resolve(Number(out.trim())));
+        }),
+      ),
+    );
+    expect(runs).toEqual([0, 0, 0, 0]);
+  }, 60_000);
 });

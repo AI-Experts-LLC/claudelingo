@@ -260,7 +260,7 @@ describe("Codex session watcher", () => {
   it("survives a missing sessions directory without reporting it as a fault", async () => {
     // Codex simply may not be installed; that is not something to warn about.
     const states: string[] = [];
-    const errors: string[] = [];
+    const errors: Array<string | null> = [];
     const watcher = codex.watchCodexSession((s) => states.push(s), {
       dir: path.join(dir(), "does-not-exist"),
       intervalMs: 20,
@@ -278,7 +278,7 @@ describe("Codex session watcher", () => {
     const sessions = path.join(home, "sessions");
     fs.mkdirSync(sessions, { recursive: true });
     fs.chmodSync(sessions, 0o000);
-    const errors: string[] = [];
+    const errors: Array<string | null> = [];
     const watcher = codex.watchCodexSession(() => {}, {
       dir: sessions, intervalMs: 10, onError: (m) => errors.push(m),
     });
@@ -436,7 +436,7 @@ describe("Codex watcher: which bytes it reads", () => {
     const file = path.join(sessions, "rollout-x.jsonl");
     fs.writeFileSync(file, "");
 
-    const errors: string[] = [];
+    const errors: Array<string | null> = [];
     const watcher = codex.watchCodexSession(() => {}, {
       dir: sessions, intervalMs: 10, onError: (m) => errors.push(m),
     });
@@ -455,6 +455,105 @@ describe("Codex watcher: which bytes it reads", () => {
     // A silent watcher is the failure mode this guards against.
     expect(errors.length).toBeGreaterThan(0);
     expect(errors.length).toBeLessThanOrEqual(1);
+    watcher.stop();
+  });
+});
+
+describe("Codex watcher: reporting and recovering", () => {
+  async function settle(ms = 150) {
+    await new Promise((r) => setTimeout(r, ms));
+  }
+
+  it("reports a nested directory it cannot read, where Codex actually stores transcripts", async () => {
+    // Rollouts live at sessions/YYYY/MM/DD, so a check that only covers the root
+    // misses every directory that realistically becomes unreadable.
+    const sessions = path.join(dir(), "sessions");
+    const nested = path.join(sessions, "2026", "09", "07");
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(nested, "rollout-1.jsonl"), "");
+    fs.chmodSync(path.join(sessions, "2026"), 0o000);
+
+    const errors: Array<string | null> = [];
+    const watcher = codex.watchCodexSession(() => {}, {
+      dir: sessions, intervalMs: 10, onError: (m) => errors.push(m),
+    });
+    try {
+      await vi.waitFor(() => expect(errors.filter(Boolean).length).toBeGreaterThan(0), {
+        timeout: 3000, interval: 20,
+      });
+      expect(errors[0]).toContain("cannot read");
+    } finally {
+      fs.chmodSync(path.join(sessions, "2026"), 0o700);
+      watcher.stop();
+    }
+  });
+
+  it("clears the report once it can read again", async () => {
+    // Without the null case the banner claims the watcher is broken forever, while
+    // it is in fact happily reading turns.
+    const sessions = path.join(dir(), "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.chmodSync(sessions, 0o000);
+
+    const errors: Array<string | null> = [];
+    const states: string[] = [];
+    const watcher = codex.watchCodexSession((s) => states.push(s), {
+      dir: sessions, intervalMs: 10, onError: (m) => errors.push(m),
+    });
+    try {
+      await vi.waitFor(() => expect(errors.filter(Boolean).length).toBeGreaterThan(0), {
+        timeout: 3000, interval: 20,
+      });
+
+      fs.chmodSync(sessions, 0o700);
+      fs.writeFileSync(
+        path.join(sessions, "rollout-live.jsonl"),
+        `${JSON.stringify({ type: "task_started" })}\n`,
+      );
+      await vi.waitFor(() => expect(states).toContain("busy"), { timeout: 3000, interval: 20 });
+      // The recovery has to reach the UI, not just reset an internal counter.
+      expect(errors.at(-1)).toBeNull();
+    } finally {
+      fs.chmodSync(sessions, 0o700);
+      watcher.stop();
+    }
+  });
+
+  it("does not replay a transcript when the newest one flips back to it", async () => {
+    // Two Codex sessions alternating. Falling back to the startup snapshot would
+    // re-read everything since the pane opened, including a stale idle that would
+    // stand the pane down mid-turn.
+    const sessions = path.join(dir(), "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const a = path.join(sessions, "rollout-a.jsonl");
+    const b = path.join(sessions, "rollout-b.jsonl");
+    fs.writeFileSync(a, "");
+
+    const seen: string[] = [];
+    const watcher = codex.watchCodexSession((s) => seen.push(s), {
+      dir: sessions, intervalMs: 20,
+    });
+    await settle(60);
+
+    const line = (type: string) => `${JSON.stringify({ type })}\n`;
+    fs.appendFileSync(a, line("task_started") + line("task_complete"));
+    await vi.waitFor(() => expect(seen).toEqual(["busy", "idle"]), { timeout: 3000, interval: 20 });
+
+    // Session B becomes newest.
+    await settle(30);
+    fs.writeFileSync(b, line("task_started"));
+    await vi.waitFor(() => expect(seen).toEqual(["busy", "idle", "busy"]), {
+      timeout: 3000, interval: 20,
+    });
+
+    // Back to A with one new turn: only that turn should be reported.
+    await settle(30);
+    fs.appendFileSync(a, line("task_started"));
+    await vi.waitFor(() => expect(seen).toEqual(["busy", "idle", "busy", "busy"]), {
+      timeout: 3000, interval: 20,
+    });
+    await settle(200);
+    expect(seen).toEqual(["busy", "idle", "busy", "busy"]);
     watcher.stop();
   });
 });

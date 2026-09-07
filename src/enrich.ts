@@ -54,6 +54,40 @@ function textOf(response: Anthropic.Beta.BetaMessage): string {
     .trim();
 }
 
+/**
+ * Read a cached hook, treating an empty or unreadable file as a cache miss.
+ *
+ * Returning "" would hand the UI a hook that renders as nothing at all: no text,
+ * no spinner, no error, and a key that silently does nothing every time it is
+ * pressed. A miss simply costs one request.
+ */
+function readCache(file: string): string | null {
+  try {
+    const text = fs.readFileSync(file, "utf8").trim();
+    return text.length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Best effort: an unwritable cache costs a repeat request, nothing more. */
+function writeCache(file: string, text: string): void {
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    fs.mkdirSync(paths.cache(), { recursive: true });
+    // Written and renamed, so an interrupted write cannot leave a truncated file
+    // that would then be served as a cache hit forever.
+    fs.writeFileSync(tmp, `${text}\n`, "utf8");
+    fs.renameSync(tmp, file);
+  } catch {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      // Nothing further to do.
+    }
+  }
+}
+
 function cacheFile(lang: string, term: string): string {
   const safe = Buffer.from(term).toString("base64url");
   return path.join(paths.cache(), `hook-${lang}-${safe}.txt`);
@@ -72,11 +106,15 @@ export async function memoryHook(
   options: { model?: string; signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<string> {
   const file = cacheFile(pack.code, word.term);
-  if (fs.existsSync(file)) return fs.readFileSync(file, "utf8").trim();
+  const cached = readCache(file);
+  if (cached) return cached;
 
   const params: CreateParams = {
     model: options.model ?? DEFAULT_MODEL,
-    max_tokens: 400,
+    // Thinking is always on for this model and its tokens count against this
+    // budget, so a tight cap can consume the whole allowance before any text is
+    // produced — which surfaces as a bare "empty response".
+    max_tokens: 4000,
     betas: [FALLBACK_BETA],
     fallbacks: [{ model: FALLBACK_MODEL }],
     output_config: { effort: "low" },
@@ -114,15 +152,15 @@ export async function memoryHook(
     throw new EnrichError("the model declined this request");
   }
   const text = textOf(response);
-  if (!text) throw new EnrichError("empty response");
-
-  try {
-    fs.mkdirSync(paths.cache(), { recursive: true });
-    fs.writeFileSync(file, `${text}\n`, "utf8");
-  } catch {
-    // An unwritable cache means paying for this word again next time, which is a
-    // far better outcome than reporting a disk problem as a model failure.
+  if (!text) {
+    // Distinguish "ran out of room" from "said nothing", or the real cause is
+    // invisible and looks like a model fault.
+    throw new EnrichError(
+      response.stop_reason === "max_tokens" ? "ran out of room before answering" : "empty response",
+    );
   }
+
+  writeCache(file, text);
   return text;
 }
 

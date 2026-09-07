@@ -23,23 +23,41 @@ afterEach(() => {
 });
 
 describe("reading state files", () => {
-  it("tells a missing file apart from an unreadable one", () => {
+  it("separates a missing file, an unreadable one, and invalid content", () => {
+    // These three demand different responses: start fresh, leave well alone, or
+    // set the file aside. Collapsing any two of them costs the user data.
     const d = dir();
     expect(readJsonFile(path.join(d, "nope.json"))).toMatchObject({ ok: false, reason: "missing" });
 
     const bad = path.join(d, "bad.json");
     fs.writeFileSync(bad, "{ truncated");
-    const result = readJsonFile(bad);
-    expect(result).toMatchObject({ ok: false, reason: "unreadable" });
-    expect(result.ok === false && result.error).toBeInstanceOf(Error);
+    const invalid = readJsonFile(bad);
+    expect(invalid).toMatchObject({ ok: false, reason: "invalid" });
+    expect(invalid.ok === false && invalid.error).toBeInstanceOf(Error);
+
+    const blocked = path.join(d, "blocked.json");
+    fs.writeFileSync(blocked, JSON.stringify({ a: 1 }));
+    fs.chmodSync(blocked, 0o000);
+    try {
+      expect(readJsonFile(blocked)).toMatchObject({ ok: false, reason: "unreadable" });
+    } finally {
+      fs.chmodSync(blocked, 0o600);
+    }
   });
 
-  it("treats a zero-length file as unreadable, not as absent", () => {
-    // This is what a power cut during a non-atomic write leaves behind, and
-    // treating it as "no file yet" is how a deck gets silently replaced.
+  it("treats a zero-length file as invalid content, not as absent", () => {
+    // What a power cut during a non-atomic write leaves behind. Treating it as
+    // "no file yet" is how a deck gets silently replaced with a blank one.
     const empty = path.join(dir(), "empty.json");
     fs.writeFileSync(empty, "");
-    expect(readJsonFile(empty)).toMatchObject({ ok: false, reason: "unreadable" });
+    expect(readJsonFile(empty)).toMatchObject({ ok: false, reason: "invalid" });
+  });
+
+  it("reports a directory in place of a file as unreadable, never as invalid", () => {
+    // EISDIR is a read failure; quarantining on it would move a real deck.
+    const asDir = path.join(dir(), "progress.json");
+    fs.mkdirSync(asDir);
+    expect(readJsonFile(asDir)).toMatchObject({ ok: false, reason: "unreadable" });
   });
 
   it("round-trips a good file", () => {
@@ -172,12 +190,27 @@ describe("the single-pane lock", () => {
     if (held.ok) held.lock.release();
   });
 
-  it("reclaims a corrupt lock file rather than blocking forever", () => {
+  it("refuses a lock file it cannot parse, rather than deleting a live pane's lock", () => {
+    // The lock is written and linked into place already populated, so a lock that
+    // names nobody was not written by us. Calling it stale and removing it is how
+    // a concurrent acquirer deletes a lock a live pane is holding.
     const file = path.join(dir(), "es.lock");
     fs.writeFileSync(file, "not json");
+    const result = lock.acquire(file);
+    expect(result).toMatchObject({ ok: false, reason: "held", pid: null });
+    expect(fs.readFileSync(file, "utf8")).toBe("not json");
+  });
+
+  it("never leaves the lock file existing without a pid inside it", () => {
+    // The window this closes: create-then-write leaves an empty lock that another
+    // acquirer reads as stale.
+    const file = path.join(dir(), "es.lock");
     const held = lock.acquire(file);
     expect(held.ok).toBe(true);
+    expect(fs.readFileSync(file, "utf8").trim().length).toBeGreaterThan(0);
     expect(lock.holderPid(file)).toBe(process.pid);
+    // And no temp files are left lying around.
+    expect(fs.readdirSync(path.dirname(file)).filter((f) => f.endsWith(".tmp"))).toEqual([]);
     if (held.ok) held.lock.release();
   });
 

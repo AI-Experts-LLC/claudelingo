@@ -37,24 +37,7 @@ function read(file: string): LockFile | null {
   }
 }
 
-function claim(file: string): Lock | null {
-  let fd: number;
-  try {
-    // "wx" creates exclusively: if the file exists the open fails. This is the
-    // whole mechanism — a read-then-write excludes nothing, because two panes
-    // starting together both read "no lock" before either writes one.
-    fd = fs.openSync(file, "wx");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return null;
-    throw error;
-  }
-
-  try {
-    fs.writeFileSync(fd, `${JSON.stringify({ pid: process.pid, since: Date.now() })}\n`, "utf8");
-  } finally {
-    fs.closeSync(fd);
-  }
-
+function releaseFor(file: string): Lock {
   let released = false;
   return {
     release() {
@@ -71,6 +54,43 @@ function claim(file: string): Lock | null {
       }
     },
   };
+}
+
+/**
+ * Create the lock, fully populated, in one atomic step.
+ *
+ * The pid is written to a temp file and only then linked into place. Creating an
+ * empty file first and writing the pid afterwards leaves a window in which the lock
+ * exists but names nobody — and a concurrent acquirer that reads it in that window
+ * sees an unparseable lock, concludes it is stale, and deletes a LIVE pane's lock.
+ *
+ * `link` fails with EEXIST rather than overwriting, which is what makes it a lock.
+ */
+function claim(file: string): Lock | null {
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    const fd = fs.openSync(tmp, "wx");
+    try {
+      fs.writeFileSync(fd, `${JSON.stringify({ pid: process.pid, since: Date.now() })}\n`, "utf8");
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    try {
+      fs.linkSync(tmp, file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return null;
+      throw error;
+    }
+    return releaseFor(file);
+  } finally {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      // The link (if it succeeded) is what matters; the temp name is disposable.
+    }
+  }
 }
 
 /**
@@ -97,17 +117,18 @@ export function acquire(file: string): AcquireResult {
 
     // The file exists. Decide whether its owner is still around.
     const current = read(file);
-    if (current) {
-      if (current.pid === process.pid) {
-        // Our own lock from earlier in this process; adopt it.
-        return { ok: true, lock: { release: () => fs.rmSync(file, { force: true }) } };
-      }
-      if (alive(current.pid)) return { ok: false, reason: "held", pid: current.pid };
+    if (!current) {
+      // A lock that names nobody. Since `claim` links the file into place already
+      // populated, we cannot have produced this — so it is either someone else's
+      // corruption or a truly ancient artefact. Refusing is the safe answer: a
+      // wrong "stale" call here deletes a live pane's lock.
+      return { ok: false, reason: "held", pid: null };
     }
+    if (current.pid === process.pid) return { ok: true, lock: releaseFor(file) };
+    if (alive(current.pid)) return { ok: false, reason: "held", pid: current.pid };
 
-    // Either the holder is gone, or the lock file is unreadable and names nobody.
-    // Both are stale: clear it and try the exclusive create once more. A live
-    // pane that recreates it in between wins the next attempt, and we back off.
+    // The holder is gone. Clear it and try the exclusive create once more; a live
+    // pane that recreates it in between wins, and we back off on the next pass.
     try {
       fs.rmSync(file, { force: true });
     } catch (error) {

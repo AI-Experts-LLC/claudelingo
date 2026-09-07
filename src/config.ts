@@ -72,20 +72,29 @@ export function writeJsonAtomic(file: string, value: unknown): void {
   }
 }
 
-/** Why a JSON file could not be turned into a value. */
-export type ReadFailure = "missing" | "unreadable";
+/**
+ * Why a JSON file could not be turned into a value.
+ *
+ * The distinction that matters is not which errno came back, but whether the READ
+ * failed or the CONTENT did:
+ *
+ * - `missing`     — no such file. Normal; the caller starts fresh.
+ * - `unreadable`  — the bytes could not be fetched (permissions, a stale NFS
+ *                   handle, too many open files, a disk error). Says NOTHING about
+ *                   the contents, which are probably perfectly good.
+ * - `invalid`     — the bytes were read and are not what they should be. This is
+ *                   the only case where replacing the file can be justified.
+ *
+ * Deciding that from an allow-list of errnos gets the default backwards: every
+ * errno nobody thought of — ESTALE and ETIMEDOUT on a networked home, say — would
+ * be treated as corruption and cost the user their data.
+ */
+export type ReadFailure = "missing" | "unreadable" | "invalid";
 
 export type ReadResult<T> =
   | { ok: true; value: T }
   | { ok: false; reason: ReadFailure; error?: Error };
 
-/**
- * Read a JSON file, keeping "there is no file" separate from "there is a file and I
- * could not understand it".
- *
- * Collapsing those two into `null` is how a corrupt file gets silently replaced with
- * a blank one, so every caller is forced to decide which case it is handling.
- */
 export function readJsonFile<T>(file: string): ReadResult<T> {
   let raw: string;
   try {
@@ -98,7 +107,8 @@ export function readJsonFile<T>(file: string): ReadResult<T> {
   try {
     return { ok: true, value: JSON.parse(raw) as T };
   } catch (error) {
-    return { ok: false, reason: "unreadable", error: error as Error };
+    // Read fine, parsed badly: genuinely bad content.
+    return { ok: false, reason: "invalid", error: error as Error };
   }
 }
 
@@ -135,9 +145,12 @@ export function loadSettings(): LoadedSettings {
   const result = readJsonFile<Partial<Settings>>(paths.settings());
   if (result.ok) return { settings: { ...DEFAULT_SETTINGS, ...result.value } };
   if (result.reason === "missing") return { settings: { ...DEFAULT_SETTINGS } };
+  const what = result.reason === "invalid" ? "is not valid JSON" : "could not be read";
   return {
     settings: { ...DEFAULT_SETTINGS },
-    problem: `${paths.settings()} could not be read (${result.error?.message ?? "unknown error"})`,
+    problem:
+      `${paths.settings()} ${what} (${result.error?.message ?? "unknown error"}); ` +
+      "using defaults and leaving it alone.",
   };
 }
 

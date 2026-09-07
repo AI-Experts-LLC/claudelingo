@@ -174,16 +174,16 @@ export function classifyNotification(json: string): AgentState | null {
 
 interface RolloutScan {
   files: Array<{ file: string; mtime: number; size: number }>;
-  /** Set when the sessions root itself could not be listed. */
+  /** Set when any directory under the sessions root could not be listed. */
   error: Error | null;
 }
 
 /**
  * Every rollout transcript under `dir`, newest last.
  *
- * A failure to read the root is reported rather than swallowed: an unreadable
- * sessions directory silently kills the only signal that a Codex turn started,
- * and the pane would simply never wake up again.
+ * A failure to read ANY directory is reported rather than swallowed: an unreadable
+ * folder silently kills the only signal that a Codex turn started, and the pane
+ * would simply never wake up again.
  */
 function scanRollouts(dir: string): RolloutScan {
   const files: RolloutScan["files"] = [];
@@ -195,9 +195,12 @@ function scanRollouts(dir: string): RolloutScan {
     try {
       entries = fs.readdirSync(current, { withFileTypes: true });
     } catch (error) {
-      // A missing root is normal (Codex not installed yet); anything else is not.
+      // A missing directory is normal (Codex not installed, or a date folder
+      // removed mid-scan); anything else means we are blind to whatever is inside.
+      // Reporting only at depth 0 would miss every real case: Codex stores
+      // transcripts at sessions/YYYY/MM/DD, so the unreadable directory is nested.
       const code = (error as NodeJS.ErrnoException).code;
-      if (depth === 0 && code !== "ENOENT") rootError = error as Error;
+      if (code !== "ENOENT" && !rootError) rootError = error as Error;
       return;
     }
     for (const entry of entries) {
@@ -226,8 +229,12 @@ export interface SessionWatcher {
 export interface WatchOptions {
   dir?: string;
   intervalMs?: number;
-  /** Reported once when the watcher has failed repeatedly and is no longer reliable. */
-  onError?: (message: string) => void;
+  /**
+   * Called with a message when the watcher has failed repeatedly and is no longer
+   * reliable, and with null once it reads successfully again. Without the null case
+   * a recovered watcher leaves a permanent banner claiming it is broken.
+   */
+  onError?: (message: string | null) => void;
 }
 
 /** Consecutive read failures tolerated before the user is told the tailer is broken. */
@@ -264,7 +271,11 @@ export function watchCodexSession(
    * Sizes matter as well as names: a session resumed in an older transcript would
    * otherwise only be noticed once that file became the newest one.
    */
-  const historySize = new Map(scanRollouts(dir).files.map((f) => [f.file, f.size] as const));
+  // Seeded with the size each transcript had at startup, then updated as bytes are
+  // consumed. Falling back to the startup size when the newest file changes would
+  // re-read everything since the pane opened whenever two sessions alternate —
+  // replaying a stale `idle` that stands the pane down mid-turn.
+  const consumed = new Map(scanRollouts(dir).files.map((f) => [f.file, f.size] as const));
 
   const fail = (message: string) => {
     failures += 1;
@@ -284,8 +295,12 @@ export function watchCodexSession(
    */
   const recovered = () => {
     failures = 0;
-    // Allow a later, different failure to be reported too.
-    reported = false;
+    if (reported) {
+      // Tell the UI it is working again, and allow a later, different failure to
+      // be reported too.
+      reported = false;
+      options.onError?.(null);
+    }
   };
 
   const poll = () => {
@@ -300,10 +315,11 @@ export function watchCodexSession(
     if (!newest) return;
 
     if (newest.file !== file) {
+      if (file) consumed.set(file, offset);
       file = newest.file;
       carry = "";
-      // Resume where history ended; a file we have never seen starts at zero.
-      offset = historySize.get(file) ?? 0;
+      // Resume where we left off in this file; one never seen before starts at zero.
+      offset = consumed.get(file) ?? 0;
     }
 
     let size: number;
@@ -318,6 +334,7 @@ export function watchCodexSession(
       // and fire a spurious busy, so resync to the new end instead.
       offset = size;
       carry = "";
+      consumed.set(file, offset);
       return;
     }
     if (size === offset) return;
@@ -335,8 +352,12 @@ export function watchCodexSession(
     } catch (error) {
       fail(`cannot read ${file}: ${(error as Error).message}`);
       // Skip the bytes we could not read; retrying the same offset forever would
-      // wedge the watcher silently on a permanently unreadable file.
+      // wedge the watcher silently on a permanently unreadable file. Drop the
+      // partial line too, or it is spliced onto the next chunk and that line is
+      // silently discarded as unrecognised.
       offset = size;
+      carry = "";
+      consumed.set(file, offset);
       return;
     } finally {
       if (fd !== null) {
@@ -348,6 +369,7 @@ export function watchCodexSession(
       }
     }
     offset = size;
+    consumed.set(file, offset);
     recovered();
 
     const lines = (carry + chunk).split("\n");

@@ -33,9 +33,11 @@ export interface RunOptions {
   /** Render plain frames even without a TTY. Used by the end-to-end tests. */
   forceRender?: boolean;
   /** Tail Codex transcripts for the turn-start edge Codex has no hook for. */
-  watchCodex?: (onState: (state: AgentState) => void, onError: (message: string) => void) => {
-    stop(): void;
-  };
+  watchCodex?: (
+    onState: (state: AgentState) => void,
+    /** null when the watcher recovers, so the banner can be cleared. */
+    onError: (message: string | null) => void,
+  ) => { stop(): void };
 }
 
 /** Translate one chunk of raw stdin into the key events the reducer understands. */
@@ -100,6 +102,14 @@ export function run(options: RunOptions): Runner {
   );
   if (options.initialProblems) {
     state = { ...state, problems: { ...state.problems, ...options.initialProblems } };
+    // The panel is the only place problems are shown, and it is not drawn at all
+    // when stdout is not a terminal. Without this, piping the pane anywhere makes
+    // a quarantined deck or a failed install completely invisible.
+    if (!isTty && !options.forceRender) {
+      for (const message of Object.values(options.initialProblems)) {
+        if (message) process.stderr.write(`claudelingo: ${message}\n`);
+      }
+    }
   }
 
   // An agent already working when the pane opens should get a card straight away.
@@ -223,7 +233,12 @@ export function run(options: RunOptions): Runner {
       }
     },
     (message) =>
-      dispatch({ type: "problem", key: "codex", message: `Codex watcher stopped: ${message}` }),
+      dispatch({
+        type: "problem",
+        key: "codex",
+        // "stopped" would be a lie: it keeps polling. It just cannot see anything.
+        message: message === null ? null : `Codex turns not detected: ${message}`,
+      }),
   );
 
   if (isTty) stdout.write(ansi.hideCursor);

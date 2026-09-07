@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const create = vi.fn();
@@ -102,6 +103,39 @@ describe("memory hooks", () => {
     const second = await memoryHook(word, pack);
     expect(second).toBe(first);
     expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an empty cached file as a miss, not as a hook", async () => {
+    // Returning "" renders as nothing at all — no text, no spinner, no error — and
+    // leaves `e` doing nothing every time it is pressed, forever.
+    const dir = path.join(home, "cache");
+    fs.mkdirSync(dir, { recursive: true });
+    for (const file of ["", "   \n"]) {
+      fs.writeFileSync(
+        path.join(dir, `hook-es-${Buffer.from(word.term).toString("base64url")}.txt`),
+        file,
+      );
+      create.mockClear();
+      create.mockResolvedValue(textReply("el is the, as in El Nino"));
+      const hook = await memoryHook(word, pack);
+      expect(hook).toBe("el is the, as in El Nino");
+      expect(create).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("writes the cache atomically, leaving no temp file", async () => {
+    create.mockResolvedValue(textReply("a memory hook"));
+    await memoryHook(word, pack);
+    const cached = fs.readdirSync(path.join(home, "cache"));
+    expect(cached.filter((f) => f.endsWith(".tmp"))).toEqual([]);
+    expect(cached).toHaveLength(1);
+  });
+
+  it("says it ran out of room rather than reporting an empty response", async () => {
+    // Thinking is always on for this model and counts against max_tokens, so
+    // hitting the cap is a real and confusing failure mode.
+    create.mockResolvedValue({ content: [], stop_reason: "max_tokens" });
+    await expect(memoryHook(word, pack)).rejects.toThrow(/ran out of room/);
   });
 
   it("surfaces a refusal rather than showing an empty hook", async () => {

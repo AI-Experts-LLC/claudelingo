@@ -12,7 +12,14 @@ import type {
 export type Mode = "waiting" | "teach" | "question" | "feedback" | "caughtup" | "quit";
 
 /** Every distinct thing that can go wrong and needs saying. */
-export type ProblemKey = "save" | "deck" | "status" | "codex" | "credentials";
+export type ProblemKey =
+  | "save"
+  | "deck"
+  | "settings"
+  | "lock"
+  | "status"
+  | "codex"
+  | "credentials";
 
 export interface Key {
   /** The character typed, if it was a printable one. */

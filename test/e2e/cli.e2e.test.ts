@@ -340,3 +340,98 @@ describe("claudelingo pack generate", () => {
     }
   });
 });
+
+describe("init reports what actually happened", () => {
+  /** A fake HOME/CODEX_HOME pair so nothing real is touched. */
+  function fakeEnvs(e: Env) {
+    const home = path.join(e.home, "fake-home");
+    const codexHome = path.join(e.home, "fake-codex");
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(codexHome, { recursive: true });
+    return { home, codexHome, vars: { HOME: home, USERPROFILE: home, CODEX_HOME: codexHome } };
+  }
+
+  it("exits non-zero when the Claude Code side cannot be installed", async () => {
+    // Reporting success here is how a user ends up staring at a pane that never
+    // wakes up, with no idea why.
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const settingsFile = path.join(home, ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
+    fs.writeFileSync(settingsFile, "{ not valid json");
+
+    const result = await cli(["init"], e, vars);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("Claude Code hooks NOT installed");
+    expect(result.stderr).toContain("not active");
+    // The unparseable file is left exactly as it was.
+    expect(fs.readFileSync(settingsFile, "utf8")).toBe("{ not valid json");
+  });
+
+  it("exits non-zero when Codex already has another notify program", async () => {
+    const e = fresh();
+    const { codexHome, vars } = fakeEnvs(e);
+    const config = path.join(codexHome, "config.toml");
+    const original = 'notify = ["/usr/local/bin/my-notifier", "--flag"]\n';
+    fs.writeFileSync(config, original);
+
+    const result = await cli(["init"], e, vars);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("Codex notify NOT installed");
+    expect(result.stderr).toContain("already sets a different notify program");
+    expect(fs.readFileSync(config, "utf8")).toBe(original);
+  });
+
+  it("exits zero and says so when both sides install", async () => {
+    const e = fresh();
+    const { vars } = fakeEnvs(e);
+    const result = await cli(["init"], e, vars);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Claude Code hooks installed");
+    expect(result.stdout).toContain("Codex notify installed");
+    expect(result.stderr).not.toContain("not active");
+  });
+
+  it("leaves an unparseable settings.json alone instead of resetting the language", async () => {
+    const e = fresh();
+    const { vars } = fakeEnvs(e);
+    const settings = path.join(e.home, "settings.json");
+    fs.writeFileSync(settings, '{ "lang": "it", broken');
+
+    const result = await cli(["init", "--lang", "fr"], e, vars);
+    // The user's file is untouched — silently overwriting it would discard their
+    // language and model choice with no way to get them back.
+    expect(fs.readFileSync(settings, "utf8")).toBe('{ "lang": "it", broken');
+    expect(result.stderr).toContain("leaving it alone");
+  });
+
+  it("reports each half of uninit separately", async () => {
+    const e = fresh();
+    const { home, codexHome, vars } = fakeEnvs(e);
+    await cli(["init"], e, vars);
+    // Break the Claude Code side only; the Codex side must still be cleaned up.
+    fs.writeFileSync(path.join(home, ".claude", "settings.json"), "{ broken now");
+
+    const result = await cli(["uninit"], e, vars);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("NOT removed");
+    expect(result.stdout).toContain("Removed: Codex notify");
+    expect(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")).not.toContain(
+      "claudelingo",
+    );
+  });
+});
+
+describe("claudelingo status", () => {
+  it("distinguishes never-written from unreadable", async () => {
+    const e = fresh();
+    const missing = await cli(["status"], e);
+    expect(missing.stdout).toContain("no agent state recorded yet");
+
+    fs.writeFileSync(statusFile(e), "{ truncated");
+    const broken = await cli(["status"], e);
+    // Telling them to re-run init would be useless; the fix is to delete the file.
+    expect(broken.stdout).toContain("unreadable");
+    expect(broken.stdout).toContain("delete it");
+  });
+});

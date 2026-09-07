@@ -105,22 +105,19 @@ interface LoadedProgress {
   progress: Progress;
   /** Set when an existing deck was unusable. */
   problem?: string;
-  /** True when a deck we could not read is still on disk and must not be written over. */
+  /** True when a deck we could not use is still on disk and must not be written over. */
   readOnly?: boolean;
 }
 
 /**
  * Load a deck, never destroying one we failed to understand.
  *
- * Two separate cases, deliberately handled differently:
- *
- * - The file is genuinely unparseable (bad JSON, wrong shape, future version). It
- *   is moved aside so a fresh deck can be started without overwriting real
- *   history, and the user is told where it went.
- * - The file could not be *read* — a permission problem, too many open files, a
- *   home directory not mounted yet. That is transient and says nothing about the
- *   contents, so the file is left exactly where it is and the pane runs read-only
- *   rather than replacing a deck that is probably fine.
+ * The deck is moved aside only when its CONTENT is genuinely bad — unparseable, or
+ * not a version 1 deck. A failure to *read* the file says nothing about what is in
+ * it, so the file is left exactly where it is and the pane runs read-only rather
+ * than replacing a deck that is almost certainly fine. That covers every transient
+ * cause without having to enumerate them: EACCES, a full fd table, and the stale
+ * NFS handles a networked home throws all land in the same safe branch.
  *
  * `mutate` is false for read-only commands: `stats` must never move a user's deck.
  */
@@ -133,59 +130,41 @@ function loadProgress(lang: string, mutate = true): LoadedProgress {
     if (stored?.items && stored.version === 1) {
       return { progress: { ...emptyProgress(lang), ...stored } };
     }
-    // Readable but not a deck we understand: genuinely unusable content.
-    if (!mutate) {
-      return {
-        progress: emptyProgress(lang),
-        problem: `${file} is not a version 1 deck.`,
-        readOnly: true,
-      };
-    }
-    const moved = quarantine(file);
-    return moved
-      ? {
-          progress: emptyProgress(lang),
-          problem: `${file} was not a version 1 deck; kept a copy at ${moved} and started fresh.`,
-        }
-      : {
-          progress: emptyProgress(lang),
-          problem: `${file} is not a version 1 deck and could not be set aside — not saving.`,
-          readOnly: true,
-        };
+    return setAside(lang, file, "is not a version 1 deck", mutate);
   }
 
   if (result.reason === "missing") return { progress: emptyProgress(lang) };
 
   const detail = result.error?.message ?? "unknown error";
-  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
-  if (code === "EACCES" || code === "EPERM" || code === "EISDIR" || code === "EMFILE" ||
-      code === "ENFILE" || code === "EIO" || code === "ENOMEM" || code === "EBUSY") {
-    // Transient or environmental: the deck is very likely intact. Touching it
-    // would turn a permissions glitch into permanent data loss.
-    return {
-      progress: emptyProgress(lang),
-      problem: `${file} could not be read (${detail}). Not saving, so your deck is left untouched.`,
-      readOnly: true,
-    };
+  if (result.reason === "invalid") {
+    return setAside(lang, file, `is not valid JSON (${detail})`, mutate);
   }
 
+  // The read itself failed. Touching the file would turn a transient problem into
+  // permanent data loss.
+  return {
+    progress: emptyProgress(lang),
+    problem:
+      `${file} could not be read (${detail}). Not saving, so your deck is left ` +
+      "untouched — fix the problem and restart to start saving again.",
+    readOnly: true,
+  };
+}
+
+/** Move a genuinely unusable deck aside, or refuse to save if that is not possible. */
+function setAside(lang: string, file: string, why: string, mutate: boolean): LoadedProgress {
   if (!mutate) {
-    return {
-      progress: emptyProgress(lang),
-      problem: `${file} could not be read (${detail}).`,
-      readOnly: true,
-    };
+    return { progress: emptyProgress(lang), problem: `${file} ${why}.`, readOnly: true };
   }
-
   const moved = quarantine(file);
   return moved
     ? {
         progress: emptyProgress(lang),
-        problem: `${file} could not be read (${detail}); kept a copy at ${moved} and started fresh.`,
+        problem: `${file} ${why}; kept a copy at ${moved} and started fresh.`,
       }
     : {
         progress: emptyProgress(lang),
-        problem: `${file} could not be read and could not be set aside — not saving over it.`,
+        problem: `${file} ${why} and could not be set aside — not saving over it.`,
         readOnly: true,
       };
 }
@@ -279,9 +258,30 @@ function cmdInit(args: Args): void {
 
 function cmdUninit(args: Args): void {
   const scope = args.flags.project ? "project" : "user";
-  claudeCode.uninstall(claudeCode.settingsPath(scope as "user" | "project"));
-  codex.uninstallNotify(BIN);
-  process.stdout.write("Integrations removed. Your progress is untouched.\n");
+  const removed: string[] = [];
+  const failed: string[] = [];
+
+  // Attempted independently: a throw from one must not skip the other, or the user
+  // is left half-uninstalled with no idea which half.
+  try {
+    claudeCode.uninstall(claudeCode.settingsPath(scope as "user" | "project"));
+    removed.push("Claude Code hooks");
+  } catch (error) {
+    failed.push(`Claude Code hooks: ${(error as Error).message}`);
+  }
+  try {
+    codex.uninstallNotify(BIN);
+    removed.push("Codex notify");
+  } catch (error) {
+    failed.push(`Codex notify: ${(error as Error).message}`);
+  }
+
+  if (removed.length) process.stdout.write(`Removed: ${removed.join(", ")}.\n`);
+  process.stdout.write("Your progress is untouched.\n");
+  if (failed.length) {
+    for (const message of failed) process.stderr.write(`NOT removed — ${message}\n`);
+    process.exit(1);
+  }
 }
 
 function cmdStatus(): void {
@@ -393,19 +393,22 @@ async function cmdRun(args: Args): Promise<void> {
   const acquired = lock.acquire(lockFile);
   if (!acquired.ok && acquired.reason === "held") {
     const who = acquired.pid === null ? "another claudelingo pane" : `pid ${acquired.pid}`;
+    // Name the lock file: if the holder is gone but its pid has been recycled by an
+    // unrelated process, deleting this file is the only way out.
     fail(
       `${who} is already studying ${pack.englishName}. ` +
-        "Close it, or run this one with a different --lang.",
+        `Close it, or run this one with a different --lang. ` +
+        `If no other pane is running, delete ${lockFile}.`,
     );
   }
 
   const problems: Partial<Record<ProblemKey, string>> = {};
-  if (settingsProblem) problems.deck = settingsProblem;
-  if (progressProblem) problems.deck = [problems.deck, progressProblem].filter(Boolean).join(" ");
+  if (settingsProblem) problems.settings = settingsProblem;
+  if (progressProblem) problems.deck = progressProblem;
   if (!acquired.ok) {
-    // The guarantee is off, and staying quiet about it is how two panes end up
-    // silently overwriting each other.
-    problems.save =
+    // Its own key: filed under `save`, the next successful deck write would clear
+    // it and the pane would look healthy while the guarantee was still off.
+    problems.lock =
       `could not take the single-pane lock (${acquired.error.message}); ` +
       "close any other claudelingo pane for this language.";
   }
