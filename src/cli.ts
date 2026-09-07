@@ -45,6 +45,8 @@ Options
   --no-color         plain output
   --width <n>        panel width in columns
   --model <id>       model for hooks and pack generation (default: ${DEFAULT_MODEL})
+  --code <xx>        code for a generated pack (default: first two letters)
+  --overwrite        replace an existing generated pack
   --source <name>    claude | codex | manual (for: hook)
   -h, --help         this message
 `;
@@ -69,6 +71,8 @@ export function parseArgs(argv: string[]): Args {
       const name = rawName as string;
       if (inline !== undefined) flags[name] = inline;
       else if (takesValue.has(name)) flags[name] = argv[++i] ?? "";
+      // A trailing `--lang` with nothing after it is a typo, not a request for
+      // the configured default.
       else if (name.startsWith("no-")) flags[name.slice(3)] = false;
       else flags[name] = true;
     } else {
@@ -90,7 +94,16 @@ interface Resolved {
   problem?: string;
 }
 
+const VALUE_FLAGS = ["lang", "width", "source", "model", "count", "code"] as const;
+
+function requireFlagValues(flags: Args["flags"]): void {
+  for (const name of VALUE_FLAGS) {
+    if (flags[name] === "") fail(`--${name} needs a value`);
+  }
+}
+
 function settingsFrom(flags: Args["flags"]): Resolved {
+  requireFlagValues(flags);
   const loaded = loadSettings();
   const settings: Settings = { ...loaded.settings };
   if (typeof flags.lang === "string" && flags.lang) settings.lang = flags.lang;
@@ -127,9 +140,13 @@ function loadProgress(lang: string, mutate = true): LoadedProgress {
 
   if (result.ok) {
     const stored = result.value;
-    if (stored?.items && stored.version === 1) {
-      return { progress: { ...emptyProgress(lang), ...stored } };
-    }
+    // A shape check, not a truthiness check: `items: "oops"` is truthy, and
+    // spreading it produces a deck of individual characters that then gets saved
+    // back over the real file.
+    const items = stored?.items;
+    const wellFormed =
+      stored?.version === 1 && typeof items === "object" && items !== null && !Array.isArray(items);
+    if (wellFormed) return { progress: { ...emptyProgress(lang), ...stored } };
     return setAside(lang, file, "is not a version 1 deck", mutate);
   }
 
@@ -341,6 +358,14 @@ async function cmdPack(args: Args): Promise<void> {
   const language = (args.flags.lang as string) || args.rest[1];
   if (!language) fail("pack generate needs --lang, e.g. --lang Portuguese");
   const code = (args.flags.code as string) || language.slice(0, 2).toLowerCase();
+  // The two-letter default collides readily — Estonian and Spanish both give "es" —
+  // and savePack refuses a bundled code outright, so say which codes are taken.
+  if (!args.flags.code && listPacks().includes(code)) {
+    fail(
+      `"${code}" is already in use (the default code is the first two letters of ` +
+        `"${language}"). Re-run with an explicit --code.`,
+    );
+  }
   const count = Number(args.flags.count ?? 300);
   const model = (args.flags.model as string) || loadSettings().settings.model;
 
@@ -350,7 +375,7 @@ async function cmdPack(args: Args): Promise<void> {
   process.stdout.write(`Generating the top ${count} words in ${language} with ${model}…\n`);
   try {
     const raw = await generatePack(language, code, count, { model });
-    const file = savePack(raw);
+    const file = savePack(raw, { overwrite: args.flags.overwrite === true });
     process.stdout.write(`Wrote ${raw.words.length} words to ${file}\n`);
     process.stdout.write(`Study it with: ${BIN} --lang ${raw.code}\n`);
   } catch (error) {
@@ -363,8 +388,29 @@ function cmdReset(args: Args): void {
   if (!args.flags.yes) {
     fail(`this erases your ${settings.lang} progress. Re-run with --yes to confirm.`);
   }
-  const file = paths.progress(settings.lang);
-  writeJsonAtomic(file, emptyProgress(settings.lang));
+
+  // Take the same lock the pane takes. Without it, reset writes an empty deck and
+  // reports success while an open pane simply saves its whole in-memory deck back
+  // over the top — the one command whose job is destroying data would be the one
+  // command that ignores the single-writer guarantee.
+  const lockFile = paths.lock(settings.lang);
+  const held = lock.acquire(lockFile);
+  if (!held.ok) {
+    if (held.reason === "held") {
+      const who = held.pid === null ? "another claudelingo pane" : `pid ${held.pid}`;
+      fail(
+        `${who} is studying ${settings.lang} and would write its deck back over the ` +
+          `reset. Close it and try again. If no pane is running, delete ${lockFile}.`,
+      );
+    }
+    fail(`could not take the lock for ${settings.lang} (${held.error.message}); not resetting.`);
+  }
+
+  try {
+    writeJsonAtomic(paths.progress(settings.lang), emptyProgress(settings.lang));
+  } finally {
+    held.lock.release();
+  }
   process.stdout.write(`Reset progress for ${settings.lang}.\n`);
 }
 
@@ -409,8 +455,8 @@ async function cmdRun(args: Args): Promise<void> {
     // Its own key: filed under `save`, the next successful deck write would clear
     // it and the pane would look healthy while the guarantee was still off.
     problems.lock =
-      `could not take the single-pane lock (${acquired.error.message}); ` +
-      "close any other claudelingo pane for this language.";
+      `no single-pane lock (${acquired.error.message}) — another pane could ` +
+      "overwrite this one's progress. Close any other pane for this language.";
   }
 
   if (!fs.existsSync(statusFile)) {
@@ -419,7 +465,7 @@ async function cmdRun(args: Args): Promise<void> {
     } catch (error) {
       // Nothing else can see this: without a status file the pane is blind to
       // the agent, and no later write of a *different* file would reveal it.
-      problems.status = `cannot record agent state: ${(error as Error).message}`;
+      problems.statusWrite = `cannot record agent state: ${(error as Error).message}`;
     }
   }
 

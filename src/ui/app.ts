@@ -17,7 +17,10 @@ export type ProblemKey =
   | "deck"
   | "settings"
   | "lock"
+  /** The status file cannot be read, so the pane cannot see the agent. */
   | "status"
+  /** The status file cannot be written, so Codex turns are never recorded. */
+  | "statusWrite"
   | "codex"
   | "credentials";
 

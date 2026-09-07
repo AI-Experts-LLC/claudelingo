@@ -112,12 +112,6 @@ export function readJsonFile<T>(file: string): ReadResult<T> {
   }
 }
 
-/** Convenience for callers where a missing and a bad file genuinely are the same. */
-export function readJson<T>(file: string): T | null {
-  const result = readJsonFile<T>(file);
-  return result.ok ? result.value : null;
-}
-
 /**
  * Move a file that could not be read out of the way, returning its new path.
  *

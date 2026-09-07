@@ -482,10 +482,6 @@ describe("the answer / idle / next-prompt cycle", () => {
 
   it("puts an unanswered card back exactly where it was", async () => {
     const e = fresh();
-    // Several due cards, staggered, so restoring the card on screen is
-    // distinguishable from simply selecting the next due one. With a single due
-    // card, plain re-selection picks the same word and a broken restore looks
-    // identical to a working one.
     seed(e, [
       { id: "es:1", box: 1, stage: "learning", dueOffsetMs: -5000 },
       { id: "es:2", box: 1, stage: "learning", dueOffsetMs: -4000 },
@@ -495,25 +491,33 @@ describe("the answer / idle / next-prompt cycle", () => {
     await cli(["hook", "UserPromptSubmit"], e);
     pane = new Pane(BASE, e);
     await pane.waitForText("what does");
-    const first = /what does «(.+?)» mean/.exec(pane.lastFrame)?.[1];
 
-    // Move off the first-selected card, so the parked card is NOT the one plain
-    // re-selection would return.
-    pane.send("s");
-    const parkedPane = pane;
-    await parkedPane.until(() => {
-      const term = /what does «(.+?)» mean/.exec(parkedPane.lastFrame)?.[1];
-      return Boolean(term) && term !== first;
-    });
-    const parked = /what does «(.+?)» mean/.exec(pane.lastFrame)?.[1];
-    expect(parked).toBeTruthy();
-    expect(parked).not.toBe(first);
+    /**
+     * The question and its options, exactly as drawn.
+     *
+     * Asserting on the word alone proves nothing: `selectNext` is deterministic,
+     * so re-selecting after an interruption lands on the same word and a broken
+     * restore looks identical. Building a fresh card reshuffles the options, so
+     * the rendered block is what actually distinguishes the two.
+     */
+    const cardBlock = (frame: string) =>
+      frame
+        .split("\n")
+        .filter((line) => /what does|\d\)/.test(line))
+        .join("\n");
+
+    const before = cardBlock(pane.lastFrame);
+    expect(before).toContain("what does");
+    expect(before).toMatch(/4\)/);
 
     await cli(["hook", "Stop"], e);
     await pane.waitForLastFrame("Standing by");
     await cli(["hook", "UserPromptSubmit"], e);
     await pane.waitForLastFrame("what does");
-    expect(/what does «(.+?)» mean/.exec(pane.lastFrame)?.[1]).toBe(parked);
+
+    // Same word AND same options in the same order: the card was put back, not
+    // rebuilt. (The reducer-level guarantee is pinned in test/unit/app.test.ts.)
+    expect(cardBlock(pane.lastFrame)).toBe(before);
   });
 });
 

@@ -224,58 +224,58 @@ describe("unknown language", () => {
   });
 });
 
-describe("claudelingo pack generate", () => {
-  /** Serve one Anthropic streaming response, so the real client path runs. */
-  function stubStream(body: unknown): Promise<{ url: string; close(): void; calls: number }> {
-    return new Promise((resolve) => {
-      const state = { calls: 0 };
-      const server = http.createServer((req, res) => {
-        state.calls += 1;
-        res.writeHead(200, {
-          "content-type": "text/event-stream",
-          "cache-control": "no-cache",
-          connection: "keep-alive",
-        });
-        const send = (event: string, data: unknown) =>
-          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+/** Serve one Anthropic streaming response, so the real client path runs. */
+function stubStream(body: unknown): Promise<{ url: string; close(): void; calls: number }> {
+  return new Promise((resolve) => {
+    const state = { calls: 0 };
+    const server = http.createServer((req, res) => {
+      state.calls += 1;
+      res.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      });
+      const send = (event: string, data: unknown) =>
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
-        send("message_start", {
-          type: "message_start",
-          message: {
-            id: "msg_1", type: "message", role: "assistant", model: "claude-fable-5-1",
-            content: [], stop_reason: null, stop_sequence: null,
-            usage: { input_tokens: 1, output_tokens: 1 },
-          },
-        });
-        send("content_block_start", {
-          type: "content_block_start", index: 0, content_block: { type: "text", text: "" },
-        });
-        send("content_block_delta", {
-          type: "content_block_delta", index: 0,
-          delta: { type: "text_delta", text: JSON.stringify(body) },
-        });
-        send("content_block_stop", { type: "content_block_stop", index: 0 });
-        send("message_delta", {
-          type: "message_delta",
-          delta: { stop_reason: "end_turn", stop_sequence: null },
-          usage: { output_tokens: 20 },
-        });
-        send("message_stop", { type: "message_stop" });
-        res.end();
+      send("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_1", type: "message", role: "assistant", model: "claude-fable-5-1",
+          content: [], stop_reason: null, stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
       });
-      server.listen(0, "127.0.0.1", () => {
-        const port = (server.address() as { port: number }).port;
-        resolve({
-          url: `http://127.0.0.1:${port}`,
-          close: () => server.close(),
-          get calls() {
-            return state.calls;
-          },
-        } as { url: string; close(): void; calls: number });
+      send("content_block_start", {
+        type: "content_block_start", index: 0, content_block: { type: "text", text: "" },
       });
+      send("content_block_delta", {
+        type: "content_block_delta", index: 0,
+        delta: { type: "text_delta", text: JSON.stringify(body) },
+      });
+      send("content_block_stop", { type: "content_block_stop", index: 0 });
+      send("message_delta", {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null },
+        usage: { output_tokens: 20 },
+      });
+      send("message_stop", { type: "message_stop" });
+      res.end();
     });
-  }
+    server.listen(0, "127.0.0.1", () => {
+      const port = (server.address() as { port: number }).port;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () => server.close(),
+        get calls() {
+          return state.calls;
+        },
+      } as { url: string; close(): void; calls: number });
+    });
+  });
+}
 
+describe("claudelingo pack generate", () => {
   it("writes a pack that loads back and can be studied", async () => {
     const e = fresh();
     const server = await stubStream({
@@ -433,5 +433,98 @@ describe("claudelingo status", () => {
     // Telling them to re-run init would be useless; the fix is to delete the file.
     expect(broken.stdout).toContain("unreadable");
     expect(broken.stdout).toContain("delete it");
+  });
+});
+
+describe("generated pack codes", () => {
+  it("refuses a code that would be shadowed by a bundled pack", async () => {
+    // `--lang Estonian` defaults to code "es". Writing it would cost a real
+    // generation, print "Study it with: claudelingo --lang es", and study Spanish.
+    const e = fresh();
+    const result = await cli(["pack", "generate", "--lang", "Estonian"], e);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("already in use");
+    expect(result.stderr).toContain("--code");
+    expect(fs.existsSync(path.join(e.home, "packs", "es.json"))).toBe(false);
+  });
+
+  it("refuses to silently overwrite a pack already generated", async () => {
+    // Progress is keyed by position, so replacing a pack in place re-attaches box
+    // levels earned on one language to the words of another.
+    const e = fresh();
+    const packs = path.join(e.home, "packs");
+    fs.mkdirSync(packs, { recursive: true });
+    const existing = JSON.stringify({
+      code: "pt", name: "P", englishName: "Portuguese",
+      words: [["um", "one", "num"]],
+    });
+    fs.writeFileSync(path.join(packs, "pt.json"), existing);
+
+    const server = await stubStream({
+      code: "pt", name: "Polski", englishName: "Polish",
+      words: [{ term: "jeden", gloss: "one", pos: "num" }],
+    });
+    try {
+      const result = await cli(
+        ["pack", "generate", "--lang", "Polish", "--code", "pt"],
+        e,
+        { ANTHROPIC_API_KEY: "test-key-not-real", ANTHROPIC_BASE_URL: server.url },
+      );
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("--overwrite");
+      expect(fs.readFileSync(path.join(packs, "pt.json"), "utf8")).toBe(existing);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("replaces one when told to", async () => {
+    const e = fresh();
+    const packs = path.join(e.home, "packs");
+    fs.mkdirSync(packs, { recursive: true });
+    fs.writeFileSync(
+      path.join(packs, "pt.json"),
+      JSON.stringify({ code: "pt", name: "P", englishName: "Portuguese", words: [["um", "one", "num"]] }),
+    );
+    const server = await stubStream({
+      code: "pt", name: "Polski", englishName: "Polish",
+      words: [{ term: "jeden", gloss: "one", pos: "num" }],
+    });
+    try {
+      const result = await cli(
+        ["pack", "generate", "--lang", "Polish", "--code", "pt", "--overwrite"],
+        e,
+        { ANTHROPIC_API_KEY: "test-key-not-real", ANTHROPIC_BASE_URL: server.url },
+      );
+      expect(result.code).toBe(0);
+      const langs = await cli(["langs"], e);
+      expect(langs.stdout).toContain("Polish");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("lets a user pack take precedence over a bundled one when placed by hand", async () => {
+    const e = fresh();
+    const packs = path.join(e.home, "packs");
+    fs.mkdirSync(packs, { recursive: true });
+    fs.writeFileSync(
+      path.join(packs, "es.json"),
+      JSON.stringify({
+        code: "es", name: "MiEspanol", englishName: "MySpanish",
+        words: [["uno", "one", "num"], ["dos", "two", "num"], ["tres", "three", "num"], ["cuatro", "four", "num"]],
+      }),
+    );
+    const langs = await cli(["langs"], e);
+    expect(langs.stdout).toContain("MySpanish");
+    expect(langs.stdout).not.toContain("312 words");
+  });
+});
+
+describe("flags that need a value", () => {
+  it("rejects a trailing --lang instead of silently using the default", async () => {
+    const result = await cli(["stats", "--lang"], fresh());
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("--lang needs a value");
   });
 });

@@ -172,54 +172,162 @@ export function classifyNotification(json: string): AgentState | null {
   }
 }
 
+interface RolloutFile {
+  file: string;
+  mtime: number;
+  size: number;
+}
+
 interface RolloutScan {
-  files: Array<{ file: string; mtime: number; size: number }>;
+  files: RolloutFile[];
   /** Set when any directory under the sessions root could not be listed. */
   error: Error | null;
 }
 
 /**
- * Every rollout transcript under `dir`, newest last.
- *
- * A failure to read ANY directory is reported rather than swallowed: an unreadable
- * folder silently kills the only signal that a Codex turn started, and the pane
- * would simply never wake up again.
+ * How long after a directory's mtime its listing is still treated as volatile.
+ * Covers one-second mtime granularity with room to spare.
  */
-function scanRollouts(dir: string): RolloutScan {
-  const files: RolloutScan["files"] = [];
-  let rootError: Error | null = null;
+const MTIME_GRANULARITY_MS = 2000;
 
-  const walk = (current: string, depth: number) => {
-    if (depth > 5) return;
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch (error) {
-      // A missing directory is normal (Codex not installed, or a date folder
-      // removed mid-scan); anything else means we are blind to whatever is inside.
-      // Reporting only at depth 0 would miss every real case: Codex stores
-      // transcripts at sessions/YYYY/MM/DD, so the unreadable directory is nested.
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT" && !rootError) rootError = error as Error;
-      return;
-    }
-    for (const entry of entries) {
-      const full = path.join(current, entry.name);
-      if (entry.isDirectory()) walk(full, depth + 1);
-      else if (entry.name.endsWith(".jsonl")) {
-        try {
-          const stat = fs.statSync(full);
-          files.push({ file: full, mtime: stat.mtimeMs, size: stat.size });
-        } catch {
-          // Vanished between readdir and stat.
+interface DirCache {
+  mtimeMs: number;
+  files: Map<string, { mtime: number; size: number }>;
+  subdirs: string[];
+}
+
+/**
+ * Walks the sessions tree, reusing what it saw last time.
+ *
+ * The naive version re-listed and re-stat'd every transcript on every tick. Codex
+ * history is never pruned, so for an established user that is thousands of stats a
+ * second, ~99.9% of them discarded — a companion pane meant to sit quietly ends up
+ * competing for CPU with the agent it is waiting on.
+ *
+ * A directory's mtime changes when a transcript is created or removed inside it, so
+ * an unchanged directory can be served entirely from cache. Appends do NOT change
+ * the parent's mtime, so files that might be appended to — the ones we are actually
+ * following — are always re-stat'd by the caller.
+ */
+class RolloutScanner {
+  private dirs = new Map<string, DirCache>();
+
+  constructor(private readonly root: string) {}
+
+  /**
+   * Every transcript in the tree. Used once, to seed history.
+   */
+  all(): RolloutScan {
+    const files: RolloutFile[] = [];
+    const error = this.walk((file) => files.push(file));
+    files.sort((a, b) => a.mtime - b.mtime);
+    return { files, error };
+  }
+
+  /**
+   * The most recently modified transcript.
+   *
+   * Tracked as the walk proceeds rather than by collecting and sorting every file:
+   * on a long Codex history that array was thousands of entries rebuilt and sorted
+   * on every sweep, which was most of the watcher's cost.
+   */
+  newest(): { file: RolloutFile | null; error: Error | null } {
+    let best: RolloutFile | null = null;
+    const error = this.walk((file) => {
+      if (!best || file.mtime > best.mtime) best = file;
+    });
+    return { file: best, error };
+  }
+
+  private walk(visit: (file: RolloutFile) => void): Error | null {
+    let error: Error | null = null;
+    const seen = new Set<string>();
+
+    const descend = (current: string, depth: number) => {
+      if (depth > 5) return;
+      seen.add(current);
+
+      let dirMtime: number;
+      try {
+        dirMtime = fs.statSync(current).mtimeMs;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT" && !error) error = err as Error;
+        this.dirs.delete(current);
+        return;
+      }
+
+      // Directory mtimes are coarse — one second on many filesystems — so a
+      // directory listed in the same tick as a file created inside it comes back
+      // with an unchanged mtime and the cache would never invalidate. Anything
+      // recently touched is re-listed; that is only ever the active date folder,
+      // so the established history still comes from cache.
+      const cached = this.dirs.get(current);
+      const settled = Date.now() - dirMtime > MTIME_GRANULARITY_MS;
+      if (cached && settled && cached.mtimeMs === dirMtime) {
+        for (const [file, stat] of cached.files) visit({ file, ...stat });
+        // Sub-directories still need visiting: a new transcript inside one of them
+        // changes that directory's mtime, not this one's.
+        for (const child of cached.subdirs) descend(child, depth + 1);
+        return;
+      }
+
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(current, { withFileTypes: true });
+      } catch (err) {
+        // A missing directory is normal (Codex not installed, or a date folder
+        // removed mid-scan); anything else means we are blind to what is inside.
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT" && !error) error = err as Error;
+        this.dirs.delete(current);
+        return;
+      }
+
+      const found = new Map<string, { mtime: number; size: number }>();
+      const subdirs: string[] = [];
+      for (const entry of entries) {
+        const full = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          subdirs.push(full);
+          descend(full, depth + 1);
+        } else if (entry.name.endsWith(".jsonl")) {
+          try {
+            const stat = fs.statSync(full);
+            found.set(full, { mtime: stat.mtimeMs, size: stat.size });
+            visit({ file: full, mtime: stat.mtimeMs, size: stat.size });
+          } catch {
+            // Vanished between readdir and stat.
+          }
         }
       }
-    }
-  };
+      this.dirs.set(current, { mtimeMs: dirMtime, files: found, subdirs });
+    };
 
-  walk(dir, 0);
-  files.sort((a, b) => a.mtime - b.mtime);
-  return { files, error: rootError };
+    descend(this.root, 0);
+    for (const known of [...this.dirs.keys()]) {
+      if (!seen.has(known)) this.dirs.delete(known);
+    }
+    return error;
+  }
+
+  /**
+   * Refresh one file's cached mtime.
+   *
+   * Appending to a transcript does not touch its directory's mtime, so without this
+   * a followed file could never become "newest" again from the cache alone.
+   */
+  refresh(file: string): void {
+    const dir = path.dirname(file);
+    const cached = this.dirs.get(dir);
+    if (!cached) return;
+    try {
+      const stat = fs.statSync(file);
+      cached.files.set(file, { mtime: stat.mtimeMs, size: stat.size });
+    } catch {
+      cached.files.delete(file);
+    }
+  }
 }
 
 export interface SessionWatcher {
@@ -235,10 +343,22 @@ export interface WatchOptions {
    * a recovered watcher leaves a permanent banner claiming it is broken.
    */
   onError?: (message: string | null) => void;
+  /**
+   * How often to look for a *different* transcript becoming the newest. Following
+   * the current one is done on every tick; hunting for new sessions is not, because
+   * that is the part whose cost grows with the user's Codex history.
+   */
+  scanIntervalMs?: number;
 }
 
 /** Consecutive read failures tolerated before the user is told the tailer is broken. */
 const FAILURE_LIMIT = 5;
+
+/**
+ * How many pre-existing transcripts stay under active watch, newest first.
+ * `codex resume` reopens a recent session; anything older is history.
+ */
+const RESUME_CANDIDATES = 8;
 
 /**
  * Follow the newest Codex rollout transcript and report busy/idle transitions.
@@ -256,10 +376,10 @@ export function watchCodexSession(
 ): SessionWatcher {
   const dir = options.dir ?? codexSessionsDir();
   const intervalMs = options.intervalMs ?? 500;
+  const scanIntervalMs = options.scanIntervalMs ?? 1000;
 
   let file: string | null = null;
   let offset = 0;
-  let carry = "";
   let failures = 0;
   let reported = false;
 
@@ -271,11 +391,35 @@ export function watchCodexSession(
    * Sizes matter as well as names: a session resumed in an older transcript would
    * otherwise only be noticed once that file became the newest one.
    */
+  const scanner = new RolloutScanner(dir);
+
   // Seeded with the size each transcript had at startup, then updated as bytes are
   // consumed. Falling back to the startup size when the newest file changes would
   // re-read everything since the pane opened whenever two sessions alternate —
   // replaying a stale `idle` that stands the pane down mid-turn.
-  const consumed = new Map(scanRollouts(dir).files.map((f) => [f.file, f.size] as const));
+  const seed = scanner.all();
+  const consumed = new Map(seed.files.map((f) => [f.file, f.size] as const));
+  // A subtree we could not read at startup contributed no seed entries. If it later
+  // becomes readable, its transcripts must be adopted as history rather than read
+  // from the beginning — replaying them would act on a long-dead agent state.
+  const seedIncomplete = seed.error !== null;
+  const startedAt = Date.now();
+  /**
+   * Transcripts whose mtimes are re-checked on every sweep.
+   *
+   * Appending to a file does not change its directory's mtime, so a transcript in
+   * a settled directory would otherwise keep serving a stale cached entry and
+   * never look like the newest again. Two kinds need watching: the ones we have
+   * followed, and the handful most recently written before we started — which is
+   * what `codex resume` reopens. Bounded on purpose; watching the whole history is
+   * exactly the cost the cache exists to avoid.
+   */
+  const watchlist = new Set<string>(
+    seed.files.slice(-RESUME_CANDIDATES).map((f) => f.file),
+  );
+  // Partial lines are per-file: keeping one shared buffer splices the tail of one
+  // transcript onto the head of another when the newest file changes.
+  const carries = new Map<string, string>();
 
   const fail = (message: string) => {
     failures += 1;
@@ -293,6 +437,11 @@ export function watchCodexSession(
    * append never reaches the reporting threshold, because the quiet polls in
    * between keep resetting it.
    */
+  const carry = () => (file ? (carries.get(file) ?? "") : "");
+  const setCarry = (value: string) => {
+    if (file) carries.set(file, value);
+  };
+
   const recovered = () => {
     failures = 0;
     if (reported) {
@@ -303,25 +452,61 @@ export function watchCodexSession(
     }
   };
 
-  const poll = () => {
-    // The directory may not exist yet; keep looking, so opening the pane before
-    // Codex has ever run does not disable the integration for the whole session.
-    const scan = scanRollouts(dir);
-    if (scan.error) {
-      fail(`cannot read ${dir}: ${scan.error.message}`);
-      return;
-    }
-    const newest = scan.files.at(-1);
-    if (!newest) return;
+  let lastScan = 0;
 
+  const poll = () => {
+    const now = Date.now();
+    // Hunting for a newer transcript walks the tree; following the one already
+    // open does not. Separating them keeps the steady-state cost flat no matter
+    // how much Codex history has piled up, and a session that starts is still
+    // noticed well inside the time a turn takes.
+    const due = file === null || now - lastScan >= scanIntervalMs;
+
+    if (due) {
+      lastScan = now;
+      // Appends do not change a directory's mtime, so a cached entry goes stale the
+      // moment a transcript is written to. Refresh every transcript we have
+      // followed this run — a bounded set, one per session seen — or flipping back
+      // to an earlier session would never be noticed.
+      for (const seen of watchlist) scanner.refresh(seen);
+
+      // The directory may not exist yet; keep looking, so opening the pane before
+      // Codex has ever run does not disable the integration for the whole session.
+      const scan = scanner.newest();
+      if (scan.error) {
+        fail(`cannot read ${dir}: ${scan.error.message}`);
+        // Carry on with whatever was readable: one unreadable stray directory must
+        // not disable the integration for every transcript we CAN see.
+      }
+      if (!scan.file) return;
+      adopt(scan.file);
+    }
+
+    if (!file) return;
+    readNewBytes(file);
+  };
+
+  function adopt(newest: { file: string; size: number; mtime: number }): void {
     if (newest.file !== file) {
-      if (file) consumed.set(file, offset);
+      if (file) {
+        consumed.set(file, offset);
+        carries.set(file, carry());
+      }
       file = newest.file;
-      carry = "";
+      watchlist.add(file);
+      if (!consumed.has(file) && seedIncomplete && newest.mtime < startedAt) {
+        // The startup scan could not see everything, so this may have been hidden
+        // behind an unreadable directory rather than being new. Its mtime settles
+        // it: last written before we started, so it is history — adopt it at its
+        // current size instead of replaying a long-dead agent state.
+        consumed.set(file, newest.size);
+      }
       // Resume where we left off in this file; one never seen before starts at zero.
       offset = consumed.get(file) ?? 0;
     }
+  }
 
+  function readNewBytes(file: string): void {
     let size: number;
     try {
       size = fs.statSync(file).size;
@@ -333,7 +518,7 @@ export function watchCodexSession(
       // Truncated or rewritten. Re-reading from zero would replay every past turn
       // and fire a spurious busy, so resync to the new end instead.
       offset = size;
-      carry = "";
+      setCarry("");
       consumed.set(file, offset);
       return;
     }
@@ -356,7 +541,7 @@ export function watchCodexSession(
       // partial line too, or it is spliced onto the next chunk and that line is
       // silently discarded as unrecognised.
       offset = size;
-      carry = "";
+      setCarry("");
       consumed.set(file, offset);
       return;
     } finally {
@@ -372,8 +557,8 @@ export function watchCodexSession(
     consumed.set(file, offset);
     recovered();
 
-    const lines = (carry + chunk).split("\n");
-    carry = lines.pop() ?? "";
+    const lines = (carry() + chunk).split("\n");
+    setCarry(lines.pop() ?? "");
     for (const line of lines) {
       if (!line.trim()) continue;
       const state = classifyRolloutLine(line);

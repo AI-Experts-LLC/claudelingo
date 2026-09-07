@@ -230,6 +230,7 @@ describe("Codex session watcher", () => {
     const watcher = codex.watchCodexSession((s) => seen.push(s), {
       dir: path.join(sessions, "..", "..", ".."),
       intervalMs: 20,
+      scanIntervalMs: 20,
     });
     // First poll adopts the file; appends after that are what we react to.
     await new Promise((r) => setTimeout(r, 60));
@@ -264,6 +265,7 @@ describe("Codex session watcher", () => {
     const watcher = codex.watchCodexSession((s) => states.push(s), {
       dir: path.join(dir(), "does-not-exist"),
       intervalMs: 20,
+      scanIntervalMs: 20,
       onError: (m) => errors.push(m),
     });
     await new Promise((r) => setTimeout(r, 200));
@@ -280,7 +282,7 @@ describe("Codex session watcher", () => {
     fs.chmodSync(sessions, 0o000);
     const errors: Array<string | null> = [];
     const watcher = codex.watchCodexSession(() => {}, {
-      dir: sessions, intervalMs: 10, onError: (m) => errors.push(m),
+      dir: sessions, intervalMs: 10, scanIntervalMs: 10, onError: (m) => errors.push(m),
     });
     try {
       await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0), {
@@ -327,7 +329,7 @@ describe("Codex watcher: which bytes it reads", () => {
 
     const seen: string[] = [];
     const watcher = codex.watchCodexSession((s) => seen.push(s), {
-      dir: sessions, intervalMs: 20,
+      dir: sessions, intervalMs: 20, scanIntervalMs: 20,
     });
     await settle(60);
 
@@ -349,7 +351,7 @@ describe("Codex watcher: which bytes it reads", () => {
 
     const seen: string[] = [];
     const watcher = codex.watchCodexSession((s) => seen.push(s), {
-      dir: sessions, intervalMs: 20,
+      dir: sessions, intervalMs: 20, scanIntervalMs: 20,
     });
     await settle(200);
     expect(seen).toEqual([]);
@@ -364,7 +366,7 @@ describe("Codex watcher: which bytes it reads", () => {
 
     const seen: string[] = [];
     const watcher = codex.watchCodexSession((s) => seen.push(s), {
-      dir: sessions, intervalMs: 20,
+      dir: sessions, intervalMs: 20, scanIntervalMs: 20,
     });
     await settle(80);
     expect(seen).toEqual([]); // pre-existing history ignored
@@ -387,7 +389,7 @@ describe("Codex watcher: which bytes it reads", () => {
 
     const seen: string[] = [];
     const watcher = codex.watchCodexSession((s) => seen.push(s), {
-      dir: sessions, intervalMs: 20,
+      dir: sessions, intervalMs: 20, scanIntervalMs: 20,
     });
     await settle(60);
 
@@ -417,7 +419,7 @@ describe("Codex watcher: which bytes it reads", () => {
     const sessions = path.join(home, "sessions");
     const seen: string[] = [];
     const watcher = codex.watchCodexSession((s) => seen.push(s), {
-      dir: sessions, intervalMs: 20,
+      dir: sessions, intervalMs: 20, scanIntervalMs: 20,
     });
     await settle(60);
 
@@ -438,7 +440,7 @@ describe("Codex watcher: which bytes it reads", () => {
 
     const errors: Array<string | null> = [];
     const watcher = codex.watchCodexSession(() => {}, {
-      dir: sessions, intervalMs: 10, onError: (m) => errors.push(m),
+      dir: sessions, intervalMs: 10, scanIntervalMs: 10, onError: (m) => errors.push(m),
     });
     await settle(40);
 
@@ -475,7 +477,7 @@ describe("Codex watcher: reporting and recovering", () => {
 
     const errors: Array<string | null> = [];
     const watcher = codex.watchCodexSession(() => {}, {
-      dir: sessions, intervalMs: 10, onError: (m) => errors.push(m),
+      dir: sessions, intervalMs: 10, scanIntervalMs: 10, onError: (m) => errors.push(m),
     });
     try {
       await vi.waitFor(() => expect(errors.filter(Boolean).length).toBeGreaterThan(0), {
@@ -498,7 +500,7 @@ describe("Codex watcher: reporting and recovering", () => {
     const errors: Array<string | null> = [];
     const states: string[] = [];
     const watcher = codex.watchCodexSession((s) => states.push(s), {
-      dir: sessions, intervalMs: 10, onError: (m) => errors.push(m),
+      dir: sessions, intervalMs: 10, scanIntervalMs: 10, onError: (m) => errors.push(m),
     });
     try {
       await vi.waitFor(() => expect(errors.filter(Boolean).length).toBeGreaterThan(0), {
@@ -531,7 +533,7 @@ describe("Codex watcher: reporting and recovering", () => {
 
     const seen: string[] = [];
     const watcher = codex.watchCodexSession((s) => seen.push(s), {
-      dir: sessions, intervalMs: 20,
+      dir: sessions, intervalMs: 20, scanIntervalMs: 20,
     });
     await settle(60);
 
@@ -555,5 +557,126 @@ describe("Codex watcher: reporting and recovering", () => {
     await settle(200);
     expect(seen).toEqual(["busy", "idle", "busy", "busy"]);
     watcher.stop();
+  });
+});
+
+describe("Codex watcher: cost and correctness of the scan", () => {
+  it("notices a new session at the default cadence, without being told to hurry", async () => {
+    // The production sweep is throttled so that idle cost does not grow with Codex
+    // history; it still has to notice a session well inside the time a turn takes.
+    const sessions = path.join(dir(), "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const seen: string[] = [];
+    const watcher = codex.watchCodexSession((s) => seen.push(s), { dir: sessions });
+    try {
+      fs.writeFileSync(
+        path.join(sessions, "rollout-new.jsonl"),
+        `${JSON.stringify({ type: "task_started" })}\n`,
+      );
+      await vi.waitFor(() => expect(seen).toContain("busy"), { timeout: 5000, interval: 50 });
+    } finally {
+      watcher.stop();
+    }
+  });
+
+  it("does not re-list a directory that has not changed", async () => {
+    // The whole point of the cache: an established Codex history must not be
+    // re-walked twice a second for the life of the pane.
+    const sessions = path.join(dir(), "sessions");
+    const nested = path.join(sessions, "2026", "09", "07");
+    fs.mkdirSync(nested, { recursive: true });
+    for (let i = 0; i < 40; i++) {
+      fs.writeFileSync(path.join(nested, `rollout-${i}.jsonl`), "{}\n");
+    }
+    // Real Codex history is days old. A directory touched moments ago is treated
+    // as volatile on purpose, because mtime granularity would hide a new file.
+    const old = new Date(Date.now() - 30 * 86_400_000);
+    for (
+      let d = nested;
+      d.startsWith(sessions);
+      d = path.dirname(d)
+    ) {
+      fs.utimesSync(d, old, old);
+    }
+
+    const readdir = vi.spyOn(fs, "readdirSync");
+    const watcher = codex.watchCodexSession(() => {}, {
+      dir: sessions, intervalMs: 10, scanIntervalMs: 10,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 300));
+      // ~30 sweeps have run over settled history; the tree is listed once at
+      // startup and then served from cache, so the count stays in single figures
+      // rather than growing with every sweep.
+      expect(readdir.mock.calls.length).toBeLessThan(10);
+    } finally {
+      readdir.mockRestore();
+      watcher.stop();
+    }
+  });
+
+  it("re-lists as soon as a directory actually changes", async () => {
+    const sessions = path.join(dir(), "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(path.join(sessions, "rollout-1.jsonl"), "{}\n");
+
+    const seen: string[] = [];
+    const watcher = codex.watchCodexSession((s) => seen.push(s), {
+      dir: sessions, intervalMs: 10, scanIntervalMs: 10,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 60));
+      fs.writeFileSync(
+        path.join(sessions, "rollout-2.jsonl"),
+        `${JSON.stringify({ type: "task_started" })}\n`,
+      );
+      await vi.waitFor(() => expect(seen).toContain("busy"), { timeout: 3000, interval: 20 });
+    } finally {
+      watcher.stop();
+    }
+  });
+});
+
+describe("Codex watcher: the cache must not hide an append", () => {
+  it("notices a followed transcript being appended to in a settled directory", async () => {
+    // The subtle failure the directory cache can cause: appending to a file does
+    // NOT change its directory's mtime, so a settled directory keeps serving the
+    // stale entry and an earlier session that resumes is never seen again.
+    const sessions = path.join(dir(), "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const a = path.join(sessions, "rollout-a.jsonl");
+    const b = path.join(sessions, "rollout-b.jsonl");
+    const line = (type: string) => `${JSON.stringify({ type })}\n`;
+    fs.writeFileSync(a, "");
+    fs.writeFileSync(b, "");
+
+    // Age the directory so the scanner genuinely serves it from cache.
+    const old = new Date(Date.now() - 30 * 86_400_000);
+    fs.utimesSync(sessions, old, old);
+
+    const seen: string[] = [];
+    const watcher = codex.watchCodexSession((s) => seen.push(s), {
+      dir: sessions, intervalMs: 20, scanIntervalMs: 20,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 80));
+
+      fs.appendFileSync(a, line("task_started"));
+      await vi.waitFor(() => expect(seen).toEqual(["busy"]), { timeout: 3000, interval: 20 });
+
+      fs.appendFileSync(b, line("task_complete"));
+      await vi.waitFor(() => expect(seen).toEqual(["busy", "idle"]), {
+        timeout: 3000, interval: 20,
+      });
+
+      // Back to A. Its directory has not changed, so only an explicit refresh of
+      // the transcripts we have followed can see this.
+      fs.appendFileSync(a, line("task_started"));
+      await vi.waitFor(() => expect(seen).toEqual(["busy", "idle", "busy"]), {
+        timeout: 3000, interval: 20,
+      });
+    } finally {
+      watcher.stop();
+    }
   });
 });

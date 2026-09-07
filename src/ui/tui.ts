@@ -100,15 +100,30 @@ export function run(options: RunOptions): Runner {
     initialAgent,
     Date.now(),
   );
+  /** True when nothing is drawing the panel, so problems have nowhere to appear. */
+  const noPanel = !isTty && !options.forceRender;
+  const announced = new Set<string>();
+
+  /** Mirror a problem to stderr when there is no panel to show it on. */
+  const announce = (key: ProblemKey, message: string | null) => {
+    if (!noPanel) return;
+    const seen = `${key}:${message ?? ""}`;
+    if (message === null || announced.has(seen)) return;
+    announced.add(seen);
+    try {
+      process.stderr.write(`claudelingo: ${message}\n`);
+    } catch {
+      // Nowhere left to report.
+    }
+  };
+
   if (options.initialProblems) {
     state = { ...state, problems: { ...state.problems, ...options.initialProblems } };
     // The panel is the only place problems are shown, and it is not drawn at all
     // when stdout is not a terminal. Without this, piping the pane anywhere makes
     // a quarantined deck or a failed install completely invisible.
-    if (!isTty && !options.forceRender) {
-      for (const message of Object.values(options.initialProblems)) {
-        if (message) process.stderr.write(`claudelingo: ${message}\n`);
-      }
+    for (const [key, message] of Object.entries(options.initialProblems)) {
+      announce(key as ProblemKey, message ?? null);
     }
   }
 
@@ -194,10 +209,12 @@ export function run(options: RunOptions): Runner {
     if (message === null) delete problems[key];
     else problems[key] = message;
     state = { ...state, problems };
+    announce(key, message);
   };
 
   const dispatch = (event: Event) => {
     if (stopped) return;
+    if (event.type === "problem") announce(event.key, event.message);
     const step = reduce(state, event, options.pack);
     state = step.state;
     applyEffects(step.effects);
@@ -220,14 +237,14 @@ export function run(options: RunOptions): Runner {
           event: "rollout",
           ts: Date.now(),
         });
-        dispatch({ type: "problem", key: "status", message: null });
+        dispatch({ type: "problem", key: "statusWrite", message: null });
       } catch (error) {
         // Nothing else can see this failure: the transcript watcher only reports
         // problems reading transcripts, and without a status write the pane will
         // never notice a Codex turn.
         dispatch({
           type: "problem",
-          key: "status",
+          key: "statusWrite",
           message: `cannot record agent state: ${(error as Error).message}`,
         });
       }

@@ -28,13 +28,32 @@ export type AcquireResult =
   /** The lock itself could not be created — the single-pane guarantee is off. */
   | { ok: false; reason: "unavailable"; error: Error };
 
-function read(file: string): LockFile | null {
+type LockRead =
+  /** A lock naming a live or dead pid. */
+  | { state: "held"; lock: LockFile }
+  /** The file is not there — it was released between our attempt and this read. */
+  | { state: "gone" }
+  /** The file exists but names nobody. Never something we wrote. */
+  | { state: "unreadable" };
+
+function read(file: string): LockRead {
+  let raw: string;
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as LockFile;
-    return typeof parsed?.pid === "number" ? parsed : null;
-  } catch {
-    return null;
+    raw = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    // Distinguishing this from a parse failure matters: refusing on ENOENT rejects
+    // a pane started the instant another exits, naming a file that is already gone.
+    return (error as NodeJS.ErrnoException).code === "ENOENT"
+      ? { state: "gone" }
+      : { state: "unreadable" };
   }
+  try {
+    const parsed = JSON.parse(raw) as LockFile;
+    if (typeof parsed?.pid === "number") return { state: "held", lock: parsed };
+  } catch {
+    // Falls through to unreadable.
+  }
+  return { state: "unreadable" };
 }
 
 function releaseFor(file: string): Lock {
@@ -46,7 +65,7 @@ function releaseFor(file: string): Lock {
       // Only remove a lock that is still ours: a reclaimed one may already
       // belong to a pane that started after us.
       const current = read(file);
-      if (current && current.pid !== process.pid) return;
+      if (current.state === "held" && current.lock.pid !== process.pid) return;
       try {
         fs.rmSync(file, { force: true });
       } catch {
@@ -115,17 +134,19 @@ export function acquire(file: string): AcquireResult {
       return { ok: false, reason: "unavailable", error: error as Error };
     }
 
-    // The file exists. Decide whether its owner is still around.
+    // The link failed, so something was there. Work out what.
     const current = read(file);
-    if (!current) {
+    if (current.state === "gone") continue; // released in between; try again
+
+    if (current.state === "unreadable") {
       // A lock that names nobody. Since `claim` links the file into place already
       // populated, we cannot have produced this — so it is either someone else's
       // corruption or a truly ancient artefact. Refusing is the safe answer: a
       // wrong "stale" call here deletes a live pane's lock.
       return { ok: false, reason: "held", pid: null };
     }
-    if (current.pid === process.pid) return { ok: true, lock: releaseFor(file) };
-    if (alive(current.pid)) return { ok: false, reason: "held", pid: current.pid };
+    if (current.lock.pid === process.pid) return { ok: true, lock: releaseFor(file) };
+    if (alive(current.lock.pid)) return { ok: false, reason: "held", pid: current.lock.pid };
 
     // The holder is gone. Clear it and try the exclusive create once more; a live
     // pane that recreates it in between wins, and we back off on the next pass.
@@ -136,9 +157,11 @@ export function acquire(file: string): AcquireResult {
     }
   }
 
-  return { ok: false, reason: "held", pid: read(file)?.pid ?? null };
+  const final = read(file);
+  return { ok: false, reason: "held", pid: final.state === "held" ? final.lock.pid : null };
 }
 
 export function holderPid(file: string): number | null {
-  return read(file)?.pid ?? null;
+  const current = read(file);
+  return current.state === "held" ? current.lock.pid : null;
 }

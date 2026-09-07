@@ -6,9 +6,22 @@ import type { Pack, RawPack, Word } from "../types.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-/** Bundled packs ship next to the compiled loader; user packs live under the home dir. */
+/**
+ * User packs are searched first, so a hand-placed pack can deliberately replace a
+ * bundled one. `savePack` refuses to generate into a bundled code, so the common
+ * accident — `--lang Estonian` defaulting to code `es` — cannot happen silently.
+ */
 function searchDirs(): string[] {
-  return [here, paths.packs()];
+  return [paths.packs(), here];
+}
+
+/** Codes that ship with claudelingo and therefore cannot be generated into. */
+export function bundledCodes(): string[] {
+  return fs
+    .readdirSync(here)
+    .filter((file) => file.endsWith(".json"))
+    .map((file) => path.basename(file, ".json"))
+    .sort();
 }
 
 export class PackError extends Error {}
@@ -66,11 +79,28 @@ export function listPacks(): string[] {
   return [...codes].sort();
 }
 
-export function savePack(raw: RawPack): string {
+export function savePack(raw: RawPack, options: { overwrite?: boolean } = {}): string {
   // Validate first: a half-valid generated pack must never land on disk, where
   // it would fail on every later load instead of once, here, with a reason.
   materialize(raw);
+
+  if (bundledCodes().includes(raw.code)) {
+    throw new PackError(
+      `"${raw.code}" is a language that already ships with claudelingo. ` +
+        "Choose a different --code, or the generated pack would collide with it — " +
+        "including the progress file, which is keyed by code.",
+    );
+  }
+
   const file = path.join(paths.packs(), `${raw.code}.json`);
+  if (!options.overwrite && fs.existsSync(file)) {
+    throw new PackError(
+      `${file} already exists. Re-run with --overwrite to replace it — note that ` +
+        `progress-${raw.code}.json is keyed by position, so box levels earned on the ` +
+        "old pack would re-attach to whatever word now sits at each rank.",
+    );
+  }
+
   writeJsonAtomic(file, raw);
   return file;
 }

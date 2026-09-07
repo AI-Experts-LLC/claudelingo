@@ -147,6 +147,34 @@ describe("the range tables themselves", () => {
     }
   });
 
+  it("measures combining marks outside Latin as zero columns", () => {
+    // A hand-written table covered Latin accents and missed everything else;
+    // packs can be generated for any language, so these have to be right.
+    for (const [name, cp] of [
+      ["Devanagari sign nukta", 0x093c],
+      ["Devanagari vowel sign u", 0x0941],
+      ["Arabic fatha", 0x064b],
+      ["Hebrew point sheva", 0x05b0],
+      ["Tibetan vowel sign i", 0x0f72],
+      ["Myanmar vowel sign i", 0x102d],
+      ["Thai character mai ek", 0x0e48],
+      ["Balinese sign rerekan", 0x1b34],
+    ] as const) {
+      expect(charWidth(cp), `${name} should be zero columns`).toBe(0);
+    }
+  });
+
+  it("measures wide code points outside the CJK blocks", () => {
+    for (const [name, cp] of [
+      ["angle bracket", 0x2329],
+      ["black large square", 0x2b1b],
+      ["white circle large", 0x2b55],
+      ["hourglass", 0x231a],
+    ] as const) {
+      expect(charWidth(cp), `${name} should be two columns`).toBe(2);
+    }
+  });
+
   it("measures a narrow dingbat as one column", () => {
     // The Misc Symbols block is narrow as a whole; only some code points in it are
     // wide, so it must not be included wholesale.

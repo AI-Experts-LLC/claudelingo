@@ -560,3 +560,84 @@ describe("the lock under real contention", () => {
     expect(runs).toEqual([0, 0, 0, 0]);
   }, 60_000);
 });
+
+describe("reset and the running pane", () => {
+  it("refuses to reset a deck a pane is holding", async () => {
+    // Without the lock, reset reports success and the pane's next save writes its
+    // whole in-memory deck straight back over the empty file.
+    const e = fresh();
+    await cli(["hook", "UserPromptSubmit"], e);
+    const pane = open(BASE, e);
+    await pane.waitForText("#1 most common word");
+    pane.send(" ");
+    await pane.waitForText("#2 most common word");
+
+    const result = await cli(["reset", "--lang", "es", "--yes"], e);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("would write its deck back over the reset");
+
+    // The deck is intact and the pane carries on.
+    expect(Object.keys((readProgress(e, "es") as { items: object }).items)).toEqual(["es:1"]);
+    pane.send(" ");
+    await pane.waitForText("#3 most common word");
+  });
+
+  it("resets once the pane has closed, and the reset sticks", async () => {
+    const e = fresh();
+    await cli(["hook", "UserPromptSubmit"], e);
+    const pane = open(BASE, e);
+    await pane.waitForText("#1 most common word");
+    pane.send(" ");
+    await pane.waitForText("#2 most common word");
+    pane.send("q");
+    expect(await pane.exited).toBe(0);
+
+    const result = await cli(["reset", "--lang", "es", "--yes"], e);
+    expect(result.code).toBe(0);
+    expect((readProgress(e, "es") as { items: object }).items).toEqual({});
+    // And the lock is not left behind.
+    expect(fs.existsSync(path.join(e.home, "progress-es.lock"))).toBe(false);
+  });
+});
+
+describe("a deck whose items are the wrong shape", () => {
+  it("sets it aside instead of splicing garbage into it", async () => {
+    // `items: "oops"` is truthy. A truthiness check lets it through, `stats`
+    // reports confident nonsense, and the next answer saves {"0":"o","1":"o",...}
+    // back over the file.
+    const e = fresh();
+    const file = progressFile(e, "es");
+    const original = JSON.stringify({
+      version: 1, lang: "es", items: "oops",
+      streak: 0, bestStreak: 0, totalAnswered: 0, totalCorrect: 0, introducedByDay: {},
+    });
+    fs.writeFileSync(file, original);
+
+    const stats = await cli(["stats", "--lang", "es"], e);
+    expect(stats.stdout).toMatch(/words started\s+0 of/);
+    expect(stats.stderr).toContain("not a version 1 deck");
+    // stats is read-only.
+    expect(fs.readFileSync(file, "utf8")).toBe(original);
+
+    await cli(["hook", "UserPromptSubmit"], e);
+    const pane = open(BASE, e);
+    await pane.waitForProse("not a version 1 deck");
+    await pane.waitForLastFrame("most common word");
+    pane.send(" ");
+    await pane.waitForText("#2 most common word");
+
+    const saved = readProgress(e, "es") as { items: Record<string, unknown> };
+    expect(Object.keys(saved.items)).toEqual(["es:1"]);
+    expect(fs.readdirSync(e.home).some((f) => f.includes("corrupt-"))).toBe(true);
+  });
+
+  it("rejects an array of items too", async () => {
+    const e = fresh();
+    fs.writeFileSync(
+      progressFile(e, "es"),
+      JSON.stringify({ version: 1, lang: "es", items: [] }),
+    );
+    const stats = await cli(["stats", "--lang", "es"], e);
+    expect(stats.stderr).toContain("not a version 1 deck");
+  });
+});

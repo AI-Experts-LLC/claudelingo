@@ -167,16 +167,15 @@ describe("the single-pane lock", () => {
     expect(result).toMatchObject({ ok: false, reason: "held", pid: 1 });
   });
 
-  it("excludes a genuinely simultaneous second acquirer", () => {
-    // The whole point of the lock. A read-then-write excludes nothing here:
-    // both callers see "no lock" before either writes one.
+  it("adopts its own lock rather than refusing itself", () => {
+    // Within one process a second acquire adopts. Genuine exclusion is between
+    // processes and is covered end to end in the resilience suite.
     const file = path.join(dir(), "es.lock");
     const first = lock.acquire(file);
     const second = lock.acquire(file);
     expect(first.ok).toBe(true);
-    // Same process, so the second call adopts rather than refusing — the
-    // cross-process case is covered end to end in the resilience suite.
     expect(second.ok).toBe(true);
+    expect(lock.holderPid(file)).toBe(process.pid);
     if (first.ok) first.lock.release();
   });
 
@@ -241,9 +240,41 @@ describe("the single-pane lock", () => {
   it("survives a release called twice", () => {
     const file = path.join(dir(), "es.lock");
     const held = lock.acquire(file);
-    if (held.ok) {
-      held.lock.release();
-      expect(() => held.lock.release()).not.toThrow();
+    // Asserted outside the guard: behind an `if`, this test would pass with zero
+    // assertions if acquire ever started failing.
+    expect(held.ok).toBe(true);
+    if (!held.ok) return;
+    held.lock.release();
+    expect(() => held.lock.release()).not.toThrow();
+    expect(fs.existsSync(file)).toBe(false);
+  });
+});
+
+describe("the lock under a release race", () => {
+  it("retries when the holder releases between the link and the read", () => {
+    // The window: our exclusive create fails because a lock exists, and by the
+    // time we read it the holder has exited and removed it. Treating that as an
+    // unreadable lock refuses a pane started the instant another one closed.
+    const file = path.join(dir(), "es.lock");
+    const real = fs.linkSync;
+    let first = true;
+    const spy = vi.spyOn(fs, "linkSync").mockImplementation(((from: string, to: string) => {
+      if (first) {
+        first = false;
+        const error = new Error("EEXIST: file already exists") as NodeJS.ErrnoException;
+        error.code = "EEXIST";
+        throw error;
+      }
+      return real(from, to);
+    }) as typeof fs.linkSync);
+
+    try {
+      const result = lock.acquire(file);
+      expect(result.ok).toBe(true);
+      expect(lock.holderPid(file)).toBe(process.pid);
+      if (result.ok) result.lock.release();
+    } finally {
+      spy.mockRestore();
     }
   });
 });
