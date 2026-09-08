@@ -23,6 +23,7 @@ through to a new card when there is none.
 | They type | Do this |
 |---|---|
 | `/lingo` | Deal a card — the round below |
+| `/lingo quiz me`, `quiz`, `card`, `go` | Deal a card. The panel prints `/lingo quiz me` as its own hint, so this arrives often |
 | `/lingo 1`…`/lingo 9` | `claudelingo answer --choice N` — grade the **outstanding** card, do not deal a new one first |
 | `/lingo ok` (or `got it`, `next`) | `claudelingo answer --choice 1` — acknowledge a `teach` card |
 | `/lingo skip` | `claudelingo skip` |
@@ -30,10 +31,18 @@ through to a new card when there is none.
 | `/lingo lang` | `claudelingo lang` — report, and list what is installed |
 | `/lingo lang fr`, `/lingo fr` | `claudelingo lang fr` |
 | `/lingo off` / `/lingo on` | `claudelingo panel off` / `claudelingo panel on` |
-| anything else | Treat it as a typed answer: `claudelingo answer --text "<what they typed>"` |
+| `/lingo help` | List these, briefly |
+| anything else, **and only while a card is outstanding** | Treat it as a typed answer: `claudelingo answer --text "<what they typed>"` |
+| anything else, with nothing outstanding | Deal a card |
 
 A bare number always means "grade what is outstanding". Dealing a card first
 would throw away the question they are looking at and answer a different one.
+
+The catch-all is the dangerous row: everything above it must be matched first.
+Sending `quiz me` to the grader marks the outstanding card wrong, costing a box
+level and a streak, and the user asked for the opposite. When in doubt about a
+word that is not in this table, deal a card rather than grade one — dealing is
+recoverable, grading is not.
 
 After grading, say the one-line outcome and stop. Do not automatically deal the
 next card when they answered with an argument — they are in the middle of

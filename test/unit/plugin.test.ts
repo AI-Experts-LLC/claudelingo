@@ -2,6 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { type PanelOptions, renderPanel } from "../../src/statusline.js";
+import { T0, testPack, testProgress } from "../helpers.js";
+import type { Progress } from "../../src/types.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const manifest = JSON.parse(
@@ -70,6 +73,48 @@ describe("the Claude Code plugin", () => {
     expect(description.length).toBeGreaterThan(60);
     for (const cue of ["quiz", "practise", "flashcards"]) {
       expect(description.toLowerCase(), cue).toContain(cue);
+    }
+  });
+
+  // The panel is the only control surface, and the skill is the only thing that
+  // acts on it. A hint the skill does not recognise falls through to its
+  // catch-all — which grades the outstanding card, the opposite of what
+  // `/lingo quiz me` asks for.
+  it("documents in the skill every command the panel tells people to type", () => {
+    const skill = fs.readFileSync(path.join(root, "skills", "lingo", "SKILL.md"), "utf8");
+    const pack = testPack();
+    const fresh = testProgress();
+    // Everything learned and nothing due: the "all caught up" panel, which has
+    // hints of its own and is easy to leave out of a sweep like this.
+    const caughtUp = testProgress();
+    for (const word of pack.words) {
+      caughtUp.items[word.id] = {
+        id: word.id, stage: "review", box: 5, step: 0,
+        due: T0 + 30 * 24 * 3600_000, lastSeen: T0, seen: 9, correct: 9, lapses: 0,
+      };
+    }
+    const states: [Progress, PanelOptions][] = [
+      [fresh, {}],
+      [caughtUp, {}],
+      [fresh, { outstanding: true }],
+      [fresh, { pending: { question: "q", choices: ["a", "b"] } }],
+      [fresh, { pending: { question: "q", choices: [], kind: "teach" } }],
+    ];
+    const printed = new Set<string>();
+    for (const [progress, options] of states) {
+      for (const line of renderPanel(pack, progress, T0, { ...options, color: false })) {
+        for (const match of line.matchAll(/\/lingo(?: [a-z-]+)?/g)) printed.add(match[0]);
+      }
+    }
+    // Every branch of the panel is represented, so a hint added to one of them
+    // cannot slip past this.
+    expect(printed.size).toBeGreaterThanOrEqual(6);
+    for (const hint of printed) {
+      const word = hint.replace("/lingo", "").trim();
+      if (!word) continue;
+      expect(skill, `the panel prints "${hint}" but the skill never mentions "${word}"`).toContain(
+        word,
+      );
     }
   });
 
