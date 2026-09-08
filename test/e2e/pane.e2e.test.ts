@@ -189,7 +189,7 @@ describe("the teaching ramp", () => {
     await cli(["hook", "UserPromptSubmit"], e);
     pane = new Pane(BASE, e);
     await pane.waitForText("spell the word");
-    expect(pane.lastFrame).toContain("enter submit");
+    expect(pane.lastFrame).toContain("then enter");
   });
 });
 
@@ -327,7 +327,7 @@ describe("skipping, help and quitting", () => {
 
     pane.send("?");
     await pane.waitForText("any key to close");
-    expect(pane.lastFrame).toContain("memory hook");
+    expect(pane.lastFrame).toContain("hint about it");
 
     pane.send("x");
     await pane.until((out) => out.lastIndexOf("new word") > out.lastIndexOf("any key to close"));

@@ -139,13 +139,13 @@ describe("frames", () => {
     const text = frame(state).join("\n");
     expect(text).toContain("spell the word");
     expect(text).toContain("> un");
-    expect(text).toContain("enter submit");
+    expect(text).toContain("then enter");
   });
 
   it("renders the help overlay", () => {
     const text = frame(drive(busy(), [{ type: "key", key: { ch: "?" } }])).join("\n");
     expect(text).toContain("keys");
-    expect(text).toContain("memory hook");
+    expect(text).toContain("hint about it");
     expect(text).toContain("any key to close");
   });
 

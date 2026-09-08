@@ -623,8 +623,18 @@ describe("the first run", () => {
     { code: "es", englishName: "Spanish", words: 312 },
     { code: "fr", englishName: "French", words: 311 },
   ];
+  // `askFirst: true` matters here: it is the setting the self-opening panes use,
+  // and with consent already granted the walkthrough's protection from agent
+  // events is never exercised.
   const firstRun = () =>
-    createState(pack, testProgress(), testSettings({ onboarded: false }), "idle", T0, langs);
+    createState(
+      pack,
+      testProgress(),
+      testSettings({ onboarded: false, askFirst: true }),
+      "idle",
+      T0,
+      langs,
+    );
 
   it("introduces itself instead of dealing a card at a stranger", () => {
     expect(firstRun().mode).toBe("welcome");
@@ -715,6 +725,8 @@ describe("changing language", () => {
   it("offers nothing to pick when only one pack is installed", () => {
     const alone = createState(pack, testProgress(), testSettings(), "busy", T0, [langs[0]!]);
     expect(feed(alone, [press("l")]).state.mode).not.toBe("pickLanguage");
+  });
+});
 
 describe("consent is not lost once given", () => {
   const asking = () => start({ settings: { askFirst: true } });

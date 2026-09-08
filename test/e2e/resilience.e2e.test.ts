@@ -185,7 +185,7 @@ describe("an agent that never came back", () => {
     await cli(["hook", "UserPromptSubmit"], e);
     fs.writeFileSync(
       path.join(e.home, "settings.json"),
-      JSON.stringify({ lang: "es", staleBusyMs: 1500 }),
+      JSON.stringify({ lang: "es", staleBusyMs: 1500, onboarded: true }),
     );
 
     const pane = open(BASE, e);

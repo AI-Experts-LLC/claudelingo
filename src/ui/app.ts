@@ -259,8 +259,10 @@ export function reduce(state: AppState, event: Event, pack: Pack): Step {
   switch (event.type) {
     case "tick": {
       const next = { ...state, now: event.now };
-      // Nothing deals a card out from under the walkthrough.
-      if (isOnboarding(next)) return { state: next, effects: [] };
+      // The walkthrough is safe from this by construction: every branch below
+      // acts only on `waiting` or `caughtup`, and its modes are neither. A guard
+      // here would be unreachable, and mutation testing confirms no test could
+      // tell whether it was present.
       // A caught-up or waiting screen should notice the moment a card falls due.
       // The agent may already have been working when the pane opened, so the
       // offer has to be reachable from a tick and not only from a transition.
@@ -282,6 +284,7 @@ export function reduce(state: AppState, event: Event, pack: Pack): Step {
     case "agent": {
       if (event.state === state.agent) return { state, effects: [] };
       if (isOnboarding(state)) return { state: { ...state, agent: event.state }, effects: [] };
+
       const next = { ...state, agent: event.state };
       if (event.state === "busy") {
         // A fresh burst of work is a fresh chance to offer.

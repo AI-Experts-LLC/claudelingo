@@ -53,7 +53,7 @@ describe("opening the pane when a session starts", () => {
     const e = fresh();
     fs.writeFileSync(
       path.join(e.home, "settings.json"),
-      JSON.stringify({ lang: "es", autoPane: false }),
+      JSON.stringify({ lang: "es", autoPane: false, onboarded: true }),
     );
     const result = await sessionStart(e, { TMUX: "fake" });
     expect(result.code).toBe(0);

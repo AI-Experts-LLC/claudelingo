@@ -90,7 +90,7 @@ describe("the status line Claude Code draws", () => {
 
   it("respects the configured language", async () => {
     const e = fresh();
-    fs.writeFileSync(path.join(e.home, "settings.json"), JSON.stringify({ lang: "it" }));
+    fs.writeFileSync(path.join(e.home, "settings.json"), JSON.stringify({ lang: "it", onboarded: true }));
     const { stdout } = await statusline(e);
     const term = /«(.+?)»/.exec(stdout)?.[1];
     expect(topTerms("it", 12)).toContain(term);

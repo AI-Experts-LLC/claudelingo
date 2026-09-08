@@ -51,6 +51,29 @@ API SDK and no credential handling of any kind.
 Requirements: Node 20.11+. tmux is optional and only used to place the pane beside
 you.
 
+## Nothing to learn
+
+The first time it opens, it introduces itself and asks what you want to learn:
+
+```
+┌─ claudelingo ─────────────────────────────────┐
+│   ,___,  Which language?                      │
+│   (o.-)                                       │
+│   /)_)   Press its number.                     │
+│                                               │
+│  · [1] Spanish     312 words                  │
+│    [2] French      311 words                  │
+│    [3] Italian     310 words                  │
+└─ 1-9 choose a language ───────────────────────┘
+```
+
+Three screens, one key each, and then you are learning. It never asks again.
+
+After that there is nothing to memorise: **the keys that work are always along the
+bottom of the pane**, and they change with what is on screen. `?` lists all of
+them. `l` changes language from anywhere — pick a number and it switches on the
+spot, deck and all.
+
 ## What you get, without doing anything else
 
 One command:

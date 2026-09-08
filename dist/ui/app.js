@@ -127,9 +127,10 @@ export function reduce(state, event, pack) {
     switch (event.type) {
         case "tick": {
             const next = { ...state, now: event.now };
-            // Nothing deals a card out from under the walkthrough.
-            if (isOnboarding(next))
-                return { state: next, effects: [] };
+            // The walkthrough is safe from this by construction: every branch below
+            // acts only on `waiting` or `caughtup`, and its modes are neither. A guard
+            // here would be unreachable, and mutation testing confirms no test could
+            // tell whether it was present.
             // A caught-up or waiting screen should notice the moment a card falls due.
             // The agent may already have been working when the pane opened, so the
             // offer has to be reachable from a tick and not only from a transition.
@@ -156,6 +157,9 @@ export function reduce(state, event, pack) {
             if (event.state === "busy") {
                 // A fresh burst of work is a fresh chance to offer.
                 const fresh = { ...next, declined: false };
+                // A card can only be on screen once consent was given, so there is
+                // nothing here to protect it from — `p` records consent for exactly that
+                // reason (see the `p` handler).
                 if (!fresh.consented) {
                     return { state: { ...fresh, mode: "offer" }, effects: [] };
                 }
@@ -240,6 +244,9 @@ function reduceKey(state, key, pack) {
             const next = {
                 ...state,
                 settings,
+                // Asking to practise IS the answer to "want a quiz?". Without this the
+                // next prompt the user submits replaces their card with the offer.
+                consented: settings.alwaysOn ? true : state.consented,
                 message: settings.alwaysOn ? "practice mode on" : "practice mode off",
             };
             if (settings.alwaysOn && next.mode === "waiting") {
