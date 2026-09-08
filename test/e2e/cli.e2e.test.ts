@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -386,11 +387,20 @@ describe("init reports what actually happened", () => {
   // link's own directory gets this wrong in both directions.
   it("removes its own skill link even when that link is relative", async () => {
     const e = fresh();
-    const { home, vars } = fakeEnvs(e);
+    // Deliberately a *shallow* home. `path.resolve` clamps at `/`, so a link
+    // buried deeper than the process's cwd resolves the same either way and the
+    // wrong base is invisible; the two only diverge when the link's directory is
+    // shallower than the cwd, which is the ordinary case for a real `~`.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "cl-"));
+    const vars = { HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, "codex") };
     const skills = path.join(home, ".claude", "skills");
     fs.mkdirSync(skills, { recursive: true });
     const ours = path.join(REPO, "skills", "lingo");
-    fs.symlinkSync(path.relative(skills, ours), path.join(skills, "lingo"));
+    const relative = path.relative(skills, ours);
+    expect(relative.split(path.sep).filter((p) => p === "..").length).toBeLessThan(
+      REPO.split(path.sep).filter(Boolean).length,
+    );
+    fs.symlinkSync(relative, path.join(skills, "lingo"));
     // Sanity: the link resolves to our skill, and is relative.
     expect(path.isAbsolute(fs.readlinkSync(path.join(skills, "lingo")))).toBe(false);
     expect(fs.existsSync(path.join(skills, "lingo", "SKILL.md"))).toBe(true);
@@ -402,6 +412,7 @@ describe("init reports what actually happened", () => {
     expect(fs.existsSync(path.join(skills, "lingo"))).toBe(false);
     // …and our source is of course untouched.
     expect(fs.existsSync(path.join(ours, "SKILL.md"))).toBe(true);
+    fs.rmSync(home, { recursive: true, force: true });
   });
 
   it("installs just the status line with --statusline-only", async () => {
