@@ -207,10 +207,18 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
     switch (state.mode) {
       case "waiting": {
         push();
+        // Two different situations wear this screen: nothing is happening, or
+        // the user said "not now" while Claude is still working.
+        const declinedWhileBusy = state.declined && state.agent === "busy";
         withOwl("asleep", [
-          `${theme.dim}Standing by — you have the floor.${theme.reset}`,
+          declinedWhileBusy
+            ? `${theme.dim}Not now, then.${theme.reset}`
+            : `${theme.dim}Standing by — you have the floor.${theme.reset}`,
           "",
-          `${theme.dim}Press p to practise anyway.${theme.reset}`,
+          declinedWhileBusy
+            ? `${theme.dim}I'll ask again next time you start${theme.reset}`
+            : `${theme.dim}Press p to practise anyway.${theme.reset}`,
+          declinedWhileBusy ? `${theme.dim}something. Or press p now.${theme.reset}` : "",
         ]);
         push();
         break;

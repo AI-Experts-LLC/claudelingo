@@ -53,6 +53,7 @@ Options
   --overwrite        replace an existing generated pack
   --no-statusline    do not touch Claude Code's status line (for: init)
   --no-auto-pane     do not open the pane automatically (for: init)
+  --auto-pane        open it automatically again (for: init)
   --ask              ask before starting a quiz (set for panes that self-open)
   --source <name>    claude | codex | manual (for: hook)
   -h, --help         this message
