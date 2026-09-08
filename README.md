@@ -30,22 +30,67 @@ npm install -g claudelingo
 claudelingo init
 ```
 
-`init` writes hooks into `~/.claude/settings.json` and a `notify` entry into
-`~/.codex/config.toml`. Both `init` and `uninit` attempt each side independently and
+`init` writes hooks and a `statusLine` into `~/.claude/settings.json`, and a
+`notify` entry into `~/.codex/config.toml`. Both `init` and `uninit` attempt each side independently and
 tell you exactly which succeeded. It merges into whatever is already there, backs the Codex
 config up first, and is safe to run twice; `claudelingo uninit` takes it all back
 out and leaves everyone else's entries alone.
 
-Codex allows only one `notify` program. If you already have one, `init` says so and
-changes nothing rather than silently disabling your tooling. It exits non-zero if
+Codex allows only one `notify` program, and Claude Code only one status line. If you
+already have either, `init` says so and changes nothing rather than silently
+disabling your tooling — the hooks still install, since those are what make the pane
+work at all. It exits non-zero if
 either integration fails to install — a pane that never wakes up is otherwise very
 hard to diagnose.
 
-Then open the pane in a second terminal, or a split pane next to your agent:
+Then start Claude Code with the pane already beside it:
 
 ```bash
-claudelingo --lang es
+claudelingo claude          # any claude arguments pass straight through
 ```
+
+Ctrl-C goes to Claude Code, where it interrupts the turn as usual; the wrapper
+stays out of the way and exits with whatever Claude Code exits with.
+
+That opens a tmux split: Claude Code on the left, the quiz pane on the right. If
+you are already inside tmux it splits the window you are in; if not, it creates a
+session holding both and hands it your environment, so Claude Code sees the PATH
+and variables you launched with rather than whatever a long-running tmux server
+started with. Without tmux — or without a terminal to attach to, as in a script or
+a pipe — it starts Claude Code as normal and tells you how to open the pane
+yourself:
+
+```bash
+claudelingo --lang es       # the pane, standalone, in any second terminal
+```
+
+## Two surfaces
+
+Claude Code draws its own terminal UI and does not host third-party widgets, so
+there is no way to put an interactive box inside it. claudelingo works around that
+with two surfaces that do different jobs.
+
+**The status line** lives *inside* Claude Code, on the row under your prompt:
+
+```
+«tiempo» = ?          42/312 · streak 7 · box 3/5
+«tiempo» = time, weather   42/312 · streak 7 · box 3/5
+```
+
+It cannot take keystrokes — Claude Code renders the line, it does not forward input
+to it — so it is a passive drill: the word appears alone for six seconds, giving you
+a moment to retrieve the meaning, then the answer appears. Trying and then checking
+is most of what makes recall stick, and it is all a display-only surface can offer.
+It is installed by `init` (skip it with `--no-statusline`), refreshes on a timer
+because Claude Code's own updates go quiet exactly while it is thinking, and is
+strictly read-only — a running pane owns the deck, and a status line that wrote to
+it would fight that pane's lock.
+
+**The pane** is where you actually answer: multiple choice, typing, skipping,
+memory hooks. That has to be a real interactive process, which means its own pane.
+
+Use either, or both. The status line teaches while you work; the pane is where the
+spaced repetition happens.
 
 ## How it decides when to quiz you
 
@@ -143,8 +188,10 @@ to `~/.claudelingo/packs/pt.json`. Packs are plain JSON and hand-editable:
 }
 ```
 
-Entries are `[term, gloss, pos, note?]`, ordered most frequent first. Two rules the
-loader enforces: no duplicate terms, and — because a translate card shows only the
+Entries are `[term, gloss, pos, note?]`, ordered most frequent first. Control
+characters are stripped on load, because a newline in a gloss would turn the status
+line into two lines inside Claude Code's UI and a raw escape would restyle
+everything after it. Two further rules the loader enforces: no duplicate terms, and — because a translate card shows only the
 gloss — no two words may share a gloss. Where two words genuinely collide, put the
 distinction in the gloss itself (`"to be (permanent)"` vs `"to be (state, place)"`).
 
@@ -152,11 +199,13 @@ distinction in the gloss itself (`"to be (permanent)"` vs `"to be (state, place)
 
 ```
 claudelingo                      open the companion pane
+claudelingo claude [args]        start Claude Code with the pane beside it
 claudelingo init [--project]     install the Claude Code + Codex integrations
 claudelingo uninit [--project]   remove them again
 claudelingo hook <event>         report agent state (called by the hooks)
 claudelingo notify [json]        Codex notify target
 claudelingo status               show the current agent state
+claudelingo statusline           the line Claude Code draws (it calls this)
 claudelingo stats                show your progress
 claudelingo langs                list installed word packs
 claudelingo pack generate        build a pack for another language

@@ -27,10 +27,29 @@ interface HookMatcher {
   matcher?: string;
   hooks: HookCommand[];
 }
+interface StatusLine {
+  type: string;
+  command: string;
+  padding?: number;
+  refreshInterval?: number;
+}
+
 interface Settings {
   hooks?: Record<string, HookMatcher[]>;
+  statusLine?: StatusLine;
   [key: string]: unknown;
 }
+
+/**
+ * Seconds between status-line redraws.
+ *
+ * Claude Code's own updates are event-driven and go quiet exactly when the agent
+ * is thinking — which is when the line is supposed to be teaching. A timer keeps
+ * the word rotating and the answer revealing through a long turn.
+ */
+const STATUS_REFRESH_SECONDS = 3;
+
+export class StatusLineTaken extends Error {}
 
 export function settingsPath(scope: "user" | "project" = "user", cwd = process.cwd()): string {
   return scope === "user"
@@ -85,6 +104,37 @@ export function removeHooks(settings: Settings): Settings {
   return next;
 }
 
+/**
+ * Point Claude Code's status line at us.
+ *
+ * There is exactly one status-line slot, so someone else's is never overwritten —
+ * that would silently replace whatever they had configured, and unlike the hooks
+ * there is nowhere for both to live.
+ */
+export function withStatusLine(settings: Settings, bin: string): Settings {
+  const existing = settings.statusLine;
+  const ours = `${bin} statusline`;
+  if (existing && !existing.command?.includes(`${bin} statusline`)) {
+    throw new StatusLineTaken(
+      `a status line is already configured (${existing.command}). Claude Code allows ` +
+        "only one, so claudelingo has left it alone. Remove it and re-run " +
+        "`claudelingo init` to use claudelingo's instead, or run " +
+        "`claudelingo init --no-statusline` to skip this part.",
+    );
+  }
+  return {
+    ...settings,
+    statusLine: { type: "command", command: ours, refreshInterval: STATUS_REFRESH_SECONDS },
+  };
+}
+
+export function removeStatusLine(settings: Settings, bin: string): Settings {
+  if (!settings.statusLine?.command?.includes(`${bin} statusline`)) return settings;
+  const next = { ...settings };
+  delete next.statusLine;
+  return next;
+}
+
 export function readSettings(file: string): Settings {
   if (!fs.existsSync(file)) return {};
   try {
@@ -115,11 +165,46 @@ export function writeSettings(file: string, settings: Settings): void {
   }
 }
 
-export function install(file: string, bin: string): void {
-  writeSettings(file, withHooks(readSettings(file), bin));
+export interface InstallResult {
+  /** Set when the hooks went in but the status line could not. */
+  statusLineProblem?: string;
 }
 
-export function uninstall(file: string): void {
+export function install(
+  file: string,
+  bin: string,
+  options: { statusLine?: boolean } = {},
+): InstallResult {
+  const current = readSettings(file);
+  let next = withHooks(current, bin);
+  const result: InstallResult = {};
+
+  if (options.statusLine !== false) {
+    try {
+      next = withStatusLine(next, bin);
+    } catch (error) {
+      // The hooks are the load-bearing half; a taken status line must not stop
+      // them being installed.
+      if (!(error instanceof StatusLineTaken)) throw error;
+      result.statusLineProblem = error.message;
+    }
+  }
+
+  writeSettings(file, next);
+  return result;
+}
+
+/** True when the configured status line is the one we installed. */
+export function hasOurStatusLine(file: string, bin: string): boolean {
+  if (!fs.existsSync(file)) return false;
+  try {
+    return Boolean(readSettings(file).statusLine?.command?.includes(`${bin} statusline`));
+  } catch {
+    return false;
+  }
+}
+
+export function uninstall(file: string, bin: string): void {
   if (!fs.existsSync(file)) return;
-  writeSettings(file, removeHooks(readSettings(file)));
+  writeSettings(file, removeStatusLine(removeHooks(readSettings(file)), bin));
 }

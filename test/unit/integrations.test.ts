@@ -95,7 +95,7 @@ describe("Claude Code hooks", () => {
     claudeCode.install(file, "claudelingo");
     const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
     expect(parsed.hooks.UserPromptSubmit).toBeDefined();
-    claudeCode.uninstall(file);
+    claudeCode.uninstall(file, "claudelingo");
     expect(JSON.parse(fs.readFileSync(file, "utf8")).hooks).toBeUndefined();
   });
 
@@ -678,5 +678,64 @@ describe("Codex watcher: the cache must not hide an append", () => {
     } finally {
       watcher.stop();
     }
+  });
+});
+
+describe("Claude Code status line", () => {
+  it("points at us and asks for a refresh timer", () => {
+    // Claude Code's own updates are event-driven and go quiet while it is
+    // thinking, which is exactly when the line is supposed to be teaching.
+    const settings = claudeCode.withStatusLine({}, "claudelingo");
+    expect(settings.statusLine).toMatchObject({
+      type: "command",
+      command: "claudelingo statusline",
+    });
+    expect(settings.statusLine?.refreshInterval).toBeGreaterThanOrEqual(1);
+  });
+
+  it("refuses to take a slot another tool is using", () => {
+    // Unlike hooks, there is exactly one status line and nowhere for both to live.
+    const theirs = { statusLine: { type: "command", command: "~/.claude/mine.sh" } };
+    expect(() => claudeCode.withStatusLine(theirs, "claudelingo")).toThrow(
+      claudeCode.StatusLineTaken,
+    );
+  });
+
+  it("is idempotent", () => {
+    const once = claudeCode.withStatusLine({}, "claudelingo");
+    expect(claudeCode.withStatusLine(once, "claudelingo")).toEqual(once);
+  });
+
+  it("removes only its own", () => {
+    const ours = claudeCode.withStatusLine({ model: "opus" }, "claudelingo");
+    const cleaned = claudeCode.removeStatusLine(ours, "claudelingo");
+    expect(cleaned.statusLine).toBeUndefined();
+    expect(cleaned.model).toBe("opus");
+
+    const theirs = { statusLine: { type: "command", command: "theirs.sh" } };
+    expect(claudeCode.removeStatusLine(theirs, "claudelingo")).toEqual(theirs);
+  });
+
+  it("still installs the hooks when the status line slot is taken", () => {
+    const file = path.join(dir(), "settings.json");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ statusLine: { type: "command", command: "theirs.sh" } }),
+    );
+    const result = claudeCode.install(file, "claudelingo");
+    // The hooks are what make the pane work at all; losing them over a status
+    // line would be a poor trade.
+    expect(result.statusLineProblem).toContain("already configured");
+    const settings = JSON.parse(fs.readFileSync(file, "utf8"));
+    expect(settings.hooks.UserPromptSubmit).toBeDefined();
+    expect(settings.statusLine.command).toBe("theirs.sh");
+  });
+
+  it("can be told not to touch the status line at all", () => {
+    const file = path.join(dir(), "settings.json");
+    claudeCode.install(file, "claudelingo", { statusLine: false });
+    const settings = JSON.parse(fs.readFileSync(file, "utf8"));
+    expect(settings.statusLine).toBeUndefined();
+    expect(settings.hooks.Stop).toBeDefined();
   });
 });

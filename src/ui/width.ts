@@ -559,3 +559,61 @@ export function sliceToWidth(text: string, columns: number): { text: string; wid
   }
   return { text: out, width };
 }
+
+/** One piece of a styled string: either an escape sequence or a visible character. */
+type Token = { ansi: true; text: string } | { ansi: false; text: string; width: number };
+
+const ESC = String.fromCharCode(27);
+
+function tokenize(text: string): Token[] {
+  const tokens: Token[] = [];
+  for (let i = 0; i < text.length; ) {
+    if (text[i] === ESC) {
+      let end = i + 1;
+      while (end < text.length && !/[A-Za-z]/.test(text[end] as string)) end++;
+      tokens.push({ ansi: true, text: text.slice(i, end + 1) });
+      i = end + 1;
+      continue;
+    }
+    const char = String.fromCodePoint(text.codePointAt(i) as number);
+    tokens.push({ ansi: false, text: char, width: charWidth(char.codePointAt(0) as number) });
+    i += char.length;
+  }
+  return tokens;
+}
+
+/**
+ * Truncate to a column budget while keeping ANSI styling intact.
+ *
+ * Escapes cost no columns but are not characters you can slice around: cutting one
+ * in half leaves a bare `ESC[` that the terminal swallows along with whatever
+ * follows, and dropping the closing reset leaves everything after the line styled.
+ * So the string is split into escape and visible tokens first and reassembled —
+ * index arithmetic over the raw string gets this wrong in ways that only show up
+ * at particular widths.
+ */
+export function truncateStyled(text: string, columns: number, ellipsis = "\u2026"): string {
+  if (columns <= 0) return "";
+  const tokens = tokenize(text);
+  const total = tokens.reduce((sum, t) => sum + (t.ansi ? 0 : t.width), 0);
+  const styled = tokens.some((t) => t.ansi);
+  if (total <= columns) return text;
+
+  // Room for the whole marker, not just its first code point. A marker that will
+  // not fit at all is dropped rather than pushing the line over the budget.
+  const markerWidth = stringWidth(ellipsis);
+  const marker = markerWidth < columns ? ellipsis : "";
+  const budget = columns - stringWidth(marker);
+  let used = 0;
+  let out = "";
+  for (const token of tokens) {
+    if (token.ansi) {
+      out += token.text; // free, and dropping it would strand the styling
+      continue;
+    }
+    if (used + token.width > budget) break;
+    out += token.text;
+    used += token.width;
+  }
+  return `${out}${marker}${styled ? `${ESC}[0m` : ""}`;
+}

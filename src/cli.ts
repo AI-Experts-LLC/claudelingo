@@ -20,6 +20,8 @@ import * as claudeCode from "./integrations/claudeCode.js";
 import * as codex from "./integrations/codex.js";
 import { DEFAULT_MODEL, generatePack, hasCredentials, memoryHook } from "./enrich.js";
 import { run } from "./ui/tui.js";
+import { defaultWidth, renderStatusLine } from "./statusline.js";
+import { launch } from "./launcher.js";
 import type { ProblemKey } from "./ui/app.js";
 import type { Pack, Progress, Settings, Word } from "./types.js";
 
@@ -32,7 +34,9 @@ const USAGE = `claudelingo — learn a language while your coding agent works
   claudelingo uninit [--project]   remove them again
   claudelingo hook <event>         report agent state (called by hooks)
   claudelingo notify [json]        Codex notify target
+  claudelingo claude [args]        start Claude Code with the pane beside it
   claudelingo status               show the current agent state
+  claudelingo statusline           the line Claude Code draws (called by Claude Code)
   claudelingo stats                show your progress
   claudelingo langs                list available word packs
   claudelingo pack generate        build a pack for another language
@@ -47,6 +51,7 @@ Options
   --model <id>       model for hooks and pack generation (default: ${DEFAULT_MODEL})
   --code <xx>        code for a generated pack (default: first two letters)
   --overwrite        replace an existing generated pack
+  --no-statusline    do not touch Claude Code's status line (for: init)
   --source <name>    claude | codex | manual (for: hook)
   -h, --help         this message
 `;
@@ -81,7 +86,8 @@ export function parseArgs(argv: string[]): Args {
   }
 
   const known = new Set([
-    "init", "uninit", "hook", "notify", "status", "stats", "langs", "pack", "reset", "help",
+    "init", "uninit", "hook", "notify", "status", "statusline", "stats", "langs", "pack",
+    "reset", "claude", "help",
   ]);
   const first = positional[0];
   const command = first && known.has(first) ? first : "run";
@@ -234,10 +240,17 @@ function cmdInit(args: Args): void {
   const failed: string[] = [];
 
   const settingsFile = claudeCode.settingsPath(scope as "user" | "project");
+  const wantStatusLine = args.flags.statusline !== false;
   try {
-    claudeCode.install(settingsFile, BIN);
+    const result = claudeCode.install(settingsFile, BIN, { statusLine: wantStatusLine });
     process.stdout.write(`Claude Code hooks installed in ${settingsFile}\n`);
     process.stdout.write(`  ${claudeCode.HOOK_EVENTS.join(", ")}\n`);
+    if (wantStatusLine && !result.statusLineProblem) {
+      process.stdout.write("Status line installed — words appear under your prompt.\n");
+    } else if (result.statusLineProblem) {
+      // Not fatal: the hooks are what make the pane work at all.
+      process.stderr.write(`Status line NOT installed: ${result.statusLineProblem}\n`);
+    }
   } catch (error) {
     failed.push("Claude Code");
     process.stderr.write(`Claude Code hooks NOT installed: ${(error as Error).message}\n`);
@@ -281,8 +294,12 @@ function cmdUninit(args: Args): void {
   // Attempted independently: a throw from one must not skip the other, or the user
   // is left half-uninstalled with no idea which half.
   try {
-    claudeCode.uninstall(claudeCode.settingsPath(scope as "user" | "project"));
-    removed.push("Claude Code hooks");
+    const file = claudeCode.settingsPath(scope as "user" | "project");
+    const hadOurs = claudeCode.hasOurStatusLine(file, BIN);
+    claudeCode.uninstall(file, BIN);
+    // Saying we removed a status line that was never ours is how someone
+    // concludes their own configuration has been eaten.
+    removed.push(hadOurs ? "Claude Code hooks and status line" : "Claude Code hooks");
   } catch (error) {
     failed.push(`Claude Code hooks: ${(error as Error).message}`);
   }
@@ -299,6 +316,91 @@ function cmdUninit(args: Args): void {
     for (const message of failed) process.stderr.write(`NOT removed — ${message}\n`);
     process.exit(1);
   }
+}
+
+/**
+ * `claudelingo statusline` — Claude Code renders whatever this prints.
+ *
+ * Claude Code pipes session JSON in and cancels the script if it is still running
+ * when the next update fires, so this stays read-only and fast: no locks, no
+ * writes, no network. It must also never fail loudly — a broken status line
+ * should be a blank line, not noise in the middle of someone's session.
+ */
+async function cmdStatusline(args: Args): Promise<void> {
+  try {
+    // The payload is not needed today, but it has to be drained or Claude Code
+    // can see a broken pipe.
+    await readStdin();
+    const { settings } = settingsFrom(args.flags);
+    const pack = loadPack(settings.lang);
+    const { progress } = loadProgress(settings.lang, false);
+    const width = resolveWidth(args.flags.width) ?? defaultWidth();
+    process.stdout.write(
+      `${renderStatusLine(pack, progress, Date.now(), {
+        color: args.flags.color !== false,
+        ...(width !== undefined ? { width } : {}),
+      })}\n`,
+    );
+  } catch {
+    // Silence is the correct failure mode here.
+    process.stdout.write("\n");
+  }
+}
+
+function readStdin(): Promise<string> {
+  return new Promise((resolve) => {
+    if (process.stdin.isTTY) return resolve("");
+    let data = "";
+    let settled = false;
+    const timer = setTimeout(() => done(), 250);
+
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // Resolving is not enough: a stdin still being read keeps the event loop
+      // alive, so a writer that sends the payload and holds the pipe open would
+      // leave a process behind on every refresh tick.
+      process.stdin.destroy();
+      resolve(data);
+    };
+
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => (data += chunk));
+    process.stdin.on("end", done);
+    process.stdin.on("error", done);
+    if (typeof timer.unref === "function") timer.unref();
+  });
+}
+
+/** `claudelingo claude [...]` — start the agent with the pane beside it. */
+async function cmdLaunch(args: Args, agentArgs: string[]): Promise<void> {
+  const { settings } = settingsFrom(args.flags);
+  resolvePack(settings.lang); // fail early on a bad --lang rather than in the pane
+
+  // Address the pane by absolute path rather than by name: a new tmux pane gets
+  // the tmux server's PATH, which may well not include wherever claudelingo lives.
+  const entry = process.argv[1];
+  const pane = entry
+    ? [process.execPath, fs.realpathSync(entry), "--lang", settings.lang]
+    : [BIN, "--lang", settings.lang];
+
+  const passEnv: Record<string, string> = {};
+  if (process.env.CLAUDELINGO_HOME) passEnv.CLAUDELINGO_HOME = process.env.CLAUDELINGO_HOME;
+
+  const result = await launch({
+    agent: ["claude", ...agentArgs],
+    pane,
+    ...(Object.keys(passEnv).length ? { passEnv } : {}),
+  });
+
+  if (result.plan.kind === "none" || result.plan.reason) {
+    process.stderr.write(
+      `claudelingo: ${result.plan.reason ?? "could not open the pane"}. ` +
+        `Open it yourself in another terminal with: ${BIN} --lang ${settings.lang}\n`,
+    );
+  }
+  process.exit(result.code);
 }
 
 function cmdStatus(): void {
@@ -519,8 +621,34 @@ async function cmdRun(args: Args): Promise<void> {
   }
 }
 
+/**
+ * Index of `name` only if it is the first positional argument.
+ *
+ * Mirrors `parseArgs`'s idea of which flags consume the token after them, so a
+ * flag *value* that happens to read like a subcommand is not mistaken for one.
+ */
+function subcommandIndex(argv: string[], name: string): number {
+  const takesValue = new Set(["lang", "width", "source", "model", "count", "code", "home"]);
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i] as string;
+    // `parseArgs` treats anything not starting with `--` as a positional, so this
+    // loop must agree with it or the two disagree about what the command is.
+    if (!arg.startsWith("--")) return arg === name ? i : -1;
+    const flag = arg.slice(2);
+    if (!flag.includes("=") && takesValue.has(flag)) i++;
+  }
+  return -1;
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
-  const args = parseArgs(argv);
+  // Split before parsing: everything after the `claude` SUBCOMMAND belongs to
+  // Claude Code. Parsing first would let `claudelingo claude --help` print OUR
+  // usage and never start the agent; splitting on any `claude` token would
+  // truncate `claudelingo hook Stop --source claude`.
+  const split = subcommandIndex(argv, "claude");
+  const own = split === -1 ? argv : argv.slice(0, split + 1);
+  const forwarded = split === -1 ? [] : argv.slice(split + 1);
+  const args = parseArgs(own);
   if (args.flags.help || args.command === "help") {
     process.stdout.write(USAGE);
     return;
@@ -531,6 +659,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     case "init": return cmdInit(args);
     case "uninit": return cmdUninit(args);
     case "status": return cmdStatus();
+    case "statusline": return cmdStatusline(args);
+    case "claude": return cmdLaunch(args, forwarded);
     case "stats": return cmdStats(args);
     case "langs": return cmdLangs();
     case "pack": return cmdPack(args);
