@@ -755,3 +755,44 @@ describe("Claude Code status line", () => {
     expect(settings.hooks.Stop).toBeDefined();
   });
 });
+
+describe("the status line command that gets written", () => {
+  it("stays the bare name for a standalone install", () => {
+    // Whatever the install path is, it must not be baked in: a standalone
+    // install can move, and the name on PATH follows it.
+    expect(claudeCode.statusLineCommand("/opt/claudelingo/dist/cli.js", "claudelingo")).toBe(
+      "claudelingo",
+    );
+  });
+
+  it("recognises our own line whichever form it was written in", () => {
+    // A bare name and an absolute path are both ours. Comparing against one
+    // exact string made re-running init report our own line as someone else's,
+    // and left it behind on uninstall.
+    for (const command of [
+      "claudelingo statusline",
+      "/home/me/.claude/plugins/claudelingo/bin/claudelingo statusline",
+      '"/home/me/my plugins/claudelingo/bin/claudelingo" statusline',
+    ]) {
+      const file = path.join(dir(), "settings.json");
+      fs.writeFileSync(file, JSON.stringify({ statusLine: { type: "command", command } }));
+      expect(claudeCode.hasOurStatusLine(file, "claudelingo")).toBe(true);
+      // …and re-installing over it does not throw StatusLineTaken.
+      expect(() => claudeCode.install(file, "claudelingo", {})).not.toThrow();
+      claudeCode.uninstall(file, "claudelingo");
+      expect(JSON.parse(fs.readFileSync(file, "utf8")).statusLine).toBeUndefined();
+    }
+  });
+
+  it("still refuses to take over someone else's", () => {
+    const file = path.join(dir(), "settings.json");
+    const theirs = { type: "command", command: "ccstatusline" };
+    fs.writeFileSync(file, JSON.stringify({ statusLine: theirs }));
+    const result = claudeCode.install(file, "claudelingo", {});
+    expect(result.statusLineProblem).toContain("already configured");
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).statusLine).toEqual(theirs);
+    // …and leaves it alone on the way out, too.
+    claudeCode.uninstall(file, "claudelingo");
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).statusLine).toEqual(theirs);
+  });
+});

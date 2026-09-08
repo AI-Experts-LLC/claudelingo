@@ -42,8 +42,13 @@ describe("the suite never spends real quota", () => {
     // stand-in binary. This catches the shape, not just the symptom.
     for (const file of files) {
       const source = fs.readFileSync(file, "utf8");
-      if (!/"pack", "generate"/.test(source)) continue;
-      expect(source, `${path.basename(file)} runs pack generate`).toMatch(/stubClaude|withStub/);
+      // `start` and `claude` launch the agent; `pack generate` calls it for a
+      // pack. All three reach the real binary if nothing shadows it.
+      const callers = [/"pack", "generate"/, /cli\(\["start"/, /cli\(\["claude"/];
+      if (!callers.some((pattern) => pattern.test(source))) continue;
+      expect(source, `${path.basename(file)} launches or calls claude`).toMatch(
+        /stubClaude|withStub/,
+      );
     }
   });
 });

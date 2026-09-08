@@ -25,6 +25,14 @@ const HIDDEN_FRACTION = 0.5;
 /** How many candidates to rotate through, so the line is not one word forever. */
 const ROTATION = 12;
 
+/** The card `next` handed out and is waiting to grade, if there is one. */
+export interface PendingCard {
+  question: string;
+  choices: string[];
+  /** `teach` cards are an introduction: there is nothing to get right. */
+  kind?: string;
+}
+
 export interface StatusLineOptions {
   /** Emit ANSI colour. Claude Code supports it; tests turn it off. */
   color?: boolean;
@@ -40,6 +48,8 @@ export interface StatusLineOptions {
    * signal; being able to parse it is not.
    */
   outstanding?: boolean;
+  /** The outstanding question, when it could be read. */
+  pending?: PendingCard | null;
 }
 
 interface Candidate {
@@ -145,7 +155,7 @@ export function renderStatusLine(
   const stats = dim(`${state.learned}/${state.total}`);
   const streak = state.streak > 0 ? dim(` · streak ${state.streak}`) : "";
 
-  if (options.outstanding) {
+  if (options.outstanding || options.pending) {
     return trim(`${dim("a question is waiting")} ${dim("· /lingo")}  ${stats}${streak}`, options.width);
   }
   if (!state.word) {
@@ -181,23 +191,12 @@ const OWL_MIN_WIDTH = 46;
 /** Below this, a panel cannot say anything useful; fall back to the one-liner. */
 const PANEL_MIN_WIDTH = 30;
 
-/** The card `next` handed out and is waiting to grade, if there is one. */
-export interface PendingCard {
-  question: string;
-  choices: string[];
-  /** `teach` cards are an introduction: there is nothing to get right. */
-  kind?: string;
-}
-
 function bar(fraction: number, cells: number): string {
   const filled = Math.max(0, Math.min(cells, Math.round(fraction * cells)));
   return "█".repeat(filled) + "░".repeat(cells - filled);
 }
 
-export interface PanelOptions extends StatusLineOptions {
-  /** The outstanding question, read from the pending file by the caller. */
-  pending?: PendingCard | null;
-}
+export type PanelOptions = StatusLineOptions;
 
 /**
  * The rows to print, one per line.

@@ -13,6 +13,13 @@ import type { Pack, Progress, Word } from "./types.js";
  */
 /** How long one word holds the line before the next takes over. */
 export declare const WORD_MS = 12000;
+/** The card `next` handed out and is waiting to grade, if there is one. */
+export interface PendingCard {
+    question: string;
+    choices: string[];
+    /** `teach` cards are an introduction: there is nothing to get right. */
+    kind?: string;
+}
 export interface StatusLineOptions {
     /** Emit ANSI colour. Claude Code supports it; tests turn it off. */
     color?: boolean;
@@ -28,6 +35,8 @@ export interface StatusLineOptions {
      * signal; being able to parse it is not.
      */
     outstanding?: boolean;
+    /** The outstanding question, when it could be read. */
+    pending?: PendingCard | null;
 }
 export interface StatusLineState {
     word: Word | null;
@@ -50,17 +59,7 @@ export declare function defaultWidth(env?: NodeJS.ProcessEnv): number | undefine
 export declare function renderStatusLine(pack: Pack, progress: Progress, now: number, options?: StatusLineOptions): string;
 /** Rows the panel occupies. Fixed, so the terminal below it never jumps. */
 export declare const PANEL_ROWS = 3;
-/** The card `next` handed out and is waiting to grade, if there is one. */
-export interface PendingCard {
-    question: string;
-    choices: string[];
-    /** `teach` cards are an introduction: there is nothing to get right. */
-    kind?: string;
-}
-export interface PanelOptions extends StatusLineOptions {
-    /** The outstanding question, read from the pending file by the caller. */
-    pending?: PendingCard | null;
-}
+export type PanelOptions = StatusLineOptions;
 /**
  * The rows to print, one per line.
  *

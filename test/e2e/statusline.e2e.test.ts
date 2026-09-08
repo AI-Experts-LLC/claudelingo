@@ -166,6 +166,50 @@ describe("the status line Claude Code draws", () => {
     expect(stdout.trimEnd().split("\n").length).toBeLessThanOrEqual(PANEL_ROWS)
   });
 
+  // The CLI decides "is something outstanding?" from the file's *presence*. That
+  // decision had no test at all: reverting it left the whole suite green while the
+  // panel went back to revealing the answer to the card on screen.
+  it.each([
+    ["missing its question field", (p: string) => {
+      const d = JSON.parse(fs.readFileSync(p, "utf8"));
+      delete d.question;
+      fs.writeFileSync(p, JSON.stringify(d));
+    }],
+    ["truncated", (p: string) => fs.writeFileSync(p, '{ "id": "es:1"')],
+    ["empty", (p: string) => fs.writeFileSync(p, "")],
+    ["holding null", (p: string) => fs.writeFileSync(p, "null")],
+  ])("says a question is waiting when the pending file is %s", async (_name, damage) => {
+    const e = fresh();
+    seed(e);
+    const dealt = await cli(["next", "--json"], e);
+    const card = JSON.parse(dealt.stdout.trim()) as { card: { id: string } };
+    const pendingPath = path.join(e.home, "pending-es.json");
+    damage(pendingPath);
+
+    const term = /^es:(\d+)$/.exec(card.card.id);
+    expect(term).toBeTruthy();
+
+    for (const extra of [[], ["--compact"]]) {
+      const { stdout } = await statusline(e, extra);
+      expect(stdout).toContain("waiting");
+      // and the drill — the thing that would give the game away — is not running
+      expect(stdout).not.toMatch(/«.+» = [^?]/);
+    }
+    // The panel offers `/lingo skip` as the way out; it must actually work.
+    const skipped = await cli(["skip"], e);
+    expect(JSON.parse(skipped.stdout.trim())).toMatchObject({ skipped: true });
+    expect(fs.existsSync(pendingPath)).toBe(false);
+  });
+
+  it("shows a healthy question without answering it, in the one-line form too", async () => {
+    const e = fresh();
+    seed(e);
+    await cli(["next", "--json"], e);
+    const { stdout } = await statusline(e, ["--compact"]);
+    expect(stdout).toContain("waiting");
+    expect(stdout).not.toMatch(/«.+» = [^?]/);
+  });
+
   it("returns quickly, because Claude Code cancels a slow one", async () => {
     const e = fresh();
     seed(e);

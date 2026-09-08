@@ -240,6 +240,7 @@ function cmdInit(args) {
     const wantStatusLine = onlyStatusLine || args.flags.statusline !== false;
     try {
         const result = claudeCode.install(settingsFile, BIN, {
+            statusLineBin: claudeCode.statusLineCommand(fileURLToPath(import.meta.url), BIN),
             statusLine: wantStatusLine,
             ...(onlyStatusLine ? { hooks: false } : {}),
         });
@@ -439,7 +440,7 @@ function cmdSkip(args) {
     const pack = resolvePack(settings.lang);
     const pendingFile = paths.pending(settings.lang);
     const pending = readJsonFile(pendingFile);
-    if (!pending.ok) {
+    if (!pending.ok && pending.reason === "missing") {
         emit({ error: "no question is outstanding — run `claudelingo next --json` first" });
         return;
     }
@@ -447,10 +448,21 @@ function cmdSkip(args) {
         emit({ error: "a claudelingo pane is already open — skip there instead" });
         return;
     }
-    const outstanding = pending.value;
+    const outstanding = pending.ok ? pending.value : null;
     const id = outstanding && typeof outstanding.id === "string" ? outstanding.id : null;
     if (!id) {
-        emit({ error: "the outstanding question is unreadable — run `claudelingo next --json` again" });
+        // The file is there but says nothing usable. Skip is the one command whose
+        // whole job is "get rid of this question", and the panel offers it as the way
+        // out — refusing here leaves the user staring at a card no command can clear.
+        // Nothing is graded, so nothing is at risk in dropping it.
+        try {
+            fs.rmSync(pendingFile, { force: true });
+        }
+        catch (error) {
+            emit({ error: `could not drop the question: ${error.message}` });
+            return;
+        }
+        emit({ skipped: true, term: null, unreadable: true });
         return;
     }
     const held = lock.acquire(paths.lock(settings.lang));
@@ -516,6 +528,12 @@ function cmdPanel(args) {
         return;
     }
     const panel = wanted === "on";
+    // The pane writes settings when it exits, so a change made behind its back can
+    // simply be written over. Refusing is what the skill already promises.
+    if (lock.isHeld(paths.lock(settings.lang))) {
+        emit({ error: "a claudelingo pane is open — close it first, or change this from there" });
+        return;
+    }
     const target = settingsToWrite();
     if ("problem" in target) {
         emit({ error: target.problem });
@@ -531,7 +549,10 @@ function cmdPanel(args) {
  * itself when it switches, so a second writer here would fight it.
  */
 function cmdLang(args) {
-    const { settings } = settingsFrom(args.flags);
+    // Deliberately not `settingsFrom`: with `lang fr --lang it` the flag would make
+    // "the language being left" italian, and the pending-file cleanup would delete
+    // the wrong one. The positional is the request; the file is the current state.
+    const settings = loadSettings().settings;
     const wanted = typeof args.rest[0] === "string" ? args.rest[0].toLowerCase() : null;
     const codes = listPacks();
     const describe = (code) => {
@@ -625,6 +646,14 @@ function cmdAnswer(args) {
         };
         const choice = args.flags.choice === undefined ? undefined : Number(args.flags.choice) - 1;
         const text = typeof args.flags.text === "string" ? args.flags.text : undefined;
+        // No answer at all is not a wrong answer. Grading it as one demotes a box and
+        // breaks a streak while reporting `{"correct":false}` — indistinguishable
+        // from the user actually getting it wrong, and this command is driven by a
+        // model's output, so one malformed call would cost them progress silently.
+        if (choice === undefined && text === undefined) {
+            emit({ error: "say which answer: --choice N, or --text \"...\"" });
+            return;
+        }
         const correct = isCorrect(card, {
             ...(choice !== undefined ? { choice } : {}),
             ...(text !== undefined ? { text } : {}),
@@ -692,7 +721,10 @@ async function cmdStatusline(args) {
                 ...(typeof value.kind === "string" ? { kind: clean(value.kind) } : {}),
             }
             : null;
-        const full = { ...options, pending, outstanding: outstanding && !pending };
+        // `outstanding` is presence on disk; `pending` is the readable form of it.
+        // Both renderers need both: the panel shows the question, the one-line form
+        // has no room for it and must say so rather than drilling the same word.
+        const full = { ...options, pending, outstanding };
         if (!wantPanel) {
             process.stdout.write(`${renderStatusLine(pack, progress, Date.now(), full)}\n`);
             return;
@@ -894,6 +926,9 @@ function cmdReset(args) {
     }
     try {
         writeJsonAtomic(paths.progress(settings.lang), emptyProgress(settings.lang));
+        // An outstanding question belongs to the deck that was just erased; grading
+        // it afterwards would file an answer against a word with no history.
+        fs.rmSync(paths.pending(settings.lang), { force: true });
     }
     finally {
         held.lock.release();
@@ -1080,6 +1115,15 @@ export async function main(argv = process.argv.slice(2)) {
         .find((i) => i !== -1) ?? -1;
     const own = split === -1 ? argv : argv.slice(0, split + 1);
     const forwarded = split === -1 ? [] : argv.slice(split + 1);
+    // Everything after `start` goes to the agent, so `start --lang fr` silently
+    // studied the configured language and handed `--lang fr` to Claude Code, which
+    // has no such flag. Ours has to come first; say so rather than doing the wrong
+    // thing quietly.
+    const ours = forwarded.find((a) => a === "--lang" || a.startsWith("--lang="));
+    if (ours) {
+        fail(`${ours} after \`start\` is passed on to the agent, not to claudelingo.\n` +
+            `  Put it first:  claudelingo ${ours}${ours === "--lang" ? " <code>" : ""} start`);
+    }
     const args = parseArgs(own);
     if (args.flags.help || args.command === "help") {
         process.stdout.write(USAGE);

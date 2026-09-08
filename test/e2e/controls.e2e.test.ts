@@ -131,6 +131,58 @@ describe("the commands the panel tells you to type", () => {
     expect(after.enrich).toBe(before.enrich);
   });
 
+  it("clears a pending file no other command can read", async () => {
+    const e = fresh();
+    await json(["next", "--json"], e);
+    await json(["answer", "--choice", "1"], e); // so there is a deck on disk to compare
+    // A question the panel will happily draw, but with no id to grade against.
+    fs.writeFileSync(
+      path.join(e.home, "pending-es.json"),
+      JSON.stringify({ question: 'What does "el" mean?', choices: ["a", "b", "c", "d"] }),
+    );
+    const before = fs.readFileSync(progressFile(e, "es"), "utf8");
+
+    const result = await json(["skip"], e);
+    expect(result).toMatchObject({ skipped: true, unreadable: true });
+    expect(fs.existsSync(path.join(e.home, "pending-es.json"))).toBe(false);
+    // Nothing was graded on the way out.
+    expect(fs.readFileSync(progressFile(e, "es"), "utf8")).toBe(before);
+  });
+
+  it("refuses to change the panel while a pane is open, as the skill promises", async () => {
+    const e = fresh();
+    await json(["panel", "on"], e);
+    pane = new Pane([], e);
+    await pane.until(() => fs.existsSync(path.join(e.home, "progress-es.lock")));
+
+    const result = await json(["panel", "off"], e);
+    expect(String(result.error)).toContain("pane");
+    const settings = JSON.parse(fs.readFileSync(path.join(e.home, "settings.json"), "utf8"));
+    expect(settings.panel).not.toBe(false);
+  });
+
+  it("changes the language the file names, not the one a flag names", async () => {
+    const e = fresh();
+    await json(["next", "--json"], e);
+    // `--lang it` must not make italian "the language being left": the pending
+    // file that gets dropped would be the wrong one.
+    await json(["lang", "fr", "--lang", "it"], e);
+    expect(fs.existsSync(path.join(e.home, "pending-es.json"))).toBe(false);
+    const settings = JSON.parse(fs.readFileSync(path.join(e.home, "settings.json"), "utf8"));
+    expect(settings.lang).toBe("fr");
+  });
+
+  it("erases the outstanding question along with the deck on reset", async () => {
+    const e = fresh();
+    await json(["next", "--json"], e);
+    await json(["answer", "--choice", "1"], e);
+    await json(["next", "--json"], e);
+    const { code } = await cli(["reset", "--yes"], e);
+    expect(code).toBe(0);
+    // Grading it afterwards would file an answer against a word with no history.
+    expect(fs.existsSync(path.join(e.home, "pending-es.json"))).toBe(false);
+  });
+
   it("stands aside for a running pane, on every command that writes", async () => {
     const e = fresh();
     await json(["next", "--json"], e);

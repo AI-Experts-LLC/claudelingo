@@ -406,7 +406,10 @@ describe("init reports what actually happened", () => {
     expect(fs.existsSync(path.join(skills, "lingo", "SKILL.md"))).toBe(true);
 
     await cli(["init"], e, vars);
-    expect(fs.readlinkSync(path.join(skills, "lingo"))).toBeTruthy();
+    // init must recognise it as already ours and leave it exactly as it is — if
+    // it silently rewrites it to an absolute link, the uninit assertion below
+    // stops testing anything about relative links at all.
+    expect(fs.readlinkSync(path.join(skills, "lingo"))).toBe(relative);
     const removed = await cli(["uninit"], e, vars);
     expect(removed.stdout).toContain("/lingo skill");
     expect(fs.existsSync(path.join(skills, "lingo"))).toBe(false);
@@ -557,6 +560,28 @@ describe("a mistyped command", () => {
       const result = await cli(args, e);
       expect(result.stderr).not.toContain("unknown command");
     }
+  });
+});
+
+describe("flags around `start`", () => {
+  // Everything after `start` is forwarded to the agent, so this used to study the
+  // configured language and hand `--lang` to Claude Code, which has no such flag.
+  it.each([["--lang", "fr"], ["--lang=fr"]])("refuses %s after start", async (...flag) => {
+    const e = fresh();
+    const result = await cli(["start", ...flag], e);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("passed on to the agent");
+    expect(result.stderr).toContain("Put it first");
+    expect(result.stdout).toBe("");
+  });
+
+  it("still forwards the agent's own flags untouched", async () => {
+    const e = fresh();
+    // Behind a stand-in `claude`: `start` launches the agent, and the real binary
+    // would spend the user's quota on every run of the suite.
+    const bin = stubClaude(e, "ok");
+    const result = await cli(["start", "--model", "opus"], e, withStub(bin));
+    expect(result.stderr).not.toContain("passed on to the agent");
   });
 });
 

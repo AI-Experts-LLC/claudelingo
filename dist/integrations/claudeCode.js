@@ -93,10 +93,22 @@ export function removeHooks(settings) {
  * that would silently replace whatever they had configured, and unlike the hooks
  * there is nowhere for both to live.
  */
+/**
+ * Is this status-line command ours?
+ *
+ * Asked by marker rather than by exact binary, because the command we write is
+ * not always the same string: a standalone install writes the bare name and a
+ * plugin writes its own absolute path. Comparing against one of those would make
+ * re-running `init` report our own line as "already configured by someone else",
+ * and would leave it behind on uninstall.
+ */
+function isOurStatusLine(command) {
+    return !!command && command.includes(MARKER) && /\bstatusline\b/.test(command);
+}
 export function withStatusLine(settings, bin) {
     const existing = settings.statusLine;
     const ours = `${bin} statusline`;
-    if (existing && !existing.command?.includes(`${bin} statusline`)) {
+    if (existing && !isOurStatusLine(existing.command)) {
         throw new StatusLineTaken(`a status line is already configured (${existing.command}). Claude Code allows ` +
             "only one, so claudelingo has left it alone. Remove it and re-run " +
             "`claudelingo init` to use claudelingo's instead, or run " +
@@ -108,7 +120,7 @@ export function withStatusLine(settings, bin) {
     };
 }
 export function removeStatusLine(settings, bin) {
-    if (!settings.statusLine?.command?.includes(`${bin} statusline`))
+    if (!isOurStatusLine(settings.statusLine?.command))
         return settings;
     const next = { ...settings };
     delete next.statusLine;
@@ -155,7 +167,7 @@ export function install(file, bin, options = {}) {
     const result = {};
     if (options.statusLine !== false) {
         try {
-            next = withStatusLine(next, bin);
+            next = withStatusLine(next, options.statusLineBin ?? bin);
         }
         catch (error) {
             // The hooks are the load-bearing half; a taken status line must not stop
@@ -173,7 +185,7 @@ export function hasOurStatusLine(file, bin) {
     if (!fs.existsSync(file))
         return false;
     try {
-        return Boolean(readSettings(file).statusLine?.command?.includes(`${bin} statusline`));
+        return isOurStatusLine(readSettings(file).statusLine?.command);
     }
     catch {
         return false;
@@ -309,5 +321,27 @@ export function uninstallSkill(fromFile) {
         return false;
     fs.rmSync(target, { force: true });
     return true;
+}
+/**
+ * The command to write into `statusLine`.
+ *
+ * A standalone install puts `claudelingo` on PATH, so the bare name is right and
+ * stays right when the install moves. A *plugin* install does not: Claude Code
+ * adds a plugin's `bin/` to the PATH it gives hooks, but the status line is
+ * configured in the main settings file and a bare name there can resolve to
+ * nothing — a silently blank panel with no error anywhere. So a plugin writes its
+ * own absolute path, quoted, because plugins get installed under paths with
+ * spaces in them.
+ */
+export function statusLineCommand(fromFile, bin) {
+    if (!runningAsPlugin(fromFile))
+        return bin;
+    const root = packageRoot(fromFile);
+    if (!root)
+        return bin;
+    const own = path.join(root, "bin", "claudelingo");
+    if (!fs.existsSync(own))
+        return bin;
+    return own.includes(" ") ? `"${own}"` : own;
 }
 //# sourceMappingURL=claudeCode.js.map

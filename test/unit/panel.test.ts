@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PANEL_ROWS, renderPanel } from "../../src/statusline.js";
+import { PANEL_ROWS, renderPanel, renderStatusLine, statusLineState } from "../../src/statusline.js";
 import { visibleWidth } from "../../src/ui/render.js";
 import { MASCOT_HEIGHT } from "../../src/ui/mascot.js";
 import { T0, testPack, testProgress } from "../helpers.js";
@@ -77,6 +77,45 @@ describe("the panel under the prompt", () => {
       expect(rows).not.toContain(word.gloss);
       expect(rows).toContain("waiting");
       expect(rows).toContain("/lingo");
+    }
+  });
+
+  // Both forms, every clock offset, against the word the drill would have picked
+  // — which is the overdue one, which is the card that was dealt. Naming the word
+  // from `statusLineState` is what makes this test able to fail: asserting on a
+  // word the drill was never going to show proves nothing.
+  it.each([
+    ["a readable question", { question: "What does it mean?", choices: ["a", "b"] }, false],
+    ["an unreadable one", null, true],
+  ])("never reveals the drill's own word while %s is outstanding", (_name, pending, outstanding) => {
+    const progress = seeded();
+    for (let step = 0; step < 60; step++) {
+      const now = T0 + step * 500;
+      const would = statusLineState(pack, progress, now).word;
+      expect(would).toBeTruthy();
+      const options = { ...plain, pending, outstanding };
+      const panel = renderPanel(pack, progress, now, options).join("\n");
+      const line = renderStatusLine(pack, progress, now, options);
+      for (const rendered of [panel, line]) {
+        expect(rendered).not.toContain(would!.gloss);
+        expect(rendered).toContain("/lingo");
+      }
+    }
+  });
+
+  it("goes quiet in the one-line form too, at every width", () => {
+    const progress = seeded();
+    for (const width of [20, 24, 29, 30, 40, 80]) {
+      for (let step = 0; step < 30; step++) {
+        const now = T0 + step * 1000;
+        const would = statusLineState(pack, progress, now).word!;
+        const rows = renderPanel(pack, progress, now, {
+          ...plain,
+          width,
+          pending: { question: "What does it mean?", choices: ["a", "b"] },
+        });
+        expect(rows.join("\n")).not.toContain(would.gloss);
+      }
     }
   });
 

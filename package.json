@@ -1,6 +1,6 @@
 {
   "name": "claudelingo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Learn a language in the dead time while Claude Code or Codex is working. A terminal companion pane that teaches and quizzes you on high-frequency vocabulary while your coding agent thinks.",
   "type": "module",
   "license": "MIT",

@@ -37,13 +37,6 @@ export declare function settingsPath(scope?: "user" | "project", cwd?: string): 
  */
 export declare function withHooks(settings: Settings, bin: string): Settings;
 export declare function removeHooks(settings: Settings): Settings;
-/**
- * Point Claude Code's status line at us.
- *
- * There is exactly one status-line slot, so someone else's is never overwritten —
- * that would silently replace whatever they had configured, and unlike the hooks
- * there is nowhere for both to live.
- */
 export declare function withStatusLine(settings: Settings, bin: string): Settings;
 export declare function removeStatusLine(settings: Settings, bin: string): Settings;
 export declare function readSettings(file: string): Settings;
@@ -55,6 +48,7 @@ export interface InstallResult {
 export declare function install(file: string, bin: string, options?: {
     statusLine?: boolean;
     hooks?: boolean;
+    statusLineBin?: string;
 }): InstallResult;
 /** True when the configured status line is the one we installed. */
 export declare function hasOurStatusLine(file: string, bin: string): boolean;
@@ -101,4 +95,16 @@ export declare function installSkill(fromFile: string): SkillResult;
  * our name in it" is not proof of ownership.
  */
 export declare function uninstallSkill(fromFile: string): boolean;
+/**
+ * The command to write into `statusLine`.
+ *
+ * A standalone install puts `claudelingo` on PATH, so the bare name is right and
+ * stays right when the install moves. A *plugin* install does not: Claude Code
+ * adds a plugin's `bin/` to the PATH it gives hooks, but the status line is
+ * configured in the main settings file and a bare name there can resolve to
+ * nothing — a silently blank panel with no error anywhere. So a plugin writes its
+ * own absolute path, quoted, because plugins get installed under paths with
+ * spaces in them.
+ */
+export declare function statusLineCommand(fromFile: string, bin: string): string;
 export {};

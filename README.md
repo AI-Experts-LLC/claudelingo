@@ -31,11 +31,15 @@ Inside Claude Code:
 /plugin install AI-Experts-LLC/claudelingo
 ```
 
-That is the whole install. The plugin brings its own hooks and puts its command on
-PATH, so there is nothing to build, nothing to add to your PATH, and nothing to
-edit. One line goes in `~/.claude/settings.json` if you want the status line —
-`claudelingo init --statusline-only` writes it — because Claude Code only lets the
-main config set that field, not a plugin.
+That is the whole install. The plugin brings its own hooks and its `/lingo`
+skill, and Claude Code puts its `bin/` on the PATH the hooks run with, so there is
+nothing to build and nothing to edit.
+
+One line goes in `~/.claude/settings.json` if you want the panel under your
+prompt — `claudelingo init --statusline-only` writes it — because Claude Code
+takes a status line only from the main config, never from a plugin. That line
+holds the plugin's own absolute path, since the status line does not run with the
+plugin PATH the hooks get.
 
 Prefer not to use plugins? The standalone installer still works:
 
@@ -190,7 +194,7 @@ from the integrations `init` sets up:
 
 | Signal | Source | Pane |
 |---|---|---|
-| `UserPromptSubmit`, `PreToolUse` | Claude Code hook | starts quizzing |
+| `UserPromptSubmit` | Claude Code hook | starts quizzing |
 | `Stop`, `SubagentStop`, `SessionEnd` | Claude Code hook | stands down |
 | `Notification` | Claude Code hook | stands down |
 | a user turn appearing in the rollout transcript | Codex | starts quizzing |
@@ -294,7 +298,12 @@ claudelingo uninit [--project]   remove them again
 claudelingo hook <event>         report agent state (called by the hooks)
 claudelingo notify [json]        Codex notify target
 claudelingo status               show the current agent state
-claudelingo statusline           the line Claude Code draws (it calls this)
+claudelingo statusline           the panel Claude Code draws (it calls this)
+claudelingo next --json          hand out one card, for the /lingo skill
+claudelingo answer --choice N    grade the card next handed out
+claudelingo skip                 drop the outstanding card, delay it 10 minutes
+claudelingo lang [code]          show or change the language you are studying
+claudelingo panel [on|off]       the full panel under the prompt, or one line
 claudelingo stats                show your progress
 claudelingo langs                list installed word packs
 claudelingo pack generate        build a pack for another language
@@ -303,7 +312,13 @@ claudelingo reset --yes          erase progress for the current language
 
 Options: `--lang <code>`, `--always-on`, `--ask` / no `--ask`, `--no-enrich`,
 `--no-color`, `--width <n>` (20–1000; anything else is ignored with a warning),
-`--model <id>`. For `init`: `--no-statusline`, `--no-auto-pane` / `--auto-pane`.
+`--model <id>`, `--compact`. For `init`: `--no-statusline`, `--statusline-only`,
+`--no-auto-pane` / `--auto-pane`. For `pack generate`: `--code <xx>`,
+`--overwrite`. For `hook`: `--source <name>`.
+
+Flags come *before* `start`: everything after it is passed on to Claude Code.
+`claudelingo --lang fr start`, not `claudelingo start --lang fr` — the second is
+refused rather than silently studying the wrong language.
 
 `init` exits non-zero if either integration fails to install, so a pane that will
 never wake up is not reported as a success.

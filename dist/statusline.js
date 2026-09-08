@@ -102,7 +102,7 @@ export function renderStatusLine(pack, progress, now, options = {}) {
     const state = statusLineState(pack, progress, now);
     const stats = dim(`${state.learned}/${state.total}`);
     const streak = state.streak > 0 ? dim(` · streak ${state.streak}`) : "";
-    if (options.outstanding) {
+    if (options.outstanding || options.pending) {
         return trim(`${dim("a question is waiting")} ${dim("· /lingo")}  ${stats}${streak}`, options.width);
     }
     if (!state.word) {
