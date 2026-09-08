@@ -233,8 +233,8 @@ distinction in the gloss itself (`"to be (permanent)"` vs `"to be (state, place)
 ## Commands
 
 ```
-claudelingo                      open the companion pane
-claudelingo claude [args]        start Claude Code with the pane beside it
+claudelingo start [args]         start Claude Code with the pane beside it
+claudelingo                      open the companion pane on its own
 claudelingo init [--project]     install the Claude Code + Codex integrations
 claudelingo uninit [--project]   remove them again
 claudelingo hook <event>         report agent state (called by the hooks)
@@ -247,8 +247,9 @@ claudelingo pack generate        build a pack for another language
 claudelingo reset --yes          erase progress for the current language
 ```
 
-Options: `--lang <code>`, `--always-on`, `--no-enrich`, `--no-color`,
-`--width <n>` (20–1000; anything else is ignored with a warning), `--model <id>`.
+Options: `--lang <code>`, `--always-on`, `--ask` / no `--ask`, `--no-enrich`,
+`--no-color`, `--width <n>` (20–1000; anything else is ignored with a warning),
+`--model <id>`. For `init`: `--no-statusline`, `--no-auto-pane` / `--auto-pane`.
 
 `init` exits non-zero if either integration fails to install, so a pane that will
 never wake up is not reported as a success.

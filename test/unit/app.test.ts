@@ -715,5 +715,49 @@ describe("changing language", () => {
   it("offers nothing to pick when only one pack is installed", () => {
     const alone = createState(pack, testProgress(), testSettings(), "busy", T0, [langs[0]!]);
     expect(feed(alone, [press("l")]).state.mode).not.toBe("pickLanguage");
+
+describe("consent is not lost once given", () => {
+  const asking = () => start({ settings: { askFirst: true } });
+
+  it("treats pressing p as the answer to the question", () => {
+    // The pane opens idle and invites "press p to practise". Without this, the
+    // first prompt the user submits replaces the card they are working on.
+    const idlePane = asking();
+    const practising = feed(idlePane, [press("p")]).state;
+    expect(practising.consented).toBe(true);
+
+    const working = feed(practising, [{ type: "agent", state: "busy" }]).state;
+    expect(working.mode).not.toBe("offer");
+  });
+
+  it("does not throw away a half-typed answer when the next prompt arrives", () => {
+    // The failure this guards: pressing p, starting to type, then submitting a
+    // prompt to Claude — and the card being replaced by "Want a quiz?".
+    const recall: Progress = {
+      ...testProgress(),
+      items: {
+        "xx:1": {
+          id: "xx:1", stage: "review", box: 5, step: 0,
+          due: T0 - MINUTE, lastSeen: T0, seen: 9, correct: 9, lapses: 0,
+        },
+      },
+    };
+    let state = createState(pack, recall, testSettings({ askFirst: true }), "idle", T0);
+    state = feed(state, [press("p")]).state;
+    state = feed(state, [press("t"), press("i"), press("e")]).state;
+    expect(state.input).toBe("tie");
+
+    // A prompt is submitted while they are mid-answer.
+    const after = feed(state, [
+      { type: "agent", state: "idle" },
+      { type: "agent", state: "busy" },
+    ]).state;
+    expect(after.mode).toBe("question");
+    expect(after.input).toBe("tie");
+  });
+
+  it("still offers when there is no card to protect", () => {
+    const offered = feed(asking(), [{ type: "agent", state: "busy" }]).state;
+    expect(offered.mode).toBe("offer");
   });
 });

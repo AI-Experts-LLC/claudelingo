@@ -286,6 +286,9 @@ export function reduce(state: AppState, event: Event, pack: Pack): Step {
       if (event.state === "busy") {
         // A fresh burst of work is a fresh chance to offer.
         const fresh = { ...next, declined: false };
+        // A card can only be on screen once consent was given, so there is
+        // nothing here to protect it from — `p` records consent for exactly that
+        // reason (see the `p` handler).
         if (!fresh.consented) {
           return { state: { ...fresh, mode: "offer" }, effects: [] };
         }
@@ -372,6 +375,9 @@ function reduceKey(state: AppState, key: Key, pack: Pack): Step {
       const next: AppState = {
         ...state,
         settings,
+        // Asking to practise IS the answer to "want a quiz?". Without this the
+        // next prompt the user submits replaces their card with the offer.
+        consented: settings.alwaysOn ? true : state.consented,
         message: settings.alwaysOn ? "practice mode on" : "practice mode off",
       };
       if (settings.alwaysOn && next.mode === "waiting") {
