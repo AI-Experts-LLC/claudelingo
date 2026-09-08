@@ -1,0 +1,12 @@
+{
+  "name": "claudelingo",
+  "displayName": "claudelingo",
+  "version": "0.2.0",
+  "description": "Learn a language in the dead time while Claude Code is working.",
+  "author": { "name": "AI Experts LLC" },
+  "repository": "https://github.com/AI-Experts-LLC/claudelingo",
+  "license": "MIT",
+  "keywords": ["language", "vocabulary", "spaced-repetition", "flashcards"],
+  "hooks": "./hooks/hooks.json",
+  "skills": "./skills/"
+}

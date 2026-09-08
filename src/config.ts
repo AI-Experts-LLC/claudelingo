@@ -29,6 +29,7 @@ export const paths = {
   status: () => path.join(home(), "status.json"),
   progress: (lang: string) => path.join(home(), `progress-${lang}.json`),
   lock: (lang: string) => path.join(home(), `progress-${lang}.lock`),
+  pending: (lang: string) => path.join(home(), `pending-${lang}.json`),
   cache: () => path.join(home(), "cache"),
   packs: () => path.join(home(), "packs"),
 };

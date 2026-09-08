@@ -1,0 +1,8 @@
+#!/bin/sh
+# Entry point for the plugin. Claude Code puts this directory on PATH, so the
+# same `claudelingo` command works from a hook, from a skill, and from a shell.
+#
+# `dist/` is committed precisely because a plugin install is a clone, not a build:
+# there is no npm step to compile TypeScript on the way in.
+here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec node "$here/dist/cli.js" "$@"

@@ -13,7 +13,15 @@ import {
   writeJsonAtomic,
 } from "./config.js";
 import * as lock from "./lock.js";
-import { emptyProgress, stats } from "./srs.js";
+import {
+  applyAnswer,
+  buildCard,
+  emptyProgress,
+  isCorrect,
+  makeRng,
+  selectNext,
+  stats,
+} from "./srs.js";
 import { listPacks, loadPack, savePack } from "./packs/index.js";
 import { readStatus, stateForEvent, writeStatus } from "./agentState.js";
 import * as claudeCode from "./integrations/claudeCode.js";
@@ -23,7 +31,7 @@ import { run } from "./ui/tui.js";
 import { defaultWidth, renderStatusLine } from "./statusline.js";
 import { launch, openPaneBeside } from "./launcher.js";
 import type { ProblemKey } from "./ui/app.js";
-import type { Pack, Progress, Settings, Word } from "./types.js";
+import type { Card, Pack, Progress, Settings, Word } from "./types.js";
 
 const BIN = "claudelingo";
 
@@ -37,6 +45,8 @@ const USAGE = `claudelingo — learn a language while your coding agent works
   claudelingo notify [json]        Codex notify target
   claudelingo status               show the current agent state
   claudelingo statusline           the line Claude Code draws (called by Claude Code)
+  claudelingo next --json          hand out one card, for the /lingo skill
+  claudelingo answer --choice N    grade the card next handed out
   claudelingo stats                show your progress
   claudelingo langs                list available word packs
   claudelingo pack generate        build a pack for another language
@@ -67,7 +77,7 @@ interface Args {
 export function parseArgs(argv: string[]): Args {
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
-  const takesValue = new Set(["lang", "width", "source", "model", "count", "code", "home"]);
+  const takesValue = new Set(["lang", "width", "source", "model", "count", "code", "home", "choice", "text"]);
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string;
@@ -89,7 +99,7 @@ export function parseArgs(argv: string[]): Args {
 
   const known = new Set([
     "init", "uninit", "hook", "notify", "status", "statusline", "session-start", "stats",
-    "langs", "pack", "reset", "claude", "start", "help",
+    "langs", "pack", "reset", "claude", "start", "next", "answer", "help",
   ]);
   const first = positional[0];
   const command = first && known.has(first) ? first : "run";
@@ -330,6 +340,151 @@ function cmdUninit(args: Args): void {
     for (const message of failed) process.stderr.write(`NOT removed — ${message}\n`);
     process.exit(1);
   }
+}
+
+/**
+ * `claudelingo next --json` — hand Claude one card to ask.
+ *
+ * Deliberately does NOT say which answer is right. Claude presents the question
+ * and passes the choice back to `answer`, which grades it: the schedule stays the
+ * authority, and a model cannot mark its own homework or leak the answer into the
+ * transcript before the user has replied.
+ *
+ * The card is remembered on disk so `answer` refers to the same one, with the
+ * same shuffle.
+ */
+function cmdNext(args: Args): void {
+  const { settings } = settingsFrom(args.flags);
+  const pack = resolvePack(settings.lang);
+  const { progress, readOnly } = loadProgress(settings.lang, false);
+  const now = Date.now();
+
+  // A live pane owns the deck; two graders would fight over the same file.
+  if (lock.isHeld(paths.lock(settings.lang))) {
+    emit({ error: "a claudelingo pane is already open — answer there instead" });
+    return;
+  }
+  if (readOnly) {
+    emit({ error: `${paths.progress(settings.lang)} could not be read` });
+    return;
+  }
+
+  const next = selectNext(pack, progress, settings, now);
+  if (!next) {
+    emit({ done: true, message: "nothing due right now", stats: stats(pack, progress, now) });
+    return;
+  }
+
+  const card = buildCard(pack, next.word, next.item, makeRng(now));
+  const question =
+    card.kind === "recognize"
+      ? `What does "${card.prompt}" mean?`
+      : card.kind === "reverse"
+        ? `How do you say "${card.prompt}" in ${pack.englishName}?`
+        : card.kind === "teach"
+          ? `New word: "${card.word.term}" (${card.word.pos}) means "${card.word.gloss}".`
+          : `Spell the ${pack.englishName} word for "${card.prompt}".`;
+
+  try {
+    writeJsonAtomic(paths.pending(settings.lang), {
+      id: card.word.id,
+      kind: card.kind,
+      choices: card.choices,
+      answerIndex: card.answerIndex,
+      accepted: card.accepted,
+      issued: now,
+    });
+  } catch (error) {
+    emit({ error: `could not record the question: ${(error as Error).message}` });
+    return;
+  }
+
+  emit({
+    card: {
+      id: card.word.id,
+      kind: card.kind,
+      question,
+      choices: card.choices,
+      note: card.word.note ?? null,
+    },
+    stats: stats(pack, progress, now),
+  });
+}
+
+/** `claudelingo answer --choice N | --text S` — grade the card `next` handed out. */
+function cmdAnswer(args: Args): void {
+  const { settings } = settingsFrom(args.flags);
+  const pack = resolvePack(settings.lang);
+  const pendingFile = paths.pending(settings.lang);
+  const pending = readJsonFile<{
+    id: string;
+    kind: Card["kind"];
+    choices: string[];
+    answerIndex: number;
+    accepted: string[];
+  }>(pendingFile);
+
+  if (!pending.ok) {
+    emit({ error: "no question is outstanding — run `claudelingo next --json` first" });
+    return;
+  }
+  if (lock.isHeld(paths.lock(settings.lang))) {
+    emit({ error: "a claudelingo pane is already open — answer there instead" });
+    return;
+  }
+
+  const held = lock.acquire(paths.lock(settings.lang));
+  if (!held.ok) {
+    emit({ error: "could not take the deck lock" });
+    return;
+  }
+
+  try {
+    const { progress, readOnly } = loadProgress(settings.lang);
+    if (readOnly) {
+      emit({ error: "the deck is not writable, so this answer was not recorded" });
+      return;
+    }
+    const word = pack.words.find((w) => w.id === pending.value.id);
+    if (!word) {
+      emit({ error: "that card is no longer in the pack" });
+      return;
+    }
+
+    const card: Card = {
+      kind: pending.value.kind,
+      word,
+      prompt: "",
+      choices: pending.value.choices,
+      answerIndex: pending.value.answerIndex,
+      accepted: pending.value.accepted,
+    };
+    const choice = args.flags.choice === undefined ? undefined : Number(args.flags.choice) - 1;
+    const text = typeof args.flags.text === "string" ? args.flags.text : undefined;
+    const correct = isCorrect(card, {
+      ...(choice !== undefined ? { choice } : {}),
+      ...(text !== undefined ? { text } : {}),
+    });
+
+    const now = Date.now();
+    const updated = applyAnswer(progress, word, card, correct, now);
+    writeJsonAtomic(paths.progress(settings.lang), updated);
+    fs.rmSync(pendingFile, { force: true });
+
+    emit({
+      correct,
+      term: word.term,
+      gloss: word.gloss,
+      note: word.note ?? null,
+      stats: stats(pack, updated, now),
+    });
+  } finally {
+    if (held.ok) held.lock.release();
+  }
+}
+
+function emit(value: unknown): void {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
 /**
@@ -680,7 +835,7 @@ async function cmdRun(args: Args): Promise<void> {
  * flag *value* that happens to read like a subcommand is not mistaken for one.
  */
 function subcommandIndex(argv: string[], name: string): number {
-  const takesValue = new Set(["lang", "width", "source", "model", "count", "code", "home"]);
+  const takesValue = new Set(["lang", "width", "source", "model", "count", "code", "home", "choice", "text"]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string;
     // `parseArgs` treats anything not starting with `--` as a positional, so this
@@ -715,6 +870,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     case "status": return cmdStatus();
     case "statusline": return cmdStatusline(args);
     case "session-start": return cmdSessionStart(args);
+    case "next": return cmdNext(args);
+    case "answer": return cmdAnswer(args);
     // `start` is the name to remember; `claude` is kept because the flag
     // pass-through reads naturally after it.
     case "start":
