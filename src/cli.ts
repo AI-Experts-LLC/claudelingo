@@ -402,8 +402,9 @@ async function cmdSessionStart(args: Args): Promise<void> {
     if (!process.env.TMUX) return;
 
     // A pane already studying this language holds the lock. Opening a second one
-    // would just produce a pane that exits immediately with a refusal.
-    if (lock.holderPid(paths.lock(settings.lang)) !== null) return;
+    // would just produce a pane that exits immediately with a refusal. Checked for
+    // liveness: a lock left by a killed pane would otherwise disable this for good.
+    if (lock.isHeld(paths.lock(settings.lang))) return;
 
     const entry = process.argv[1];
     if (!entry) return;

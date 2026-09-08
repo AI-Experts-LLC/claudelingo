@@ -165,3 +165,15 @@ export function holderPid(file: string): number | null {
   const current = read(file);
   return current.state === "held" ? current.lock.pid : null;
 }
+
+/**
+ * Whether a *live* process holds this lock.
+ *
+ * `holderPid` reports whatever the file says, which after a crash or a reboot is
+ * a pid that no longer exists. Anything deciding "is a pane already running?"
+ * needs the liveness check `acquire` does, or it stays permanently convinced.
+ */
+export function isHeld(file: string): boolean {
+  const current = read(file);
+  return current.state === "held" && current.lock.pid !== process.pid && alive(current.lock.pid);
+}

@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import http from "node:http";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { type Env, Pane, cli, makeEnv, readProgress, requireBuild, statusFile } from "./harness.js";
@@ -224,61 +223,42 @@ describe("unknown language", () => {
   });
 });
 
-/** Serve one Anthropic streaming response, so the real client path runs. */
-function stubStream(body: unknown): Promise<{ url: string; close(): void; calls: number }> {
-  return new Promise((resolve) => {
-    const state = { calls: 0 };
-    const server = http.createServer((req, res) => {
-      state.calls += 1;
-      res.writeHead(200, {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-        connection: "keep-alive",
-      });
-      const send = (event: string, data: unknown) =>
-        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+/**
+ * A stand-in `claude` binary on PATH.
+ *
+ * `pack generate` shells out to Claude Code now, so a test that does not shadow
+ * the real binary spends the developer's own quota on a full pack generation —
+ * silently, and once per run.
+ */
+function stubClaude(e: Env, payload: unknown, options: { fail?: boolean } = {}): string {
+  const bin = path.join(e.home, "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  const reply = options.fail
+    ? { type: "result", subtype: "error", is_error: true, result: "stub failure" }
+    : {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: typeof payload === "string" ? payload : JSON.stringify(payload),
+      };
+  const file = path.join(bin, "claude");
+  fs.writeFileSync(
+    file,
+    `#!/bin/sh\ncat <<'CLAUDELINGO_EOF'\n${JSON.stringify(reply)}\nCLAUDELINGO_EOF\n`,
+  );
+  fs.chmodSync(file, 0o755);
+  return bin;
+}
 
-      send("message_start", {
-        type: "message_start",
-        message: {
-          id: "msg_1", type: "message", role: "assistant", model: "claude-fable-5-1",
-          content: [], stop_reason: null, stop_sequence: null,
-          usage: { input_tokens: 1, output_tokens: 1 },
-        },
-      });
-      send("content_block_start", {
-        type: "content_block_start", index: 0, content_block: { type: "text", text: "" },
-      });
-      send("content_block_delta", {
-        type: "content_block_delta", index: 0,
-        delta: { type: "text_delta", text: JSON.stringify(body) },
-      });
-      send("content_block_stop", { type: "content_block_stop", index: 0 });
-      send("message_delta", {
-        type: "message_delta",
-        delta: { stop_reason: "end_turn", stop_sequence: null },
-        usage: { output_tokens: 20 },
-      });
-      send("message_stop", { type: "message_stop" });
-      res.end();
-    });
-    server.listen(0, "127.0.0.1", () => {
-      const port = (server.address() as { port: number }).port;
-      resolve({
-        url: `http://127.0.0.1:${port}`,
-        close: () => server.close(),
-        get calls() {
-          return state.calls;
-        },
-      } as { url: string; close(): void; calls: number });
-    });
-  });
+/** Every pack-generate test runs with the stand-in first on PATH. */
+function withStub(bin: string): Record<string, string> {
+  return { PATH: `${bin}:${process.env.PATH}` };
 }
 
 describe("claudelingo pack generate", () => {
   it("writes a pack that loads back and can be studied", async () => {
     const e = fresh();
-    const server = await stubStream({
+    const bin = stubClaude(e, {
       code: "pt",
       name: "Português",
       englishName: "Portuguese",
@@ -290,11 +270,11 @@ describe("claudelingo pack generate", () => {
         { term: "de", gloss: "duplicate to be dropped", pos: "prep" },
       ],
     });
-    try {
+    {
       const generated = await cli(
         ["pack", "generate", "--lang", "Portuguese", "--code", "pt", "--count", "4"],
         e,
-        { ANTHROPIC_API_KEY: "test-key-not-real", ANTHROPIC_BASE_URL: server.url },
+        withStub(bin),
       );
       expect(generated.code).toBe(0);
       expect(generated.stdout).toContain("Wrote 4 words");
@@ -319,25 +299,20 @@ describe("claudelingo pack generate", () => {
       } finally {
         pane.kill();
       }
-    } finally {
-      server.close();
     }
   });
 
   it("writes nothing when the model returns something unusable", async () => {
     const e = fresh();
-    const server = await stubStream({ code: "pt", name: "P", englishName: "Portuguese", words: [] });
-    try {
-      const result = await cli(["pack", "generate", "--lang", "Portuguese", "--code", "pt"], e, {
-        ANTHROPIC_API_KEY: "test-key-not-real",
-        ANTHROPIC_BASE_URL: server.url,
-      });
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain("no words");
-      expect(fs.existsSync(path.join(e.home, "packs", "pt.json"))).toBe(false);
-    } finally {
-      server.close();
-    }
+    const bin = stubClaude(e, { code: "pt", name: "P", englishName: "Portuguese", words: [] });
+    const result = await cli(
+      ["pack", "generate", "--lang", "Portuguese", "--code", "pt"],
+      e,
+      withStub(bin),
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("no words");
+    expect(fs.existsSync(path.join(e.home, "packs", "pt.json"))).toBe(false);
   });
 });
 
@@ -460,22 +435,18 @@ describe("generated pack codes", () => {
     });
     fs.writeFileSync(path.join(packs, "pt.json"), existing);
 
-    const server = await stubStream({
+    const bin = stubClaude(e, {
       code: "pt", name: "Polski", englishName: "Polish",
       words: [{ term: "jeden", gloss: "one", pos: "num" }],
     });
-    try {
-      const result = await cli(
-        ["pack", "generate", "--lang", "Polish", "--code", "pt"],
-        e,
-        { ANTHROPIC_API_KEY: "test-key-not-real", ANTHROPIC_BASE_URL: server.url },
-      );
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain("--overwrite");
-      expect(fs.readFileSync(path.join(packs, "pt.json"), "utf8")).toBe(existing);
-    } finally {
-      server.close();
-    }
+    const result = await cli(
+      ["pack", "generate", "--lang", "Polish", "--code", "pt"],
+      e,
+      withStub(bin),
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("--overwrite");
+    expect(fs.readFileSync(path.join(packs, "pt.json"), "utf8")).toBe(existing);
   });
 
   it("replaces one when told to", async () => {
@@ -486,22 +457,18 @@ describe("generated pack codes", () => {
       path.join(packs, "pt.json"),
       JSON.stringify({ code: "pt", name: "P", englishName: "Portuguese", words: [["um", "one", "num"]] }),
     );
-    const server = await stubStream({
+    const bin = stubClaude(e, {
       code: "pt", name: "Polski", englishName: "Polish",
       words: [{ term: "jeden", gloss: "one", pos: "num" }],
     });
-    try {
-      const result = await cli(
-        ["pack", "generate", "--lang", "Polish", "--code", "pt", "--overwrite"],
-        e,
-        { ANTHROPIC_API_KEY: "test-key-not-real", ANTHROPIC_BASE_URL: server.url },
-      );
-      expect(result.code).toBe(0);
-      const langs = await cli(["langs"], e);
-      expect(langs.stdout).toContain("Polish");
-    } finally {
-      server.close();
-    }
+    const result = await cli(
+      ["pack", "generate", "--lang", "Polish", "--code", "pt", "--overwrite"],
+      e,
+      withStub(bin),
+    );
+    expect(result.code).toBe(0);
+    const langs = await cli(["langs"], e);
+    expect(langs.stdout).toContain("Polish");
   });
 
   it("lets a user pack take precedence over a bundled one when placed by hand", async () => {

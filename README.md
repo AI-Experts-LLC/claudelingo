@@ -148,14 +148,12 @@ box, and works on a word you have not been taught yet. While you are typing an a
 
 Press `e` on any card to ask Claude for a memory hook — a cognate, an etymology, or
 a vivid image — plus a one-line example sentence. Answers are cached on disk, so a
-word is only ever paid for once. This uses **Claude Fable 5.1** (`claude-fable-5-1`)
-at low effort, with a server-side fallback so a policy refusal is rescued inside the
-same call rather than surfacing as a blank.
+word is only ever paid for once.
 
-It needs a credential — `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or an
-`ant auth login` profile (all three are detected). Without one the pane says so once,
-on startup, and does not offer `e` at all, instead of producing an auth error on every
-card; everything else still works. Run with `--no-enrich` to turn it off entirely.
+This runs through the `claude` command in print mode, on the Claude Code login you
+already have. There is no API key to set up and no second bill. If `claude` is not
+on your PATH the pane says so once, on startup, and does not offer `e` at all;
+everything else still works. `--no-enrich` turns it off entirely.
 
 ## Other languages
 
