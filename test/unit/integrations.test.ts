@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stateForEvent } from "../../src/agentState.js";
@@ -794,5 +795,105 @@ describe("the status line command that gets written", () => {
     // …and leaves it alone on the way out, too.
     claudeCode.uninstall(file, "claudelingo");
     expect(JSON.parse(fs.readFileSync(file, "utf8")).statusLine).toEqual(theirs);
+  });
+});
+
+describe("re-installing over our own status line", () => {
+  it("keeps the arguments and extra fields the user chose", () => {
+    // `claudelingo statusline --compact` with their own padding is a combination
+    // the README suggests. Overwriting the whole object silently undid both.
+    const file = path.join(dir(), "settings.json");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        statusLine: {
+          type: "command",
+          command: "claudelingo statusline --compact",
+          padding: 0,
+          refreshInterval: 10,
+        },
+      }),
+    );
+    claudeCode.install(file, "claudelingo", {});
+    const after = JSON.parse(fs.readFileSync(file, "utf8")).statusLine;
+    expect(after.command).toContain("--compact");
+    expect(after.padding).toBe(0);
+    expect(after.refreshInterval).toBe(10);
+  });
+
+  it("still repairs the executable when it has gone stale", () => {
+    const file = path.join(dir(), "settings.json");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        statusLine: { type: "command", command: "/gone/away/claudelingo statusline --compact" },
+      }),
+    );
+    claudeCode.install(file, "claudelingo", { statusLineBin: "claudelingo" });
+    const after = JSON.parse(fs.readFileSync(file, "utf8")).statusLine;
+    expect(after.command).toBe("claudelingo statusline --compact");
+  });
+});
+
+describe("what statusLine gets pointed at", () => {
+  /**
+   * A plugin's `bin/` is on the PATH Claude Code gives its *hooks*. The status
+   * line is configured in the main settings file and does not get that PATH, so
+   * a bare name there can resolve to nothing — a blank panel, no error anywhere.
+   */
+  function pluginTree(base: string): string {
+    const root = path.join(base, ".claude", "plugins", "marketplaces", "mp", "claude lingo");
+    fs.mkdirSync(path.join(root, "bin"), { recursive: true });
+    fs.mkdirSync(path.join(root, "dist"), { recursive: true });
+    fs.writeFileSync(path.join(root, "package.json"), "{}");
+    fs.writeFileSync(path.join(root, "bin", "claudelingo"), "#!/bin/sh\n");
+    return root;
+  }
+
+  it("writes the plugin's own absolute path, quoted for the spaces in it", () => {
+    const home = dir();
+    const root = pluginTree(home);
+    const spy = vi.spyOn(os, "homedir").mockReturnValue(home);
+    try {
+      const command = claudeCode.statusLineCommand(path.join(root, "dist", "cli.js"), "claudelingo");
+      expect(command).not.toBe("claudelingo");
+      expect(command).toContain(path.join(root, "bin", "claudelingo"));
+      expect(command.startsWith('"')).toBe(true);
+      // It has to survive a shell, because that is how Claude Code runs it.
+      const written = `${command} statusline`;
+      expect(written).toContain("claude lingo");
+      expect(claudeCode.install).toBeTruthy();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("leaves a standalone install on the bare name, which follows it if it moves", () => {
+    const home = dir();
+    const spy = vi.spyOn(os, "homedir").mockReturnValue(home);
+    try {
+      const elsewhere = path.join(home, "src");
+      fs.mkdirSync(path.join(elsewhere, "dist"), { recursive: true });
+      fs.writeFileSync(path.join(elsewhere, "package.json"), "{}");
+      expect(
+        claudeCode.statusLineCommand(path.join(elsewhere, "dist", "cli.js"), "claudelingo"),
+      ).toBe("claudelingo");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("falls back to the bare name rather than writing a path with no binary at it", () => {
+    const home = dir();
+    const root = pluginTree(home);
+    fs.rmSync(path.join(root, "bin", "claudelingo"));
+    const spy = vi.spyOn(os, "homedir").mockReturnValue(home);
+    try {
+      expect(
+        claudeCode.statusLineCommand(path.join(root, "dist", "cli.js"), "claudelingo"),
+      ).toBe("claudelingo");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

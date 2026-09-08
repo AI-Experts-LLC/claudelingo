@@ -435,6 +435,22 @@ describe("init reports what actually happened", () => {
     expect(result.stdout).not.toContain("hooks installed");
   });
 
+  it("blames the right half when --statusline-only cannot be installed", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const file = path.join(home, ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "{ not valid json");
+
+    const result = await cli(["init", "--statusline-only"], e, vars);
+    expect(result.code).toBe(1);
+    // It never sets out to install hooks in this mode, so saying they failed
+    // sends the reader looking in the wrong place.
+    expect(result.stderr).not.toContain("hooks NOT installed");
+    expect(result.stderr).toContain("Status line NOT installed");
+    expect(fs.readFileSync(file, "utf8")).toBe("{ not valid json");
+  });
+
   it("leaves another tool's settings alone when only the status line is wanted", async () => {
     const e = fresh();
     const { home, vars } = fakeEnvs(e);
@@ -568,7 +584,11 @@ describe("flags around `start`", () => {
   // configured language and hand `--lang` to Claude Code, which has no such flag.
   it.each([["--lang", "fr"], ["--lang=fr"]])("refuses %s after start", async (...flag) => {
     const e = fresh();
-    const result = await cli(["start", ...flag], e);
+    // Shielded even though the guard fires before anything launches: the check
+    // that keeps the suite off the real binary is a per-call-site one, and an
+    // exception "because this one is safe" is how it stops being safe later.
+    const bin = stubClaude(e, "ok");
+    const result = await cli(["start", ...flag], e, withStub(bin));
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("passed on to the agent");
     expect(result.stderr).toContain("Put it first");
@@ -604,7 +624,10 @@ describe("generated pack codes", () => {
     // `--lang Estonian` defaults to code "es". Writing it would cost a real
     // generation, print "Study it with: claudelingo --lang es", and study Spanish.
     const e = fresh();
-    const result = await cli(["pack", "generate", "--lang", "Estonian"], e);
+    // Shielded even though the code clash is caught before any generation: the
+    // guard is per call site on purpose.
+    const bin = stubClaude(e, { code: "es", name: "E", englishName: "Estonian", words: [] });
+    const result = await cli(["pack", "generate", "--lang", "Estonian"], e, withStub(bin));
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("already in use");
     expect(result.stderr).toContain("--code");

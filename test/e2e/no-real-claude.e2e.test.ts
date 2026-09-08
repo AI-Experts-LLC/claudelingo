@@ -37,18 +37,30 @@ describe("the suite never spends real quota", () => {
     }
   });
 
-  it("shadows `claude` on PATH wherever a command that calls it is exercised", () => {
-    // Every invocation of a model-backed command must be accompanied by a
-    // stand-in binary. This catches the shape, not just the symptom.
+  it("shadows `claude` on PATH at every call site that could reach it", () => {
+    // Per call site, not per file: one stubbed invocation used to excuse every
+    // unstubbed one beside it, and `stubClaude` appearing in a comment was
+    // enough to satisfy the whole file.
+    const launches = /\bcli\(\s*\[\s*"(?:start|claude)"|"pack",\s*"generate"/g;
     for (const file of files) {
       const source = fs.readFileSync(file, "utf8");
-      // `start` and `claude` launch the agent; `pack generate` calls it for a
-      // pack. All three reach the real binary if nothing shadows it.
-      const callers = [/"pack", "generate"/, /cli\(\["start"/, /cli\(\["claude"/];
-      if (!callers.some((pattern) => pattern.test(source))) continue;
-      expect(source, `${path.basename(file)} launches or calls claude`).toMatch(
-        /stubClaude|withStub/,
-      );
+      for (const match of source.matchAll(launches)) {
+        // The call ends at the first `)` that closes it; a stub has to be named
+        // inside it, as the environment override.
+        const from = match.index ?? 0;
+        const call = source.slice(from, source.indexOf(");", from) + 2);
+        const where = `${path.basename(file)} near "${source.slice(from, from + 40).trim()}"`;
+        expect(call, `${where} can reach the real claude with nothing shadowing it`).toMatch(
+          /withStub|stubClaude|PATH/,
+        );
+      }
     }
+  });
+
+  it("would notice an unshielded call — this check can fail", () => {
+    // A guard nobody has seen fail is a guard nobody knows works.
+    const unshielded = 'const r = await cli(["start", "--model", "opus"], e);';
+    const call = unshielded.slice(unshielded.indexOf("cli("));
+    expect(call).not.toMatch(/withStub|stubClaude|PATH/);
   });
 });

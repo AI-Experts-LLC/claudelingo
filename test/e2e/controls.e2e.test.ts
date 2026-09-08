@@ -118,6 +118,16 @@ describe("the commands the panel tells you to type", () => {
     expect(fs.readFileSync(file, "utf8")).toBe(before);
   });
 
+  // The writing forms refuse when the file cannot be read; the reading forms used
+  // to answer from defaults as though they were the user's settings.
+  it.each([["panel"], ["lang"]])("says so when %s reports from defaults it could not read", async (cmd) => {
+    const e = fresh();
+    fs.writeFileSync(path.join(e.home, "settings.json"), '{"lang":"fr",');
+    const result = await json([cmd], e);
+    expect(result.problem, `${cmd} reported without mentioning the unreadable file`).toBeTruthy();
+    expect(String(result.problem)).toContain("settings.json");
+  });
+
   it("does not turn a one-off flag into a saved preference", async () => {
     const e = fresh();
     await json(["panel", "on"], e);

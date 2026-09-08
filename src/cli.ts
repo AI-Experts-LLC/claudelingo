@@ -296,7 +296,10 @@ function cmdInit(args: Args): void {
     }
   } catch (error) {
     failed.push("Claude Code");
-    process.stderr.write(`Claude Code hooks NOT installed: ${(error as Error).message}\n`);
+    process.stderr.write(
+      `${onlyStatusLine ? "Status line" : "Claude Code hooks"} NOT installed: ` +
+        `${(error as Error).message}\n`,
+    );
   }
 
   if (onlyStatusLine) {
@@ -563,11 +566,11 @@ function settingsToWrite(): { settings: Settings } | { problem: string } {
  * Nothing else changes: both forms are read-only views of the same deck.
  */
 function cmdPanel(args: Args): void {
-  const { settings } = settingsFrom(args.flags);
+  const { settings, problem } = settingsFrom(args.flags);
   const wanted = typeof args.rest[0] === "string" ? args.rest[0].toLowerCase() : null;
 
   if (wanted === null) {
-    emit({ panel: settings.panel !== false });
+    emit({ panel: settings.panel !== false, ...(problem ? { problem } : {}) });
     return;
   }
   if (wanted !== "on" && wanted !== "off") {
@@ -600,7 +603,8 @@ function cmdLang(args: Args): void {
   // Deliberately not `settingsFrom`: with `lang fr --lang it` the flag would make
   // "the language being left" italian, and the pending-file cleanup would delete
   // the wrong one. The positional is the request; the file is the current state.
-  const settings = loadSettings().settings;
+  const loaded = loadSettings();
+  const settings = loaded.settings;
   const wanted = typeof args.rest[0] === "string" ? args.rest[0].toLowerCase() : null;
   const codes = listPacks();
 
@@ -617,6 +621,9 @@ function cmdLang(args: Args): void {
       lang: settings.lang,
       englishName: describe(settings.lang).englishName,
       available: codes.map(describe),
+      // Reporting a default as though it were their setting is how someone
+      // concludes their configuration is fine when it cannot be read at all.
+      ...(loaded.problem ? { problem: loaded.problem } : {}),
     });
     return;
   }

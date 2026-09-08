@@ -114,9 +114,21 @@ export function withStatusLine(settings, bin) {
             "`claudelingo init` to use claudelingo's instead, or run " +
             "`claudelingo init --no-statusline` to skip this part.");
     }
+    // Re-installing over our own line must not quietly undo how the user set it
+    // up. `claudelingo statusline --compact` with a `padding` of their own is a
+    // combination the README suggests, and overwriting the whole object dropped
+    // both. Keep their arguments and any extra fields; update only the executable,
+    // which is the part that goes stale when a plugin moves.
+    const kept = existing?.command;
+    const args = kept ? kept.slice(kept.indexOf("statusline") + "statusline".length) : "";
     return {
         ...settings,
-        statusLine: { type: "command", command: ours, refreshInterval: STATUS_REFRESH_SECONDS },
+        statusLine: {
+            ...existing,
+            type: "command",
+            command: `${ours}${kept ? args : ""}`,
+            refreshInterval: existing?.refreshInterval ?? STATUS_REFRESH_SECONDS,
+        },
     };
 }
 export function removeStatusLine(settings, bin) {

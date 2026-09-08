@@ -100,20 +100,42 @@ describe("the Claude Code plugin", () => {
       [fresh, { pending: { question: "q", choices: ["a", "b"] } }],
       [fresh, { pending: { question: "q", choices: [], kind: "teach" } }],
     ];
+    // Whole hints, split on the panel's own gap. The previous version of this
+    // matched `/lingo` plus ONE word, so `/lingo quiz me` became `/lingo quiz`
+    // and was satisfied by the word "quiz" in the skill's frontmatter — the row
+    // it was written to protect could be deleted with the suite still green.
     const printed = new Set<string>();
     for (const [progress, options] of states) {
       for (const line of renderPanel(pack, progress, T0, { ...options, color: false })) {
-        for (const match of line.matchAll(/\/lingo(?: [a-z-]+)?/g)) printed.add(match[0]);
+        for (const segment of line.split(/\s{2,}/)) {
+          const hint = segment.trim();
+          if (hint.startsWith("/lingo")) printed.add(hint);
+        }
       }
     }
-    // Every branch of the panel is represented, so a hint added to one of them
-    // cannot slip past this.
+
+    // What each hint obliges SKILL.md to say. A hint with no entry here fails:
+    // that is the point — a new control must be taught to the skill, or it falls
+    // through its catch-all and grades the outstanding card.
+    const required: Record<string, string> = {
+      "/lingo quiz me": "`/lingo quiz me`",
+      "/lingo stats": "`/lingo stats`",
+      "/lingo lang": "`/lingo lang`",
+      "/lingo skip": "`/lingo skip`",
+      "/lingo ok got it": "`/lingo ok`",
+      "/lingo N-N answer": "`/lingo 1`",
+      "/lingo <answer>": "answer --text",
+      "/lingo show it": "Deal a card",
+    };
+
     expect(printed.size).toBeGreaterThanOrEqual(6);
-    for (const hint of printed) {
-      const word = hint.replace("/lingo", "").trim();
-      if (!word) continue;
-      expect(skill, `the panel prints "${hint}" but the skill never mentions "${word}"`).toContain(
-        word,
+    for (const raw of printed) {
+      // The range depends on how many choices the card had; the obligation does not.
+      const hint = raw.replace(/\b\d+-\d+\b/, "N-N");
+      const phrase = required[hint];
+      expect(phrase, `the panel prints "${hint}" and this test does not know it`).toBeTruthy();
+      expect(skill, `the panel prints "${hint}" but SKILL.md never says ${phrase}`).toContain(
+        phrase as string,
       );
     }
   });
