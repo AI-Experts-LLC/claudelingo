@@ -206,6 +206,24 @@ describe("the quiz the /lingo skill drives", () => {
     expect(fs.readFileSync(progressFile(e, "es"), "utf8")).toBe(before);
   });
 
+  // `--choice` with nothing after it used to become -1: graded wrong, the box
+  // demoted, and success reported. A missing value must be refused instead.
+  it.each([["--choice"], ["--text"]])("refuses %s with no value rather than grading it", async (flag) => {
+    const e = fresh();
+    await next(e);
+    await answer(e, ["--choice", "1"]);
+    await next(e);
+    const before = fs.readFileSync(progressFile(e, "es"), "utf8");
+
+    const { stdout, stderr, code } = await cli(["answer", flag], e);
+    expect(code).toBe(1);
+    expect(stderr).toContain("needs a value");
+    expect(stdout).toBe("");
+    // Nothing graded, and the question is still outstanding to answer properly.
+    expect(fs.readFileSync(progressFile(e, "es"), "utf8")).toBe(before);
+    expect(fs.existsSync(path.join(e.home, "pending-es.json"))).toBe(true);
+  });
+
   it("emits one line of JSON, so a skill can parse it", async () => {
     const e = fresh();
     const { stdout } = await cli(["next", "--json"], e);

@@ -1,7 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { type Env, Pane, cli, makeEnv, readProgress, requireBuild, statusFile } from "./harness.js";
+import {
+  type Env,
+  Pane,
+  REPO,
+  cli,
+  makeEnv,
+  readProgress,
+  requireBuild,
+  statusFile,
+} from "./harness.js";
 
 let env: Env;
 beforeAll(requireBuild);
@@ -370,6 +379,29 @@ describe("init reports what actually happened", () => {
     await cli(["uninit"], e, vars);
     expect(fs.existsSync(path.join(theirs, "SKILL.md"))).toBe(true);
     expect(fs.readlinkSync(path.join(skills, "lingo"))).toBe("../../othertool/skills/lingo");
+  });
+
+  // The mirror of the case above: a relative link that really is ours must still
+  // be removed by uninit. Resolving it against the process's cwd instead of the
+  // link's own directory gets this wrong in both directions.
+  it("removes its own skill link even when that link is relative", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const skills = path.join(home, ".claude", "skills");
+    fs.mkdirSync(skills, { recursive: true });
+    const ours = path.join(REPO, "skills", "lingo");
+    fs.symlinkSync(path.relative(skills, ours), path.join(skills, "lingo"));
+    // Sanity: the link resolves to our skill, and is relative.
+    expect(path.isAbsolute(fs.readlinkSync(path.join(skills, "lingo")))).toBe(false);
+    expect(fs.existsSync(path.join(skills, "lingo", "SKILL.md"))).toBe(true);
+
+    await cli(["init"], e, vars);
+    expect(fs.readlinkSync(path.join(skills, "lingo"))).toBeTruthy();
+    const removed = await cli(["uninit"], e, vars);
+    expect(removed.stdout).toContain("/lingo skill");
+    expect(fs.existsSync(path.join(skills, "lingo"))).toBe(false);
+    // …and our source is of course untouched.
+    expect(fs.existsSync(path.join(ours, "SKILL.md"))).toBe(true);
   });
 
   it("installs just the status line with --statusline-only", async () => {
