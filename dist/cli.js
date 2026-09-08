@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_SETTINGS, ensureHome, loadSettings, paths, quarantine, readJsonFile, saveSettings, writeJsonAtomic, } from "./config.js";
 import * as lock from "./lock.js";
 import { applyAnswer, buildCard, deferItem, emptyProgress, isCorrect, makeRng, selectNext, stats, } from "./srs.js";
-import { listPacks, loadPack, savePack } from "./packs/index.js";
+import { clean, listPacks, loadPack, savePack } from "./packs/index.js";
 import { readStatus, stateForEvent, writeStatus } from "./agentState.js";
 import * as claudeCode from "./integrations/claudeCode.js";
 import * as codex from "./integrations/codex.js";
@@ -84,10 +84,20 @@ export function parseArgs(argv) {
         "langs", "pack", "reset", "claude", "start", "next", "answer", "skip", "lang", "panel", "help",
     ]);
     const first = positional[0];
-    const command = first && known.has(first) ? first : "run";
-    return { command, rest: command === "run" ? positional : positional.slice(1), flags };
+    // A word we do not know is a typo, not a request for the pane. Treating it as
+    // one opened a full-screen TUI that then sat waiting on stdin: no output, no
+    // error, no way to tell what went wrong. Bare `claudelingo` (no positional at
+    // all) is still how you open the pane.
+    const command = first === undefined ? "run" : known.has(first) ? first : "unknown";
+    // `unknown` keeps the offending word at rest[0]; an error that cannot name what
+    // it rejected is barely an error at all.
+    const rest = command === "run" || command === "unknown" ? positional : positional.slice(1);
+    return { command, rest, flags };
 }
-const VALUE_FLAGS = ["lang", "width", "source", "model", "count", "code"];
+// `choice` and `text` were missing here while being in `takesValue`, so
+// `answer --choice` with nothing after it became choice "" → -1 → graded wrong,
+// demoting a box, while reporting success.
+const VALUE_FLAGS = ["lang", "width", "source", "model", "count", "code", "choice", "text"];
 function requireFlagValues(flags) {
     for (const name of VALUE_FLAGS) {
         if (flags[name] === "")
@@ -472,6 +482,23 @@ function cmdSkip(args) {
     }
 }
 /**
+ * Settings to write back, or a reason not to.
+ *
+ * Two traps, both of which this file has fallen into. Writing over a settings
+ * file that could not be read discards the user's language and model choice
+ * without them ever knowing — `cmdInit` guards that, and the writers added later
+ * did not. And writing back the *flag-merged* settings turns a one-off
+ * `--no-enrich` into a permanent preference, so the file's own values are what
+ * gets persisted here.
+ */
+function settingsToWrite() {
+    const loaded = loadSettings();
+    if (loaded.problem) {
+        return { problem: `${loaded.problem} leaving it alone; fix or delete it, then re-run.` };
+    }
+    return { settings: loaded.settings };
+}
+/**
  * `claudelingo panel [on|off]` — how much room the status line takes.
  *
  * On, it draws the whole widget under the prompt; off, it is the one-line drill.
@@ -489,7 +516,12 @@ function cmdPanel(args) {
         return;
     }
     const panel = wanted === "on";
-    saveSettings({ ...settings, panel });
+    const target = settingsToWrite();
+    if ("problem" in target) {
+        emit({ error: target.problem });
+        return;
+    }
+    saveSettings({ ...target.settings, panel });
     emit({ panel, changed: (settings.panel !== false) !== panel });
 }
 /**
@@ -531,7 +563,12 @@ function cmdLang(args) {
         emit({ error: "a claudelingo pane is open — press l there to change language instead" });
         return;
     }
-    saveSettings({ ...settings, lang: wanted });
+    const target = settingsToWrite();
+    if ("problem" in target) {
+        emit({ error: target.problem });
+        return;
+    }
+    saveSettings({ ...target.settings, lang: wanted });
     // The outstanding question belongs to the language being left behind; grading
     // it against the new deck would file the answer under the wrong word.
     fs.rmSync(paths.pending(settings.lang), { force: true });
@@ -636,22 +673,31 @@ async function cmdStatusline(args) {
         // `--compact` wins over the setting: it is how someone tries the one-liner
         // without editing anything.
         const wantPanel = args.flags.compact ? false : settings.panel !== false;
-        if (!wantPanel) {
-            process.stdout.write(`${renderStatusLine(pack, progress, Date.now(), options)}\n`);
-            return;
-        }
         // Strictly a read of the pending file: the panel shows the outstanding
         // question, and grading stays with `answer`, which holds the lock.
-        const stored = readJsonFile(paths.pending(settings.lang));
+        const pendingFile = paths.pending(settings.lang);
+        // Presence, not parseability — see `outstanding` in StatusLineOptions.
+        const outstanding = fs.existsSync(pendingFile);
+        const stored = readJsonFile(pendingFile);
         const value = stored.ok ? stored.value : null;
         const pending = value && typeof value.question === "string" && Array.isArray(value.choices)
             ? {
-                question: value.question,
-                choices: value.choices.filter((c) => typeof c === "string"),
-                ...(typeof value.kind === "string" ? { kind: value.kind } : {}),
+                // The pack boundary strips control characters; this file is trusted
+                // the same way and must be, or a newline in a question becomes an
+                // extra terminal row and the fixed height is no longer fixed.
+                question: clean(value.question),
+                choices: value.choices
+                    .filter((c) => typeof c === "string")
+                    .map((c) => clean(c)),
+                ...(typeof value.kind === "string" ? { kind: clean(value.kind) } : {}),
             }
             : null;
-        for (const line of renderPanel(pack, progress, Date.now(), { ...options, pending })) {
+        const full = { ...options, pending, outstanding: outstanding && !pending };
+        if (!wantPanel) {
+            process.stdout.write(`${renderStatusLine(pack, progress, Date.now(), full)}\n`);
+            return;
+        }
+        for (const line of renderPanel(pack, progress, Date.now(), full)) {
             process.stdout.write(`${line}\n`);
         }
     }
@@ -1060,6 +1106,9 @@ export async function main(argv = process.argv.slice(2)) {
         case "langs": return cmdLangs();
         case "pack": return cmdPack(args);
         case "reset": return cmdReset(args);
+        case "unknown":
+            return fail(`unknown command "${args.rest[0] ?? ""}"\n` +
+                "Run `claudelingo --help` to see them, or `claudelingo` on its own for the pane.");
         default: return cmdRun(args);
     }
 }

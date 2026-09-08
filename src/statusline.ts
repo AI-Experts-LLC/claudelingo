@@ -30,6 +30,16 @@ export interface StatusLineOptions {
   color?: boolean;
   /** Columns available. The line is trimmed to fit rather than wrapping. */
   width?: number;
+  /**
+   * A question is outstanding, even if it could not be read.
+   *
+   * The drill reveals meanings on a timer and ranks the most overdue word first
+   * — which is the very card `next` just handed out. So an *unreadable* pending
+   * file (one written by an older version, or truncated) must still silence the
+   * drill, or the panel answers the question on screen. Presence on disk is the
+   * signal; being able to parse it is not.
+   */
+  outstanding?: boolean;
 }
 
 interface Candidate {
@@ -98,7 +108,10 @@ export function statusLineState(pack: Pack, progress: Progress, now: number): St
  * callers just added, dropping the closing reset and leaving the terminal dim.
  */
 function trim(text: string, width: number | undefined): string {
-  if (!width || width <= 4) return text;
+  // Guarding at `<= 4` let a caller asking for a 4-column line get a 49-column
+  // one. The CLI never asks for that, but a public export should not overflow
+  // whatever it was handed.
+  if (!width || width <= 0) return text;
   return truncateStyled(text, width);
 }
 
@@ -132,6 +145,9 @@ export function renderStatusLine(
   const stats = dim(`${state.learned}/${state.total}`);
   const streak = state.streak > 0 ? dim(` · streak ${state.streak}`) : "";
 
+  if (options.outstanding) {
+    return trim(`${dim("a question is waiting")} ${dim("· /lingo")}  ${stats}${streak}`, options.width);
+  }
   if (!state.word) {
     return trim(`${dim(pack.englishName)} ${dim("· all caught up")} ${stats}`, options.width);
   }
@@ -219,7 +235,13 @@ export function renderPanel(
   let middle: string;
   let hint: string;
 
-  if (pending) {
+  if (!pending && options.outstanding) {
+    // Something is outstanding that we could not read. Saying so beats both
+    // silence and the drill, which would reveal the answer to it.
+    head = bold("a question is waiting");
+    middle = dim("it could not be read from here");
+    hint = `${key("/lingo")} ${dim("show it")}   ${key("/lingo skip")}`;
+  } else if (pending) {
     head = bold(pending.question);
     if (pending.kind === "teach") {
       // Nothing to get right — it is being shown a word, not tested on one.
@@ -254,7 +276,7 @@ export function renderPanel(
   const gutter = width === undefined || width >= OWL_MIN_WIDTH;
   if (!gutter) return body.map((line) => trim(line, width));
 
-  const mood = pending ? "watching" : state.word ? "asking" : "asleep";
+  const mood = pending || options.outstanding ? "watching" : state.word ? "asking" : "asleep";
   const face = owl(mood);
   return body.map((line, i) => trim(`${dim(face[i] ?? "")}  ${line}`, width));
 }

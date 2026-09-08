@@ -102,6 +102,35 @@ describe("the commands the panel tells you to type", () => {
     expect(back.stdout.trimEnd().split("\n").length).toBeGreaterThan(1);
   });
 
+  // `init` has always guarded this; the writers added later did not, and reset
+  // every preference — including the language — while reporting success.
+  it.each([
+    ["lang", ["lang", "fr"]],
+    ["panel", ["panel", "off"]],
+  ])("refuses to overwrite a settings file it could not read (%s)", async (_name, args) => {
+    const e = fresh();
+    const file = path.join(e.home, "settings.json");
+    fs.writeFileSync(file, '{"lang":"fr","model":"my-model","maxLearning":3,');
+    const before = fs.readFileSync(file, "utf8");
+
+    const result = await json(args, e);
+    expect(String(result.error)).toContain("leaving it alone");
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
+
+  it("does not turn a one-off flag into a saved preference", async () => {
+    const e = fresh();
+    await json(["panel", "on"], e);
+    const before = JSON.parse(fs.readFileSync(path.join(e.home, "settings.json"), "utf8"));
+    expect(before.enrich).not.toBe(false);
+
+    await json(["lang", "fr", "--no-enrich"], e);
+    const after = JSON.parse(fs.readFileSync(path.join(e.home, "settings.json"), "utf8"));
+    expect(after.lang).toBe("fr");
+    // The only thing that should have changed is the language.
+    expect(after.enrich).toBe(before.enrich);
+  });
+
   it("stands aside for a running pane, on every command that writes", async () => {
     const e = fresh();
     await json(["next", "--json"], e);

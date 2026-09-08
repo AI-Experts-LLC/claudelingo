@@ -72,7 +72,10 @@ export function statusLineState(pack, progress, now) {
  * callers just added, dropping the closing reset and leaving the terminal dim.
  */
 function trim(text, width) {
-    if (!width || width <= 4)
+    // Guarding at `<= 4` let a caller asking for a 4-column line get a 49-column
+    // one. The CLI never asks for that, but a public export should not overflow
+    // whatever it was handed.
+    if (!width || width <= 0)
         return text;
     return truncateStyled(text, width);
 }
@@ -99,6 +102,9 @@ export function renderStatusLine(pack, progress, now, options = {}) {
     const state = statusLineState(pack, progress, now);
     const stats = dim(`${state.learned}/${state.total}`);
     const streak = state.streak > 0 ? dim(` · streak ${state.streak}`) : "";
+    if (options.outstanding) {
+        return trim(`${dim("a question is waiting")} ${dim("· /lingo")}  ${stats}${streak}`, options.width);
+    }
     if (!state.word) {
         return trim(`${dim(pack.englishName)} ${dim("· all caught up")} ${stats}`, options.width);
     }
@@ -156,7 +162,14 @@ export function renderPanel(pack, progress, now, options = {}) {
     let head;
     let middle;
     let hint;
-    if (pending) {
+    if (!pending && options.outstanding) {
+        // Something is outstanding that we could not read. Saying so beats both
+        // silence and the drill, which would reveal the answer to it.
+        head = bold("a question is waiting");
+        middle = dim("it could not be read from here");
+        hint = `${key("/lingo")} ${dim("show it")}   ${key("/lingo skip")}`;
+    }
+    else if (pending) {
         head = bold(pending.question);
         if (pending.kind === "teach") {
             // Nothing to get right — it is being shown a word, not tested on one.
@@ -190,7 +203,7 @@ export function renderPanel(pack, progress, now, options = {}) {
     const gutter = width === undefined || width >= OWL_MIN_WIDTH;
     if (!gutter)
         return body.map((line) => trim(line, width));
-    const mood = pending ? "watching" : state.word ? "asking" : "asleep";
+    const mood = pending || options.outstanding ? "watching" : state.word ? "asking" : "asleep";
     const face = owl(mood);
     return body.map((line, i) => trim(`${dim(face[i] ?? "")}  ${line}`, width));
 }

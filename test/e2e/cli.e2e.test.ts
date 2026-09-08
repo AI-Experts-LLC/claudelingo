@@ -349,6 +349,29 @@ describe("init reports what actually happened", () => {
 
   // A plugin brings its own hooks and skill; the one thing it cannot bring is the
   // status line, which Claude Code takes only from the main config.
+  // A relative link is anchored at the directory holding it, not at the process's
+  // cwd. Resolving it wrongly made another tool's live skill look like a dead
+  // link of ours — and whether it survived depended on where init was run from.
+  it("leaves a relative symlink to another tool's skill alone", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const theirs = path.join(home, "othertool", "skills", "lingo");
+    fs.mkdirSync(theirs, { recursive: true });
+    fs.writeFileSync(path.join(theirs, "SKILL.md"), "name: someone else\n");
+    const skills = path.join(home, ".claude", "skills");
+    fs.mkdirSync(skills, { recursive: true });
+    fs.symlinkSync(path.join("..", "..", "othertool", "skills", "lingo"), path.join(skills, "lingo"));
+
+    const result = await cli(["init"], e, vars);
+    expect(result.stderr).toContain("not ours");
+    expect(fs.readlinkSync(path.join(skills, "lingo"))).toBe("../../othertool/skills/lingo");
+    expect(fs.readFileSync(path.join(theirs, "SKILL.md"), "utf8")).toContain("someone else");
+
+    await cli(["uninit"], e, vars);
+    expect(fs.existsSync(path.join(theirs, "SKILL.md"))).toBe(true);
+    expect(fs.readlinkSync(path.join(skills, "lingo"))).toBe("../../othertool/skills/lingo");
+  });
+
   it("installs just the status line with --statusline-only", async () => {
     const e = fresh();
     const { home, codexHome, vars } = fakeEnvs(e);
@@ -469,6 +492,28 @@ describe("init reports what actually happened", () => {
     expect(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")).not.toContain(
       "claudelingo",
     );
+  });
+});
+
+describe("a mistyped command", () => {
+  it("says so instead of opening the pane and waiting on stdin", async () => {
+    const e = fresh();
+    for (const typo of ["bogusnonsense", "stat", "skipp", "Lang"]) {
+      const result = await cli([typo], e);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("unknown command");
+      // Naming the word is the whole point: a typo must not read as a hang.
+      expect(result.stderr).toContain(typo);
+      expect(result.stdout).toBe("");
+    }
+  });
+
+  it("still knows every command the panel and the skill tell people to type", async () => {
+    const e = fresh();
+    for (const args of [["skip"], ["lang"], ["panel"], ["stats"], ["langs"]]) {
+      const result = await cli(args, e);
+      expect(result.stderr).not.toContain("unknown command");
+    }
   });
 });
 

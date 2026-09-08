@@ -35,7 +35,8 @@ export class PackError extends Error {}
  * treats escapes as free, so they pass straight through. Cleaned here so every
  * surface benefits rather than each one remembering.
  */
-function clean(value: string): string {
+/** Strip control characters and collapse whitespace — see `materialize`. */
+export function clean(value: string): string {
   return value
     .replace(/\p{Cc}/gu, " ")
     .replace(/\s+/g, " ")

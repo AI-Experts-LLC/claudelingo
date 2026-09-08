@@ -18,6 +18,16 @@ export interface StatusLineOptions {
     color?: boolean;
     /** Columns available. The line is trimmed to fit rather than wrapping. */
     width?: number;
+    /**
+     * A question is outstanding, even if it could not be read.
+     *
+     * The drill reveals meanings on a timer and ranks the most overdue word first
+     * — which is the very card `next` just handed out. So an *unreadable* pending
+     * file (one written by an older version, or truncated) must still silence the
+     * drill, or the panel answers the question on screen. Presence on disk is the
+     * signal; being able to parse it is not.
+     */
+    outstanding?: boolean;
 }
 export interface StatusLineState {
     word: Word | null;

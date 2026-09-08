@@ -62,6 +62,24 @@ describe("the panel under the prompt", () => {
     }
   });
 
+  // The pending file may be unreadable — written by an older version, or
+  // truncated. The drill ranks the most overdue word first, which is exactly the
+  // card that was handed out, so falling back to it answers the question.
+  it("stays quiet when a question is outstanding but could not be read", () => {
+    const word = pack.words[0]!;
+    const progress = seeded();
+    for (let step = 0; step < 24; step++) {
+      const rows = renderPanel(pack, progress, T0 + step * 1000, {
+        ...plain,
+        pending: null,
+        outstanding: true,
+      }).join("\n");
+      expect(rows).not.toContain(word.gloss);
+      expect(rows).toContain("waiting");
+      expect(rows).toContain("/lingo");
+    }
+  });
+
   it("says there is nothing to answer on a teach card", () => {
     const rows = renderPanel(pack, seeded(), T0, {
       ...plain,
@@ -83,6 +101,16 @@ describe("the panel under the prompt", () => {
         }),
       ]) {
         for (const line of rows) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+
+  // A public export should not overflow whatever width it is handed, even one the
+  // CLI would never pass.
+  it("never exceeds the width it is given, however small", () => {
+    for (let width = 1; width <= 20; width++) {
+      for (const line of renderPanel(pack, seeded(), T0, { ...plain, width })) {
+        expect(visibleWidth(line)).toBeLessThanOrEqual(width);
       }
     }
   });

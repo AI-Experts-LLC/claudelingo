@@ -276,6 +276,19 @@ export function runningAsPlugin(fromFile: string): boolean {
   return path.resolve(root).startsWith(plugins);
 }
 
+/**
+ * Where a symlink actually points.
+ *
+ * A relative link is anchored at the directory holding the link, not at the
+ * process's cwd — `path.resolve` alone gets this wrong, and the consequence is
+ * not cosmetic: a live relative link to another tool's skill looks like a dead
+ * link of ours, and gets deleted. Whether it survived depended on which
+ * directory `init` happened to be run from.
+ */
+function linkTarget(link: string, read: string): string {
+  return path.resolve(path.dirname(link), read);
+}
+
 export type SkillResult =
   | { state: "linked"; path: string }
   | { state: "already" }
@@ -305,12 +318,13 @@ export function installSkill(fromFile: string): SkillResult {
     if (code !== "ENOENT") throw error;
   }
   if (existing !== null) {
-    if (path.resolve(existing) === path.resolve(source)) return { state: "already" };
+    const points = linkTarget(target, existing);
+    if (points === path.resolve(source)) return { state: "already" };
     // Anything else that is still there belongs to someone: a different skill, or
     // another copy of this one that is on disk and working. Only a link whose
     // target has gone is safe to replace — matching on the path text was a guess,
     // and a guess is not good enough to justify deleting.
-    if (fs.existsSync(path.resolve(existing))) return { state: "taken", path: target };
+    if (fs.existsSync(points)) return { state: "taken", path: target };
   }
 
   fs.mkdirSync(skillsDir(), { recursive: true });
@@ -336,7 +350,7 @@ export function uninstallSkill(fromFile: string): boolean {
   } catch {
     return false;
   }
-  if (path.resolve(existing) !== path.resolve(source)) return false;
+  if (linkTarget(target, existing) !== path.resolve(source)) return false;
   fs.rmSync(target, { force: true });
   return true;
 }

@@ -37,8 +37,18 @@ describe("argument parsing", () => {
     expect(parseArgs(["--help"]).flags.help).toBe(true);
   });
 
-  it("does not mistake an unknown word for a subcommand", () => {
-    expect(parseArgs(["banana"]).command).toBe("run");
+  // It used to become "run", which opened the pane and sat on stdin: no output,
+  // no error, no way to tell a typo from a hang.
+  it("rejects an unknown word instead of opening the pane", () => {
+    const args = parseArgs(["banana"]);
+    expect(args.command).toBe("unknown");
+    // The word survives, so the error can name what it rejected.
+    expect(args.rest[0]).toBe("banana");
+  });
+
+  it("still opens the pane when there is no subcommand at all", () => {
+    expect(parseArgs([]).command).toBe("run");
+    expect(parseArgs(["--lang", "fr"]).command).toBe("run");
   });
 });
 
