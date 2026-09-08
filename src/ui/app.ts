@@ -1,4 +1,12 @@
-import { applyAnswer, buildCard, isCorrect, makeRng, selectNext, stats } from "../srs.js";
+import {
+  applyAnswer,
+  buildCard,
+  deferItem,
+  isCorrect,
+  makeRng,
+  selectNext,
+  stats,
+} from "../srs.js";
 import type {
   AgentState,
   Card,
@@ -216,32 +224,11 @@ function grade(state: AppState, pack: Pack, response: { choice?: number; text?: 
   };
 }
 
-const SKIP_DELAY_MS = 10 * 60_000;
-
-/**
- * A skip costs nothing but a delay — punishing it would poison the box levels.
- *
- * A word being seen for the first time has no progress row yet, so one is created
- * in the `new` stage. Without it `selectNext` would just hand back the same word
- * and the "skipped" message would be a lie.
- */
+/** Shared with `claudelingo skip`, so a skip means the same thing everywhere. */
 function skip(state: AppState, pack: Pack): Step {
   const card = state.card;
   if (!card) return { state, effects: [] };
-  const existing = state.progress.items[card.word.id];
-  const deferred: ItemProgress = existing
-    ? { ...existing, due: state.now + SKIP_DELAY_MS }
-    : {
-        id: card.word.id,
-        stage: "new",
-        box: 0,
-        step: 0,
-        due: state.now + SKIP_DELAY_MS,
-        lastSeen: 0,
-        seen: 0,
-        correct: 0,
-        lapses: 0,
-      };
+  const deferred = deferItem(state.progress.items[card.word.id], card.word.id, state.now);
   const progress: Progress = {
     ...state.progress,
     items: { ...state.progress.items, [card.word.id]: deferred },

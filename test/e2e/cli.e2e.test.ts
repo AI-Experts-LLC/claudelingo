@@ -326,6 +326,79 @@ describe("init reports what actually happened", () => {
     return { home, codexHome, vars: { HOME: home, USERPROFILE: home, CODEX_HOME: codexHome } };
   }
 
+  // `/lingo` is how anyone outside tmux uses this at all. It ships with the
+  // plugin, and used to ship with *nothing* on the standalone install route —
+  // "Unknown command: /lingo" with no explanation anywhere.
+  it("links the /lingo skill so the standalone install has it too", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const result = await cli(["init"], e, vars);
+    expect(result.code).toBe(0);
+
+    const link = path.join(home, ".claude", "skills", "lingo");
+    expect(fs.existsSync(path.join(link, "SKILL.md"))).toBe(true);
+    expect(fs.readFileSync(path.join(link, "SKILL.md"), "utf8")).toContain("name: lingo");
+    expect(result.stdout).toContain("/lingo");
+
+    // Re-running says so rather than relinking, and uninit takes it away again.
+    const again = await cli(["init"], e, vars);
+    expect(again.stdout).toContain("already installed");
+    await cli(["uninit"], e, vars);
+    expect(fs.existsSync(link)).toBe(false);
+  });
+
+  // A plugin brings its own hooks and skill; the one thing it cannot bring is the
+  // status line, which Claude Code takes only from the main config.
+  it("installs just the status line with --statusline-only", async () => {
+    const e = fresh();
+    const { home, codexHome, vars } = fakeEnvs(e);
+    const result = await cli(["init", "--statusline-only"], e, vars);
+    expect(result.code).toBe(0);
+
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(home, ".claude", "settings.json"), "utf8"),
+    ) as { statusLine?: unknown; hooks?: unknown };
+    expect(settings.statusLine).toBeTruthy();
+    expect(settings.hooks).toBeUndefined();
+    expect(fs.existsSync(path.join(codexHome, "config.toml"))).toBe(false);
+    expect(fs.existsSync(path.join(home, ".claude", "skills", "lingo"))).toBe(false);
+    // It also must not claim to have installed hooks it deliberately skipped.
+    expect(result.stdout).not.toContain("hooks installed");
+  });
+
+  it("leaves another tool's settings alone when only the status line is wanted", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const file = path.join(home, ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ model: "opus", hooks: { Stop: ["theirs"] } }));
+
+    await cli(["init", "--statusline-only"], e, vars);
+    const settings = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    expect(settings.model).toBe("opus");
+    expect(settings.hooks).toEqual({ Stop: ["theirs"] });
+    expect(settings.statusLine).toBeTruthy();
+  });
+
+  it("never replaces someone else's lingo skill, and never removes it", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const theirs = path.join(e.home, "their-skill");
+    fs.mkdirSync(theirs, { recursive: true });
+    fs.writeFileSync(path.join(theirs, "SKILL.md"), "name: someone else's\n");
+    const link = path.join(home, ".claude", "skills", "lingo");
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(theirs, link);
+
+    const result = await cli(["init"], e, vars);
+    expect(result.stderr).toContain("not ours");
+    expect(fs.readlinkSync(link)).toBe(theirs);
+    expect(fs.readFileSync(path.join(theirs, "SKILL.md"), "utf8")).toContain("someone else");
+
+    await cli(["uninit"], e, vars);
+    expect(fs.readlinkSync(link)).toBe(theirs);
+  });
+
   it("exits non-zero when the Claude Code side cannot be installed", async () => {
     // Reporting success here is how a user ends up staring at a pane that never
     // wakes up, with no idea why.
@@ -390,7 +463,9 @@ describe("init reports what actually happened", () => {
     const result = await cli(["uninit"], e, vars);
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("NOT removed");
-    expect(result.stdout).toContain("Removed: Codex notify");
+    expect(result.stderr).toContain("Claude Code hooks");
+    // The half that could be cleaned up still was, and is named.
+    expect(result.stdout).toMatch(/^Removed: .*Codex notify/m);
     expect(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")).not.toContain(
       "claudelingo",
     );

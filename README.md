@@ -116,6 +116,10 @@ If you are not in tmux — or you just want a couple of cards where you are:
 /lingo
 ```
 
+Every control lives on that one command, and the panel's bottom row tells you
+which to type: `/lingo 2` to answer, `/lingo skip`, `/lingo stats`,
+`/lingo lang fr`.
+
 Claude asks a card using its own multiple-choice UI, you click an answer, and the
 schedule updates. It never sees which answer is right: `claudelingo next` withholds
 it and `claudelingo answer` does the grading, so the answer cannot leak into the
@@ -127,30 +131,57 @@ progress gets lost.
 ## Three surfaces
 
 Claude Code draws its own terminal UI and does not host third-party widgets, so
-there is no way to put an interactive box inside it. claudelingo works around that
-with two surfaces that do different jobs.
+there is no way to put an interactive box inside it. What it *does* give you is a
+status line that renders one row per line your command prints — so the whole
+widget fits under your prompt, even though it can never take a keypress.
 
-**The status line** lives *inside* Claude Code, on the row under your prompt:
+**The panel** lives *inside* Claude Code, under your chat bar:
 
 ```
-«tiempo» = ?          42/312 · streak 7 · box 3/5
-«tiempo» = time, weather   42/312 · streak 7 · box 3/5
+ ,___,  What does "tiempo" mean?
+ (o.o)  1 time   2 weather   3 house   4 always
+ /)_)   /lingo 1-4 answer   /lingo skip
 ```
 
-It cannot take keystrokes — Claude Code renders the line, it does not forward input
-to it — so it is a passive drill: the word appears alone for six seconds, giving you
-a moment to retrieve the meaning, then the answer appears. Trying and then checking
-is most of what makes recall stick, and it is all a display-only surface can offer.
-It is installed by `init` (skip it with `--no-statusline`), refreshes on a timer
-because Claude Code's own updates go quiet exactly while it is thinking, and is
-strictly read-only — a running pane owns the deck, and a status line that wrote to
-it would fight that pane's lock.
+With nothing outstanding it goes back to teaching:
 
-**The pane** is where you actually answer: multiple choice, typing, skipping,
-memory hooks. That has to be a real interactive process, which means its own pane.
+```
+ ,___,  «tiempo» = ?
+ (o.-)  ████░░░░░░ 42/312 · streak 7 · box 3/5
+ /)_)   /lingo quiz me   /lingo stats   /lingo lang
+```
 
-Use either, or both. The status line teaches while you work; the pane is where the
-spaced repetition happens.
+It is always exactly three rows, so the conversation above it never jumps; it
+drops the owl at 46 columns and falls back to a single line under 30. Because it
+cannot take input, **the bottom row is always the controls** — it names the exact
+command to type, and the chat bar is directly above it:
+
+| Type | What happens |
+|---|---|
+| `/lingo` | A card, asked with buttons you click |
+| `/lingo 2` | Answers the outstanding card with option 2 |
+| `/lingo ok` | Acknowledges a new word |
+| `/lingo skip` | Drops it, and delays it ten minutes |
+| `/lingo stats` | Where you are |
+| `/lingo lang fr` | Switches language for good |
+| `/lingo off` | One line instead of the panel (`/lingo on` brings it back) |
+
+Prefer the single line? `claudelingo panel off`, or `--compact`. It is strictly
+read-only either way — a running pane owns the deck, and a status line that wrote
+to it would fight that pane's lock.
+
+**The pane** is a full interactive box that takes keypresses directly — one key
+per answer, no slash commands. That needs a real terminal of its own, so it opens
+beside you in tmux.
+
+Use any of them, or all three. The panel teaches and takes commands while you
+work, `/lingo` gives you buttons to click, and the pane is the fastest way to get
+through a lot of cards.
+
+`init` installs the panel and the `/lingo` skill together (skip the panel with
+`--no-statusline`). The panel refreshes on a timer, because Claude Code's own
+updates go quiet exactly while it is thinking — which is when it is supposed to be
+teaching.
 
 ## How it decides when to quiz you
 

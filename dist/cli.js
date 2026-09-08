@@ -4,14 +4,14 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_SETTINGS, ensureHome, loadSettings, paths, quarantine, readJsonFile, saveSettings, writeJsonAtomic, } from "./config.js";
 import * as lock from "./lock.js";
-import { applyAnswer, buildCard, emptyProgress, isCorrect, makeRng, selectNext, stats, } from "./srs.js";
+import { applyAnswer, buildCard, deferItem, emptyProgress, isCorrect, makeRng, selectNext, stats, } from "./srs.js";
 import { listPacks, loadPack, savePack } from "./packs/index.js";
 import { readStatus, stateForEvent, writeStatus } from "./agentState.js";
 import * as claudeCode from "./integrations/claudeCode.js";
 import * as codex from "./integrations/codex.js";
 import { DEFAULT_MODEL, generatePack, hasClaude, memoryHook } from "./enrich.js";
 import { run } from "./ui/tui.js";
-import { defaultWidth, renderStatusLine } from "./statusline.js";
+import { defaultWidth, renderPanel, renderStatusLine } from "./statusline.js";
 import { launch, openPaneBeside } from "./launcher.js";
 const BIN = "claudelingo";
 const USAGE = `claudelingo — learn a language while your coding agent works
@@ -23,9 +23,12 @@ const USAGE = `claudelingo — learn a language while your coding agent works
   claudelingo hook <event>         report agent state (called by hooks)
   claudelingo notify [json]        Codex notify target
   claudelingo status               show the current agent state
-  claudelingo statusline           the line Claude Code draws (called by Claude Code)
+  claudelingo statusline           the panel Claude Code draws (called by Claude Code)
   claudelingo next --json          hand out one card, for the /lingo skill
   claudelingo answer --choice N    grade the card next handed out
+  claudelingo skip                 drop the outstanding card, delay it 10 minutes
+  claudelingo lang [code]          show or change the language you are studying
+  claudelingo panel [on|off]       full panel under the prompt, or one line
   claudelingo stats                show your progress
   claudelingo langs                list available word packs
   claudelingo pack generate        build a pack for another language
@@ -37,10 +40,12 @@ Options
   --no-enrich        never call Claude for memory hooks
   --no-color         plain output
   --width <n>        panel width in columns
+  --compact          one line instead of the panel (for: statusline)
   --model <id>       model for hooks and pack generation (default: ${DEFAULT_MODEL})
   --code <xx>        code for a generated pack (default: first two letters)
   --overwrite        replace an existing generated pack
   --no-statusline    do not touch Claude Code's status line (for: init)
+  --statusline-only  install just the status line, nothing else (for: init)
   --no-auto-pane     do not open the pane automatically (for: init)
   --auto-pane        open it automatically again (for: init)
   --ask              ask before starting a quiz (set for panes that self-open)
@@ -76,7 +81,7 @@ export function parseArgs(argv) {
     }
     const known = new Set([
         "init", "uninit", "hook", "notify", "status", "statusline", "session-start", "stats",
-        "langs", "pack", "reset", "claude", "start", "next", "answer", "help",
+        "langs", "pack", "reset", "claude", "start", "next", "answer", "skip", "lang", "panel", "help",
     ]);
     const first = positional[0];
     const command = first && known.has(first) ? first : "run";
@@ -218,11 +223,20 @@ function cmdInit(args) {
     ensureHome();
     const failed = [];
     const settingsFile = claudeCode.settingsPath(scope);
-    const wantStatusLine = args.flags.statusline !== false;
+    // The plugin carries the hooks and the skill; what it cannot carry is the
+    // status line, which Claude Code only accepts from the main config. This is
+    // the one thing a plugin user has to run by hand.
+    const onlyStatusLine = args.flags["statusline-only"] === true;
+    const wantStatusLine = onlyStatusLine || args.flags.statusline !== false;
     try {
-        const result = claudeCode.install(settingsFile, BIN, { statusLine: wantStatusLine });
-        process.stdout.write(`Claude Code hooks installed in ${settingsFile}\n`);
-        process.stdout.write(`  ${claudeCode.HOOK_EVENTS.join(", ")}\n`);
+        const result = claudeCode.install(settingsFile, BIN, {
+            statusLine: wantStatusLine,
+            ...(onlyStatusLine ? { hooks: false } : {}),
+        });
+        if (!onlyStatusLine) {
+            process.stdout.write(`Claude Code hooks installed in ${settingsFile}\n`);
+            process.stdout.write(`  ${claudeCode.HOOK_EVENTS.join(", ")}\n`);
+        }
         if (wantStatusLine && !result.statusLineProblem) {
             process.stdout.write("Status line installed — words appear under your prompt.\n");
         }
@@ -234,6 +248,34 @@ function cmdInit(args) {
     catch (error) {
         failed.push("Claude Code");
         process.stderr.write(`Claude Code hooks NOT installed: ${error.message}\n`);
+    }
+    if (onlyStatusLine) {
+        // Nothing else belongs to this mode: the plugin owns the rest.
+        if (failed.length)
+            process.exit(1);
+        return;
+    }
+    // `/lingo` is half the product for anyone not in tmux, and the standalone
+    // install used to leave it out entirely.
+    try {
+        const skill = claudeCode.installSkill(fileURLToPath(import.meta.url));
+        if (skill.state === "linked")
+            process.stdout.write(`/lingo skill linked into ${skill.path}\n`);
+        else if (skill.state === "already")
+            process.stdout.write("/lingo skill already installed.\n");
+        else if (skill.state === "plugin")
+            process.stdout.write("/lingo comes from the plugin.\n");
+        else if (skill.state === "missing") {
+            // Saying nothing here is what left /lingo unavailable and unexplained.
+            process.stderr.write("/lingo NOT installed: this build has no skills/ beside it.\n");
+        }
+        else if (skill.state === "taken") {
+            process.stderr.write(`/lingo NOT installed: ${skill.path} exists and is not ours; leaving it alone.\n`);
+        }
+    }
+    catch (error) {
+        // Not fatal: the pane and the status line work without it.
+        process.stderr.write(`/lingo skill NOT installed: ${error.message}\n`);
     }
     try {
         const backup = codex.installNotify(BIN);
@@ -285,6 +327,13 @@ function cmdUninit(args) {
     }
     catch (error) {
         failed.push(`Claude Code hooks: ${error.message}`);
+    }
+    try {
+        if (claudeCode.uninstallSkill(fileURLToPath(import.meta.url)))
+            removed.push("the /lingo skill");
+    }
+    catch (error) {
+        failed.push(`/lingo skill: ${error.message}`);
     }
     try {
         codex.uninstallNotify(BIN);
@@ -344,6 +393,9 @@ function cmdNext(args) {
         writeJsonAtomic(paths.pending(settings.lang), {
             id: card.word.id,
             kind: card.kind,
+            // Stored so the panel can show the outstanding question without dealing a
+            // card of its own — it is a display, and dealing would mutate the schedule.
+            question,
             choices: card.choices,
             answerIndex: card.answerIndex,
             accepted: card.accepted,
@@ -364,6 +416,126 @@ function cmdNext(args) {
         },
         stats: stats(pack, progress, now),
     });
+}
+/**
+ * `claudelingo skip` — drop the outstanding question without grading it.
+ *
+ * The card is pushed ten minutes out, exactly as the pane's `s` does, because a
+ * skip that left the schedule alone would hand the same card straight back and
+ * the panel would look stuck.
+ */
+function cmdSkip(args) {
+    const { settings } = settingsFrom(args.flags);
+    const pack = resolvePack(settings.lang);
+    const pendingFile = paths.pending(settings.lang);
+    const pending = readJsonFile(pendingFile);
+    if (!pending.ok) {
+        emit({ error: "no question is outstanding — run `claudelingo next --json` first" });
+        return;
+    }
+    if (lock.isHeld(paths.lock(settings.lang))) {
+        emit({ error: "a claudelingo pane is already open — skip there instead" });
+        return;
+    }
+    const outstanding = pending.value;
+    const id = outstanding && typeof outstanding.id === "string" ? outstanding.id : null;
+    if (!id) {
+        emit({ error: "the outstanding question is unreadable — run `claudelingo next --json` again" });
+        return;
+    }
+    const held = lock.acquire(paths.lock(settings.lang));
+    if (!held.ok) {
+        emit({ error: "could not take the deck lock" });
+        return;
+    }
+    try {
+        const { progress, readOnly } = loadProgress(settings.lang, false);
+        if (readOnly) {
+            emit({ error: "the deck is not writable, so the skip was not recorded" });
+            return;
+        }
+        const word = pack.words.find((w) => w.id === id);
+        if (!word) {
+            // The card left the pack under us. Dropping the question is still right.
+            fs.rmSync(pendingFile, { force: true });
+            emit({ skipped: true, term: null });
+            return;
+        }
+        const now = Date.now();
+        const updated = { ...progress, items: { ...progress.items, [id]: deferItem(progress.items[id], id, now) } };
+        writeJsonAtomic(paths.progress(settings.lang), updated);
+        fs.rmSync(pendingFile, { force: true });
+        emit({ skipped: true, term: word.term, stats: stats(pack, updated, now) });
+    }
+    finally {
+        held.lock?.release();
+    }
+}
+/**
+ * `claudelingo panel [on|off]` — how much room the status line takes.
+ *
+ * On, it draws the whole widget under the prompt; off, it is the one-line drill.
+ * Nothing else changes: both forms are read-only views of the same deck.
+ */
+function cmdPanel(args) {
+    const { settings } = settingsFrom(args.flags);
+    const wanted = typeof args.rest[0] === "string" ? args.rest[0].toLowerCase() : null;
+    if (wanted === null) {
+        emit({ panel: settings.panel !== false });
+        return;
+    }
+    if (wanted !== "on" && wanted !== "off") {
+        emit({ error: `say "on" or "off", not "${wanted}"` });
+        return;
+    }
+    const panel = wanted === "on";
+    saveSettings({ ...settings, panel });
+    emit({ panel, changed: (settings.panel !== false) !== panel });
+}
+/**
+ * `claudelingo lang [code]` — report or change the language being studied.
+ *
+ * Refused while a pane is open: that pane holds the deck and writes the setting
+ * itself when it switches, so a second writer here would fight it.
+ */
+function cmdLang(args) {
+    const { settings } = settingsFrom(args.flags);
+    const wanted = typeof args.rest[0] === "string" ? args.rest[0].toLowerCase() : null;
+    const codes = listPacks();
+    const describe = (code) => {
+        try {
+            return { code, englishName: loadPack(code).englishName };
+        }
+        catch {
+            return { code, englishName: code };
+        }
+    };
+    if (!wanted) {
+        emit({
+            lang: settings.lang,
+            englishName: describe(settings.lang).englishName,
+            available: codes.map(describe),
+        });
+        return;
+    }
+    if (!codes.includes(wanted)) {
+        emit({ error: `no pack for "${wanted}" — installed: ${codes.join(", ")}` });
+        return;
+    }
+    const chosen = describe(wanted);
+    if (wanted === settings.lang) {
+        emit({ lang: wanted, englishName: chosen.englishName, changed: false });
+        return;
+    }
+    if (lock.isHeld(paths.lock(settings.lang)) || lock.isHeld(paths.lock(wanted))) {
+        emit({ error: "a claudelingo pane is open — press l there to change language instead" });
+        return;
+    }
+    saveSettings({ ...settings, lang: wanted });
+    // The outstanding question belongs to the language being left behind; grading
+    // it against the new deck would file the answer under the wrong word.
+    fs.rmSync(paths.pending(settings.lang), { force: true });
+    emit({ lang: wanted, englishName: chosen.englishName, changed: true });
 }
 /** `claudelingo answer --choice N | --text S` — grade the card `next` handed out. */
 function cmdAnswer(args) {
@@ -457,10 +629,31 @@ async function cmdStatusline(args) {
         const pack = loadPack(settings.lang);
         const { progress } = loadProgress(settings.lang, false);
         const width = resolveWidth(args.flags.width) ?? defaultWidth();
-        process.stdout.write(`${renderStatusLine(pack, progress, Date.now(), {
+        const options = {
             color: args.flags.color !== false,
             ...(width !== undefined ? { width } : {}),
-        })}\n`);
+        };
+        // `--compact` wins over the setting: it is how someone tries the one-liner
+        // without editing anything.
+        const wantPanel = args.flags.compact ? false : settings.panel !== false;
+        if (!wantPanel) {
+            process.stdout.write(`${renderStatusLine(pack, progress, Date.now(), options)}\n`);
+            return;
+        }
+        // Strictly a read of the pending file: the panel shows the outstanding
+        // question, and grading stays with `answer`, which holds the lock.
+        const stored = readJsonFile(paths.pending(settings.lang));
+        const value = stored.ok ? stored.value : null;
+        const pending = value && typeof value.question === "string" && Array.isArray(value.choices)
+            ? {
+                question: value.question,
+                choices: value.choices.filter((c) => typeof c === "string"),
+                ...(typeof value.kind === "string" ? { kind: value.kind } : {}),
+            }
+            : null;
+        for (const line of renderPanel(pack, progress, Date.now(), { ...options, pending })) {
+            process.stdout.write(`${line}\n`);
+        }
     }
     catch {
         // Silence is the correct failure mode here.
@@ -856,6 +1049,9 @@ export async function main(argv = process.argv.slice(2)) {
         case "session-start": return cmdSessionStart(args);
         case "next": return cmdNext(args);
         case "answer": return cmdAnswer(args);
+        case "skip": return cmdSkip(args);
+        case "lang": return cmdLang(args);
+        case "panel": return cmdPanel(args);
         // `start` is the name to remember; `claude` is kept because the flag
         // pass-through reads naturally after it.
         case "start":

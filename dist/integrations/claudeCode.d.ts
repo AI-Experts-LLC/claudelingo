@@ -54,8 +54,51 @@ export interface InstallResult {
 }
 export declare function install(file: string, bin: string, options?: {
     statusLine?: boolean;
+    hooks?: boolean;
 }): InstallResult;
 /** True when the configured status line is the one we installed. */
 export declare function hasOurStatusLine(file: string, bin: string): boolean;
 export declare function uninstall(file: string, bin: string): void;
+export declare function skillsDir(): string;
+/**
+ * The package root above a file inside the build.
+ *
+ * Walked rather than counted: callers live at different depths (`dist/cli.js` and
+ * `dist/integrations/claudeCode.js`), and a hardcoded number of `..` silently
+ * resolved above the package for one of them — which is exactly how a skill goes
+ * missing without anyone noticing.
+ */
+export declare function packageRoot(fromFile: string): string | null;
+/** Where this build keeps its skills, or null when it has none beside it. */
+export declare function bundledSkill(fromFile: string): string | null;
+/** True when this copy is itself an installed Claude Code plugin. */
+export declare function runningAsPlugin(fromFile: string): boolean;
+export type SkillResult = {
+    state: "linked";
+    path: string;
+} | {
+    state: "already";
+} | {
+    state: "plugin";
+} | {
+    state: "missing";
+} | {
+    state: "taken";
+    path: string;
+};
+/**
+ * Link `skills/lingo` into the user's skills directory.
+ *
+ * A directory that is not ours is never touched or overwritten — someone else's
+ * `lingo` skill is theirs, and silently replacing it would be the same class of
+ * mistake as overwriting a deck.
+ */
+export declare function installSkill(fromFile: string): SkillResult;
+/**
+ * Remove the link, but only when it points at *this* build's skill.
+ *
+ * Uninstalling must not take someone else's `lingo` with it, and "the path has
+ * our name in it" is not proof of ownership.
+ */
+export declare function uninstallSkill(fromFile: string): boolean;
 export {};

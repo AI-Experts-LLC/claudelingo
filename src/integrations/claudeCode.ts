@@ -188,10 +188,13 @@ export interface InstallResult {
 export function install(
   file: string,
   bin: string,
-  options: { statusLine?: boolean } = {},
+  options: { statusLine?: boolean; hooks?: boolean } = {},
 ): InstallResult {
   const current = readSettings(file);
-  let next = withHooks(current, bin);
+  // A plugin install already brings the hooks with it; only the status line has
+  // to come from the main config, because Claude Code will not take one from a
+  // plugin. `hooks: false` is that case.
+  let next = options.hooks === false ? current : withHooks(current, bin);
   const result: InstallResult = {};
 
   if (options.statusLine !== false) {
@@ -222,4 +225,118 @@ export function hasOurStatusLine(file: string, bin: string): boolean {
 export function uninstall(file: string, bin: string): void {
   if (!fs.existsSync(file)) return;
   writeSettings(file, removeStatusLine(removeHooks(readSettings(file)), bin));
+}
+
+/* ── The /lingo skill ────────────────────────────────────────────────────────
+ *
+ * A plugin install carries `skills/` with it and Claude Code finds it there. The
+ * standalone installer does not, so `/lingo` came back "Unknown command" for
+ * anyone who took that route — the README promised it either way. `init` links it
+ * in, unless we are *running as* the plugin, where a second copy under the same
+ * name would be ambiguous.
+ */
+
+export function skillsDir(): string {
+  return path.join(os.homedir(), ".claude", "skills");
+}
+
+/**
+ * The package root above a file inside the build.
+ *
+ * Walked rather than counted: callers live at different depths (`dist/cli.js` and
+ * `dist/integrations/claudeCode.js`), and a hardcoded number of `..` silently
+ * resolved above the package for one of them — which is exactly how a skill goes
+ * missing without anyone noticing.
+ */
+export function packageRoot(fromFile: string): string | null {
+  let dir = path.dirname(path.resolve(fromFile));
+  for (let i = 0; i < 6; i++) {
+    if (fs.existsSync(path.join(dir, "package.json"))) return dir;
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return null;
+}
+
+/** Where this build keeps its skills, or null when it has none beside it. */
+export function bundledSkill(fromFile: string): string | null {
+  const root = packageRoot(fromFile);
+  if (!root) return null;
+  const dir = path.join(root, "skills", "lingo");
+  return fs.existsSync(path.join(dir, "SKILL.md")) ? dir : null;
+}
+
+/** True when this copy is itself an installed Claude Code plugin. */
+export function runningAsPlugin(fromFile: string): boolean {
+  if (process.env.CLAUDE_PLUGIN_ROOT) return true;
+  const root = packageRoot(fromFile);
+  if (!root) return false;
+  const plugins = path.join(os.homedir(), ".claude", "plugins") + path.sep;
+  return path.resolve(root).startsWith(plugins);
+}
+
+export type SkillResult =
+  | { state: "linked"; path: string }
+  | { state: "already" }
+  | { state: "plugin" }
+  | { state: "missing" }
+  | { state: "taken"; path: string };
+
+/**
+ * Link `skills/lingo` into the user's skills directory.
+ *
+ * A directory that is not ours is never touched or overwritten — someone else's
+ * `lingo` skill is theirs, and silently replacing it would be the same class of
+ * mistake as overwriting a deck.
+ */
+export function installSkill(fromFile: string): SkillResult {
+  if (runningAsPlugin(fromFile)) return { state: "plugin" };
+  const source = bundledSkill(fromFile);
+  if (!source) return { state: "missing" };
+
+  const target = path.join(skillsDir(), "lingo");
+  let existing: string | null = null;
+  try {
+    existing = fs.readlinkSync(target);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EINVAL") return { state: "taken", path: target };
+    if (code !== "ENOENT") throw error;
+  }
+  if (existing !== null) {
+    if (path.resolve(existing) === path.resolve(source)) return { state: "already" };
+    // Anything else that is still there belongs to someone: a different skill, or
+    // another copy of this one that is on disk and working. Only a link whose
+    // target has gone is safe to replace — matching on the path text was a guess,
+    // and a guess is not good enough to justify deleting.
+    if (fs.existsSync(path.resolve(existing))) return { state: "taken", path: target };
+  }
+
+  fs.mkdirSync(skillsDir(), { recursive: true });
+  // Replacing our own stale link, so the target is not someone else's work.
+  fs.rmSync(target, { force: true });
+  fs.symlinkSync(source, target);
+  return { state: "linked", path: target };
+}
+
+/**
+ * Remove the link, but only when it points at *this* build's skill.
+ *
+ * Uninstalling must not take someone else's `lingo` with it, and "the path has
+ * our name in it" is not proof of ownership.
+ */
+export function uninstallSkill(fromFile: string): boolean {
+  const source = bundledSkill(fromFile);
+  if (!source) return false;
+  const target = path.join(skillsDir(), "lingo");
+  let existing: string;
+  try {
+    existing = fs.readlinkSync(target);
+  } catch {
+    return false;
+  }
+  if (path.resolve(existing) !== path.resolve(source)) return false;
+  fs.rmSync(target, { force: true });
+  return true;
 }

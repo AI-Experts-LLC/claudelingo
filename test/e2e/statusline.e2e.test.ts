@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { CLI, type Env, REPO, cli, makeEnv, progressFile, requireBuild } from "./harness.js";
+import { PANEL_ROWS } from "../../src/statusline.js";
 
 let env: Env;
 beforeAll(requireBuild);
@@ -66,15 +67,55 @@ function seed(e: Env): void {
 }
 
 describe("the status line Claude Code draws", () => {
-  it("prints exactly one line of vocabulary from the deck", async () => {
+  it("prints exactly one line of vocabulary from the deck when compact", async () => {
     const e = fresh();
     seed(e);
-    const { stdout, code } = await statusline(e);
+    const { stdout, code } = await statusline(e, ["--compact"]);
     expect(code).toBe(0);
     expect(stdout.trimEnd().split("\n")).toHaveLength(1);
     expect(stdout).toMatch(/«.+»/);
     expect(stdout).toContain("streak 7");
     expect(stdout).toContain("/312");
+  });
+
+  // Claude Code renders one row per line printed, so the row count *is* the
+  // panel's height on screen. A drifting count would push the conversation around.
+  it("prints the panel — three rows, always the same three", async () => {
+    const e = fresh();
+    seed(e);
+    const { stdout, code } = await statusline(e);
+    expect(code).toBe(0);
+    const rows = stdout.trimEnd().split("\n");
+    expect(rows).toHaveLength(PANEL_ROWS);
+    expect(stdout).toMatch(/«.+»/);
+    expect(stdout).toContain("streak 7");
+    // The bottom row is the control surface: it must name the command to type,
+    // because nothing here can take a keypress.
+    expect(rows[PANEL_ROWS - 1]).toContain("/lingo");
+  });
+
+  it("shows the outstanding question, and never which answer is right", async () => {
+    const e = fresh();
+    seed(e);
+    const dealt = await cli(["next", "--json"], e);
+    const card = JSON.parse(dealt.stdout.trim()) as {
+      card: { question: string; choices: string[] };
+    };
+    const { stdout } = await statusline(e);
+    expect(stdout).toContain(card.card.question.slice(0, 20));
+    // The pending file holds answerIndex; leaking it here would answer the very
+    // question on screen.
+    expect(stdout).not.toContain("answerIndex");
+    const pending = JSON.parse(
+      fs.readFileSync(path.join(e.home, "pending-es.json"), "utf8"),
+    ) as { answerIndex: number; choices: string[] };
+    for (const [index, choice] of pending.choices.entries()) {
+      // Every choice appears; none is marked. The panel must not distinguish them.
+      expect(stdout).toContain(choice);
+      if (index === pending.answerIndex) {
+        expect(stdout).not.toMatch(new RegExp(`[✓*→]\\s*${choice.replace(/[.*+?^$()|[\]\\]/g, "\\$&")}`));
+      }
+    }
   });
 
   it("works on a completely fresh install", async () => {
@@ -119,7 +160,10 @@ describe("the status line Claude Code draws", () => {
     const { stdout, code } = await statusline(e);
     expect(code).toBe(0);
     expect(stdout).not.toContain("Error");
-    expect(stdout.split("\n")).toHaveLength(2); // one line plus the trailing newline
+    expect(stdout).not.toContain("at ");
+    // A corrupt deck is recovered, not fatal, so the panel still draws — what
+    // matters is that it is the panel and not a stack trace.
+    expect(stdout.trimEnd().split("\n").length).toBeLessThanOrEqual(PANEL_ROWS)
   });
 
   it("returns quickly, because Claude Code cancels a slow one", async () => {
