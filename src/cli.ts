@@ -18,10 +18,10 @@ import { listPacks, loadPack, savePack } from "./packs/index.js";
 import { readStatus, stateForEvent, writeStatus } from "./agentState.js";
 import * as claudeCode from "./integrations/claudeCode.js";
 import * as codex from "./integrations/codex.js";
-import { DEFAULT_MODEL, generatePack, hasCredentials, memoryHook } from "./enrich.js";
+import { DEFAULT_MODEL, generatePack, hasClaude, memoryHook } from "./enrich.js";
 import { run } from "./ui/tui.js";
 import { defaultWidth, renderStatusLine } from "./statusline.js";
-import { launch } from "./launcher.js";
+import { launch, openPaneBeside } from "./launcher.js";
 import type { ProblemKey } from "./ui/app.js";
 import type { Pack, Progress, Settings, Word } from "./types.js";
 
@@ -52,6 +52,7 @@ Options
   --code <xx>        code for a generated pack (default: first two letters)
   --overwrite        replace an existing generated pack
   --no-statusline    do not touch Claude Code's status line (for: init)
+  --no-auto-pane     do not open the pane automatically (for: init)
   --source <name>    claude | codex | manual (for: hook)
   -h, --help         this message
 `;
@@ -86,8 +87,8 @@ export function parseArgs(argv: string[]): Args {
   }
 
   const known = new Set([
-    "init", "uninit", "hook", "notify", "status", "statusline", "stats", "langs", "pack",
-    "reset", "claude", "help",
+    "init", "uninit", "hook", "notify", "status", "statusline", "session-start", "stats",
+    "langs", "pack", "reset", "claude", "help",
   ]);
   const first = positional[0];
   const command = first && known.has(first) ? first : "run";
@@ -117,6 +118,8 @@ function settingsFrom(flags: Args["flags"]): Resolved {
   if (flags["always-on"] === false) settings.alwaysOn = false;
   if (flags.enrich === false) settings.enrich = false;
   if (typeof flags.model === "string" && flags.model) settings.model = flags.model;
+  if (flags["auto-pane"] === false) settings.autoPane = false;
+  if (flags["auto-pane"] === true) settings.autoPane = true;
   return loaded.problem ? { settings, problem: loaded.problem } : { settings };
 }
 
@@ -275,6 +278,15 @@ function cmdInit(args: Args): void {
   }
 
   process.stdout.write(`\nStudying ${resolvePack(settings.lang).englishName}.\n`);
+  if (!failed.length) {
+    process.stdout.write("Just open Claude Code as usual:\n");
+    process.stdout.write("  · words appear on the status line under your prompt\n");
+    process.stdout.write(
+      settings.autoPane
+        ? "  · the quiz pane opens itself beside you when you are in tmux\n"
+        : "  · open the quiz pane yourself with: claudelingo\n",
+    );
+  }
   if (failed.length) {
     // Exiting 0 here is how a user ends up staring at a pane that never wakes up.
     process.stderr.write(
@@ -283,7 +295,6 @@ function cmdInit(args: Args): void {
     );
     process.exit(1);
   }
-  process.stdout.write(`Open the pane in a second terminal with: ${BIN}\n`);
 }
 
 function cmdUninit(args: Args): void {
@@ -371,6 +382,39 @@ function readStdin(): Promise<string> {
     process.stdin.on("error", done);
     if (typeof timer.unref === "function") timer.unref();
   });
+}
+
+/**
+ * `claudelingo session-start` — Claude Code runs this when a session begins.
+ *
+ * Its job is to put the pane on screen without the user asking. It has to be
+ * silent and quick: it is wired with `async: true` so it cannot block the session,
+ * and anything it prints would land in the middle of Claude Code's startup.
+ */
+async function cmdSessionStart(args: Args): Promise<void> {
+  try {
+    await readStdin(); // drain Claude Code's payload
+    const { settings } = settingsFrom(args.flags);
+    if (!settings.autoPane) return;
+
+    // Only inside tmux: there is nowhere to put a pane otherwise, and spawning a
+    // window the user did not ask for would be worse than doing nothing.
+    if (!process.env.TMUX) return;
+
+    // A pane already studying this language holds the lock. Opening a second one
+    // would just produce a pane that exits immediately with a refusal.
+    if (lock.holderPid(paths.lock(settings.lang)) !== null) return;
+
+    const entry = process.argv[1];
+    if (!entry) return;
+    const pane = [process.execPath, fs.realpathSync(entry), "--lang", settings.lang];
+    const passEnv: Record<string, string> = {};
+    if (process.env.CLAUDELINGO_HOME) passEnv.CLAUDELINGO_HOME = process.env.CLAUDELINGO_HOME;
+
+    openPaneBeside({ pane, ...(Object.keys(passEnv).length ? { passEnv } : {}) });
+  } catch {
+    // A hook that fails must never disturb the session it is attached to.
+  }
 }
 
 /** `claudelingo claude [...]` — start the agent with the pane beside it. */
@@ -471,10 +515,11 @@ async function cmdPack(args: Args): Promise<void> {
   const count = Number(args.flags.count ?? 300);
   const model = (args.flags.model as string) || loadSettings().settings.model;
 
-  if (!hasCredentials()) {
-    process.stdout.write("No ANTHROPIC_API_KEY found; trying the `ant auth login` profile…\n");
-  }
-  process.stdout.write(`Generating the top ${count} words in ${language} with ${model}…\n`);
+  if (!hasClaude()) fail("the `claude` command is not on your PATH");
+  process.stdout.write(
+    `Generating the top ${count} words in ${language} with ${model}, ` +
+      "through your Claude Code session…\n",
+  );
   try {
     const raw = await generatePack(language, code, count, { model });
     const file = savePack(raw, { overwrite: args.flags.overwrite === true });
@@ -572,12 +617,13 @@ async function cmdRun(args: Args): Promise<void> {
   }
 
   const enrich =
-    settings.enrich && hasCredentials()
+    settings.enrich && hasClaude()
       ? (word: Word) => memoryHook(word, pack, { model: settings.model })
       : undefined;
   if (settings.enrich && !enrich) {
-    // Told once, up front, rather than as a fresh auth error on every card.
-    problems.credentials = "no Anthropic credential found, so memory hooks (e) are unavailable.";
+    // Told once, up front, rather than as a fresh failure on every card.
+    problems.credentials =
+      "the `claude` command is not on this PATH, so memory hooks (e) are unavailable.";
   }
 
   const width = resolveWidth(args.flags.width);
@@ -660,6 +706,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     case "uninit": return cmdUninit(args);
     case "status": return cmdStatus();
     case "statusline": return cmdStatusline(args);
+    case "session-start": return cmdSessionStart(args);
     case "claude": return cmdLaunch(args, forwarded);
     case "stats": return cmdStats(args);
     case "langs": return cmdLangs();

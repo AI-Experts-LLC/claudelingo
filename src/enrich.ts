@@ -1,57 +1,118 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import Anthropic from "@anthropic-ai/sdk";
 import { paths } from "./config.js";
 import type { Pack, RawPack, Word } from "./types.js";
 
 /**
- * Claude Fable 5.1. Thinking is always on for this model, so the `thinking`
- * parameter is omitted entirely — sending one is rejected.
+ * Everything that needs a model goes through the `claude` CLI in print mode.
+ *
+ * That matters for one reason above all: it runs on the Claude Code login the user
+ * already has, and counts against the usage they are already paying for. Calling
+ * the Anthropic API directly would mean a second credential and a separate bill for
+ * something that only ever runs while Claude Code is open.
+ *
+ * It also means claudelingo ships with no API SDK and no key handling at all.
  */
+
+/** Preferred model. Claude Code falls back to the session's own if it cannot use it. */
 export const DEFAULT_MODEL = "claude-fable-5-1";
 
-/**
- * Fable 5.1 can decline a request outright (HTTP 200, `stop_reason: "refusal"`).
- * Opting into a server-side fallback means a decline is retried on another model
- * inside the same call instead of surfacing as an empty response.
- */
-const FALLBACK_BETA = "server-side-fallback-2026-06-01";
-const FALLBACK_MODEL = "claude-opus-4-8";
-
-/**
- * `fallbacks` and `output_config.format` are live API parameters that the installed
- * SDK (0.71.x) does not type yet. Describing them here keeps the request shape
- * checked at the call site instead of casting whole params objects to `any`; drop
- * these once the SDK types catch up.
- */
-type ExtendedOutputConfig = Anthropic.Beta.BetaOutputConfig & {
-  effort?: "low" | "medium" | "high" | "xhigh" | "max";
-  format?: { type: "json_schema"; name: string; schema: unknown };
-};
-
-type Extended<T> = Omit<T, "output_config"> & {
-  output_config?: ExtendedOutputConfig;
-  fallbacks?: Array<{ model: string }>;
-};
-
-type CreateParams = Extended<Anthropic.Beta.MessageCreateParamsNonStreaming>;
-type StreamParams = Extended<Anthropic.Beta.MessageCreateParamsStreaming>;
+/** A memory hook is two short lines; a pack is a few hundred entries. */
+const HOOK_TIMEOUT_MS = 90_000;
+const PACK_TIMEOUT_MS = 10 * 60_000;
 
 export class EnrichError extends Error {}
 
-function client(): Anthropic {
-  // The SDK resolves ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an `ant auth login`
-  // profile on its own; a bare constructor is the documented path.
-  return new Anthropic();
+/** The shape `claude -p --output-format json` returns. */
+interface PrintResult {
+  type?: string;
+  subtype?: string;
+  is_error?: boolean;
+  result?: string;
 }
 
-function textOf(response: Anthropic.Beta.BetaMessage): string {
-  return response.content
-    .filter((block): block is Anthropic.Beta.BetaTextBlock => block.type === "text")
-    .map((block) => block.text)
-    .join("")
-    .trim();
+export interface AskOptions {
+  model?: string;
+  timeoutMs?: number;
+  system?: string;
+  /** Injected by tests so they never spawn the real CLI. */
+  run?: (args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>;
+}
+
+function runClaude(
+  args: string[],
+  timeoutMs: number,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("claude", args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new EnrichError(`no reply within ${Math.round(timeoutMs / 1000)}s`));
+    }, timeoutMs);
+
+    child.stdout.on("data", (d) => (stdout += d.toString()));
+    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+          ? new EnrichError("the `claude` command is not on your PATH")
+          : new EnrichError(error.message),
+      );
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code: code ?? 0, stdout, stderr });
+    });
+  });
+}
+
+/**
+ * Ask Claude Code one question and return its text.
+ *
+ * `--max-turns 1` keeps it to a single completion: this is a text request, and a
+ * tool loop would be slow, surprising, and able to touch the user's files.
+ */
+export async function ask(prompt: string, options: AskOptions = {}): Promise<string> {
+  const run = options.run ?? runClaude;
+  const timeoutMs = options.timeoutMs ?? HOOK_TIMEOUT_MS;
+  const base = ["-p", "--output-format", "json", "--max-turns", "1"];
+  if (options.system) base.push("--append-system-prompt", options.system);
+
+  const attempt = async (model?: string) => {
+    const args = model ? [...base, "--model", model, prompt] : [...base, prompt];
+    const { code, stdout, stderr } = await run(args, timeoutMs);
+
+    let parsed: PrintResult;
+    try {
+      parsed = JSON.parse(stdout) as PrintResult;
+    } catch {
+      // A model Claude Code does not recognise produces prose on stdout and still
+      // exits 0, so the exit code alone cannot be trusted.
+      throw new EnrichError(
+        (stderr || stdout || `claude exited ${code} with no output`).trim().split("\n")[0] as string,
+      );
+    }
+    if (parsed.is_error || parsed.subtype !== "success") {
+      throw new EnrichError((parsed.result || parsed.subtype || "claude reported an error").trim());
+    }
+    const text = (parsed.result ?? "").trim();
+    if (!text) throw new EnrichError("empty response");
+    return text;
+  };
+
+  const model = options.model ?? DEFAULT_MODEL;
+  try {
+    return await attempt(model);
+  } catch (error) {
+    // The preferred model may not exist in this Claude Code build. The session's
+    // own model is a better answer than no answer.
+    if (error instanceof EnrichError && /model/i.test(error.message)) return attempt();
+    throw error;
+  }
 }
 
 /**
@@ -93,78 +154,33 @@ function cacheFile(lang: string, term: string): string {
   return path.join(paths.cache(), `hook-${lang}-${safe}.txt`);
 }
 
-/**
- * A one- or two-line memory hook for a word: an etymology, a cognate, or a vivid
- * image. Cached on disk, because the hook for "tiempo" never changes.
- */
-/** A hung request must not leave "asking Claude…" on screen forever. */
-const HOOK_TIMEOUT_MS = 30_000;
+const HOOK_SYSTEM =
+  "You help an English speaker memorise high-frequency vocabulary. " +
+  "Reply with at most two short lines of plain text: a memory hook " +
+  "(cognate, etymology, or vivid image) and one very short example sentence " +
+  "with its English translation. No preamble, no markdown, no bullet points.";
 
+/**
+ * A one- or two-line memory hook for a word. Cached on disk, because the hook for
+ * "tiempo" never changes.
+ */
 export async function memoryHook(
   word: Word,
   pack: Pack,
-  options: { model?: string; signal?: AbortSignal; timeoutMs?: number } = {},
+  options: AskOptions = {},
 ): Promise<string> {
   const file = cacheFile(pack.code, word.term);
   const cached = readCache(file);
   if (cached) return cached;
 
-  const params: CreateParams = {
-    model: options.model ?? DEFAULT_MODEL,
-    // Thinking is always on for this model and its tokens count against this
-    // budget, so a tight cap can consume the whole allowance before any text is
-    // produced — which surfaces as a bare "empty response".
-    max_tokens: 4000,
-    betas: [FALLBACK_BETA],
-    fallbacks: [{ model: FALLBACK_MODEL }],
-    output_config: { effort: "low" },
-    system:
-      "You help an English speaker memorise high-frequency vocabulary. " +
-      "Reply with at most two short lines of plain text: a memory hook " +
-      "(cognate, etymology, or vivid image) and one very short example sentence " +
-      "with its English translation. No preamble, no markdown, no bullet points.",
-    messages: [
-      {
-        role: "user",
-        content: `${pack.englishName} word: "${word.term}" (${word.pos}) = "${word.gloss}".`,
-      },
-    ],
-  };
-
-  const limit = options.timeoutMs ?? HOOK_TIMEOUT_MS;
-  const timeout = AbortSignal.timeout(limit);
-  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-
-  let response: Anthropic.Beta.BetaMessage;
-  try {
-    response = await client().beta.messages.create(
-      params as Anthropic.Beta.MessageCreateParamsNonStreaming,
-      { signal },
-    );
-  } catch (error) {
-    // The SDK reports every abort as "Request was aborted", which tells the user
-    // nothing about why the hook never arrived.
-    if (timeout.aborted) throw new EnrichError(`no reply within ${Math.round(limit / 1000)}s`);
-    throw error;
-  }
-
-  if (response.stop_reason === "refusal") {
-    throw new EnrichError("the model declined this request");
-  }
-  const text = textOf(response);
-  if (!text) {
-    // Distinguish "ran out of room" from "said nothing", or the real cause is
-    // invisible and looks like a model fault.
-    throw new EnrichError(
-      response.stop_reason === "max_tokens" ? "ran out of room before answering" : "empty response",
-    );
-  }
-
+  const text = await ask(
+    `${pack.englishName} word: "${word.term}" (${word.pos}) = "${word.gloss}".`,
+    { ...options, system: HOOK_SYSTEM },
+  );
   writeCache(file, text);
   return text;
 }
 
-/** JSON the pack generator is asked to produce. Kept flat so it is easy to validate. */
 interface GeneratedPack {
   code: string;
   name: string;
@@ -172,87 +188,38 @@ interface GeneratedPack {
   words: Array<{ term: string; gloss: string; pos: string; note?: string }>;
 }
 
-/**
- * Build a frequency pack for a language we do not ship, using the same model.
- *
- * Structured outputs pin the shape, so the result either parses into a pack or
- * fails loudly rather than half-populating one.
- */
+const PACK_SYSTEM =
+  "You are a corpus linguist building a beginner vocabulary pack. " +
+  "Order words by descending corpus frequency, one dictionary form per entry, " +
+  "no duplicate terms and no two entries sharing an English gloss. " +
+  "`pos` is one of: noun, verb, adj, adv, prep, conj, pron, art, num, interj. " +
+  "`gloss` is a short English translation; `note` carries gender or an " +
+  "irregularity when it matters. Reply with JSON only — no prose, no code fence.";
+
+/** Build a frequency pack for a language claudelingo does not ship. */
 export async function generatePack(
   language: string,
   code: string,
   count: number,
-  options: { model?: string } = {},
+  options: AskOptions = {},
 ): Promise<RawPack> {
-  const schema = {
-    type: "object",
-    additionalProperties: false,
-    required: ["code", "name", "englishName", "words"],
-    properties: {
-      code: { type: "string" },
-      name: { type: "string" },
-      englishName: { type: "string" },
-      words: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["term", "gloss", "pos"],
-          properties: {
-            term: { type: "string" },
-            gloss: { type: "string" },
-            pos: { type: "string" },
-            note: { type: "string" },
-          },
-        },
-      },
-    },
-  } as const;
-
-  const params: StreamParams = {
-    model: options.model ?? DEFAULT_MODEL,
-    max_tokens: 32000,
-    betas: [FALLBACK_BETA],
-    fallbacks: [{ model: FALLBACK_MODEL }],
-    output_config: {
-      effort: "high",
-      format: { type: "json_schema", schema, name: "vocabulary_pack" },
-    },
-    system:
-      "You are a corpus linguist building a beginner vocabulary pack. " +
-      "Order words by descending corpus frequency, one dictionary form per entry, " +
-      "no duplicate terms. `pos` is one of: noun, verb, adj, adv, prep, conj, pron, " +
-      "art, num, interj. `gloss` is a short English translation; `note` carries gender " +
-      "or an irregularity when it matters.",
-    messages: [
-      {
-        role: "user",
-        content:
-          `Produce the ${count} most common words in ${language}. ` +
-          `Use "${code}" as the code, the language's own name as \`name\`, and ` +
-          `"${language}" as \`englishName\`.`,
-      },
-    ],
-    stream: true,
-  };
-
-  const stream = client().beta.messages.stream(
-    params as Anthropic.Beta.MessageCreateParamsStreaming,
+  const raw = await ask(
+    `Produce the ${count} most common words in ${language} as JSON of the form ` +
+      `{"code":"${code}","name":"<the language's own name>","englishName":"${language}",` +
+      `"words":[{"term":"","gloss":"","pos":"","note":""}]}. Omit "note" when it does not apply.`,
+    { ...options, system: PACK_SYSTEM, timeoutMs: options.timeoutMs ?? PACK_TIMEOUT_MS },
   );
-  const response = await stream.finalMessage();
-  if (response.stop_reason === "refusal") {
-    throw new EnrichError("the model declined to generate this pack");
-  }
 
-  const raw = textOf(response);
+  // Models wrap JSON in a fence even when asked not to.
+  const body = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
   let parsed: GeneratedPack;
   try {
-    parsed = JSON.parse(raw) as GeneratedPack;
+    parsed = JSON.parse(body) as GeneratedPack;
   } catch {
-    throw new EnrichError("model did not return valid JSON");
+    throw new EnrichError("Claude did not return valid JSON");
   }
   if (!Array.isArray(parsed.words) || parsed.words.length === 0) {
-    throw new EnrichError("model returned no words");
+    throw new EnrichError("Claude returned no words");
   }
 
   // Collapse to the compact on-disk tuple form, dropping duplicates the model may
@@ -279,15 +246,25 @@ export async function generatePack(
 }
 
 /**
- * True when a credential is reachable without prompting the user.
+ * Whether the `claude` command is available.
  *
- * The SDK also resolves an `ant auth login` profile from disk, so checking only
- * the environment would tell a profile-authenticated user that hooks are
- * unavailable and disable them for the whole session.
+ * There is no credential to check any more: if Claude Code runs, so does this.
  */
-export function hasCredentials(): boolean {
-  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) return true;
-  const configHome =
-    process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
-  return fs.existsSync(path.join(configHome, "anthropic"));
+export function hasClaude(runner: () => boolean = probeClaude): boolean {
+  return runner();
+}
+
+function probeClaude(): boolean {
+  const dirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  return dirs.some((dir) => {
+    for (const name of ["claude", "claude.cmd", "claude.exe"]) {
+      try {
+        fs.accessSync(path.join(dir, name), fs.constants.X_OK);
+        return true;
+      } catch {
+        // Keep looking.
+      }
+    }
+    return false;
+  });
 }

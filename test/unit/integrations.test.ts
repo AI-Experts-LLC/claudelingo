@@ -23,6 +23,7 @@ describe("Claude Code hooks", () => {
    * would then silently disable that behaviour with a green suite.
    */
   const EXPECTED_HOOKS = [
+    "SessionStart",
     "UserPromptSubmit",
     "Stop",
     "SubagentStop",
@@ -34,10 +35,25 @@ describe("Claude Code hooks", () => {
     const settings = claudeCode.withHooks({}, "claudelingo");
     expect(Object.keys(settings.hooks ?? {}).sort()).toEqual([...EXPECTED_HOOKS].sort());
     for (const event of EXPECTED_HOOKS) {
-      expect(settings.hooks?.[event]?.[0]?.hooks[0]?.command).toBe(
-        `claudelingo hook ${event} --source claude`,
-      );
+      // SessionStart opens the pane rather than reporting agent state, so it is
+      // the one hook wired to a different command.
+      const expected =
+        event === "SessionStart"
+          ? "claudelingo session-start"
+          : `claudelingo hook ${event} --source claude`;
+      expect(settings.hooks?.[event]?.[0]?.hooks[0]?.command, event).toBe(expected);
     }
+  });
+
+  it("opens the pane on SessionStart, in the background", () => {
+    // Hooks block the session by default; making the user wait on a tmux split
+    // before they can type would be a poor trade.
+    const settings = claudeCode.withHooks({}, "claudelingo");
+    const entry = settings.hooks?.SessionStart?.[0]?.hooks[0];
+    expect(entry?.command).toBe("claudelingo session-start");
+    expect(entry?.async).toBe(true);
+    // It reports no agent state — it is not that kind of hook.
+    expect(stateForEvent("SessionStart")).toBeNull();
   });
 
   it("installs Notification, which is what stands the pane down for a prompt", () => {

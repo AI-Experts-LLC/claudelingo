@@ -10,6 +10,7 @@ import path from "node:path";
  * Claude rather than at a vocabulary card.
  */
 export const HOOK_EVENTS = [
+  "SessionStart",
   "UserPromptSubmit",
   "Stop",
   "SubagentStop",
@@ -17,11 +18,21 @@ export const HOOK_EVENTS = [
   "Notification",
 ] as const;
 
+/**
+ * `SessionStart` does not report agent state — it opens the pane.
+ *
+ * It must run with `async: true`: hooks block the session by default, and opening
+ * a tmux pane is not something the user should wait on before they can type.
+ */
+const PANE_EVENT = "SessionStart";
+
 const MARKER = "claudelingo";
 
 interface HookCommand {
   type: string;
   command: string;
+  /** Run in the background. Hooks block the session otherwise. */
+  async?: boolean;
 }
 interface HookMatcher {
   matcher?: string;
@@ -58,11 +69,11 @@ export function settingsPath(scope: "user" | "project" = "user", cwd = process.c
 }
 
 function commandFor(event: string, bin: string): string {
-  return `${bin} hook ${event} --source claude`;
+  return event === PANE_EVENT ? `${bin} session-start` : `${bin} hook ${event} --source claude`;
 }
 
 function isOurs(command: string): boolean {
-  return command.includes(MARKER) && command.includes(" hook ");
+  return command.includes(MARKER) && / hook | session-start/.test(command);
 }
 
 /**
@@ -81,7 +92,11 @@ export function withHooks(settings: Settings, bin: string): Settings {
         hooks: (matcher.hooks ?? []).filter((hook) => !isOurs(hook.command ?? "")),
       }))
       .filter((matcher) => matcher.hooks.length > 0);
-    hooks[event] = [...cleaned, { hooks: [{ type: "command", command: commandFor(event, bin) }] }];
+    const entry: HookCommand =
+      event === PANE_EVENT
+        ? { type: "command", command: commandFor(event, bin), async: true }
+        : { type: "command", command: commandFor(event, bin) };
+    hooks[event] = [...cleaned, { hooks: [entry] }];
   }
 
   return { ...settings, hooks };

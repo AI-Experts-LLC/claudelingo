@@ -109,4 +109,6 @@ export interface Settings {
   enrich: boolean;
   /** Model used for enrichment and pack generation. */
   model: string;
+  /** Open the quiz pane automatically when a Claude Code session starts. */
+  autoPane: boolean;
 }
