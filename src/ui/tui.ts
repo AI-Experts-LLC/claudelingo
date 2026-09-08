@@ -7,14 +7,35 @@ import {
   type Effect,
   type Event,
   type Key,
+  type LanguageChoice,
   type ProblemKey,
   createState,
   reduce,
 } from "./app.js";
 import { COLOR, PLAIN, type Theme, renderFrame } from "./render.js";
+import { isActive } from "./app.js";
 
 export interface RunOptions {
   pack: Pack;
+  /** Every installed pack, so the picker can offer them. */
+  languages?: LanguageChoice[];
+  /**
+   * Swap to another language: load its pack and deck, and move the lock.
+   *
+   * The runner cannot do this itself — packs, decks and the single-pane lock all
+   * live outside the UI — so the caller supplies it.
+   */
+  switchLanguage?: (code: string) => {
+    pack: Pack;
+    progress: Progress;
+    progressFile: string;
+    /** True when that language's deck could not be read and must not be written. */
+    readOnly?: boolean;
+    /** Anything the user needs to know about that deck. */
+    problem?: string;
+  } | null;
+  /** Persist a settings change made from inside the pane. */
+  saveSettings?: (settings: Settings) => void;
   progress: Progress;
   settings: Settings;
   progressFile: string;
@@ -93,12 +114,21 @@ export function run(options: RunOptions): Runner {
 
   const initialAgent = agentNow();
 
+  // Mutable: a language switch replaces all of these. Read-only state in
+  // particular is per-language — captured once at startup it would let the pane
+  // overwrite an unreadable deck it switched INTO, and silently never save after
+  // switching AWAY from one.
+  let pack = options.pack;
+  let progressFile = options.progressFile;
+  let readOnly = options.readOnly ?? false;
+
   let state: AppState = createState(
-    options.pack,
+    pack,
     options.progress,
     options.settings,
     initialAgent,
     Date.now(),
+    options.languages ?? [],
   );
   /** True when nothing is drawing the panel, so problems have nowhere to appear. */
   const noPanel = !isTty && !options.forceRender;
@@ -129,7 +159,7 @@ export function run(options: RunOptions): Runner {
 
   // An agent already working when the pane opens should get a card straight away.
   if (initialAgent === "busy" || options.settings.alwaysOn) {
-    state = reduce(state, { type: "tick", now: Date.now() }, options.pack).state;
+    state = reduce(state, { type: "tick", now: Date.now() }, pack).state;
   }
 
   let lastFrame = "";
@@ -141,7 +171,7 @@ export function run(options: RunOptions): Runner {
 
   const paint = (force = false) => {
     if (stopped) return;
-    const frame = renderFrame(state, options.pack, width(), theme).join("\n");
+    const frame = renderFrame(state, pack, width(), theme).join("\n");
     if (!force && frame === lastFrame) return;
     lastFrame = frame;
     try {
@@ -170,14 +200,73 @@ export function run(options: RunOptions): Runner {
     for (const effect of effects) {
       if (effect.type === "save") {
         // A deck we could not read is still on disk; writing would destroy it.
-        if (options.readOnly) continue;
+        if (readOnly) continue;
         try {
-          writeJsonAtomic(options.progressFile, effect.progress);
+          writeJsonAtomic(progressFile, effect.progress);
           setProblem("save", null);
         } catch (error) {
           // A read-only home or a full disk must not kill the pane mid-session and
           // leave the terminal in raw mode. Say so, keep going, keep retrying.
           setProblem("save", `progress is not saving: ${(error as Error).message}`);
+        }
+      } else if (effect.type === "settings") {
+        try {
+          options.saveSettings?.(effect.settings);
+          setProblem("settings", null);
+        } catch (error) {
+          setProblem("settings", `settings not saved: ${(error as Error).message}`);
+        }
+      } else if (effect.type === "language") {
+        const swapped = options.switchLanguage?.(effect.code);
+        if (swapped) {
+          // Recorded here, not by the reducer: only this knows the switch really
+          // happened. Writing it earlier means a failed switch still changes
+          // which language opens next time.
+          try {
+            options.saveSettings?.({ ...state.settings, lang: effect.code });
+            setProblem("settings", null);
+          } catch (error) {
+            setProblem("settings", `settings not saved: ${(error as Error).message}`);
+          }
+          pack = swapped.pack;
+          progressFile = swapped.progressFile;
+          readOnly = swapped.readOnly ?? false;
+          setProblem("deck", swapped.problem ?? null);
+          // Rebuilt rather than patched: the deck, the card on screen and the
+          // statistics all belong to the language that was showing.
+          const settings = { ...state.settings, lang: effect.code };
+          const fresh = createState(
+            pack,
+            swapped.progress,
+            settings,
+            state.agent,
+            Date.now(),
+            state.languages,
+          );
+          state = {
+            ...fresh,
+            // Onboarding continues where it left off; a later switch goes
+            // straight back to quizzing.
+            mode: state.settings.onboarded ? "waiting" : "howItWorks",
+            consented: state.consented,
+            problems: state.problems,
+            message: `now studying ${pack.englishName}`,
+          };
+          if (state.mode === "waiting" && isActive(state)) {
+            state = reduce(state, { type: "tick", now: Date.now() }, pack).state;
+          }
+        } else {
+          // Back where they were, with the reason on screen rather than the
+          // keypress simply looking dead. Mid-first-run there is nowhere behind
+          // to return to, and dropping into `waiting` would leave them
+          // un-onboarded with no way back — so they stay on the picker to choose
+          // again, now with the reason visible on it.
+          state = {
+            ...state,
+            mode: state.pickerReturn ?? (state.settings.onboarded ? "waiting" : "pickLanguage"),
+            pickerReturn: null,
+          };
+          setProblem("settings", `could not switch to ${effect.code} — it may be open elsewhere`);
         }
       } else if (effect.type === "quit") {
         stop();
@@ -215,7 +304,7 @@ export function run(options: RunOptions): Runner {
   const dispatch = (event: Event) => {
     if (stopped) return;
     if (event.type === "problem") announce(event.key, event.message);
-    const step = reduce(state, event, options.pack);
+    const step = reduce(state, event, pack);
     state = step.state;
     applyEffects(step.effects);
     paint();

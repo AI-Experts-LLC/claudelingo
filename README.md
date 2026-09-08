@@ -25,31 +25,54 @@ generated on demand.
 
 ## Install
 
+Inside Claude Code:
+
+```
+/plugin install AI-Experts-LLC/claudelingo
+```
+
+That is the whole install. The plugin brings its own hooks and puts its command on
+PATH, so there is nothing to build, nothing to add to your PATH, and nothing to
+edit. One line goes in `~/.claude/settings.json` if you want the status line —
+`claudelingo init --statusline-only` writes it — because Claude Code only lets the
+main config set that field, not a plugin.
+
+Prefer not to use plugins? The standalone installer still works:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AI-Experts-LLC/claudelingo/main/install.sh | sh
 ```
-
-That clones, builds, links the command, and wires it into Claude Code and Codex.
-Then just open Claude Code as usual.
-
-Prefer npm, or want to see what it does first?
-
-```bash
-npm install -g github:AI-Experts-LLC/claudelingo   # needs npm to allow install scripts
-claudelingo init
-```
-
-The installer does the build itself rather than relying on npm lifecycle scripts,
-because newer npm blocks those by default and a blocked build leaves an installed
-but broken command behind.
 
 **No API key, ever.** Everything that needs a model — memory hooks, generating a
 pack for a new language — runs through the `claude` command you already have, on
 the Claude Code login and quota you are already using. claudelingo ships with no
 API SDK and no credential handling of any kind.
 
-Requirements: Node 20.11+, and Claude Code for the model-backed extras. tmux is
-optional and only used to place the pane beside you.
+Requirements: Node 20.11+. tmux is optional and only used to place the pane beside
+you.
+
+## Nothing to learn
+
+The first time it opens, it introduces itself and asks what you want to learn:
+
+```
+┌─ claudelingo ─────────────────────────────────┐
+│   ,___,  Which language?                      │
+│   (o.-)                                       │
+│   /)_)   Press its number.                     │
+│                                               │
+│  · [1] Spanish     312 words                  │
+│    [2] French      311 words                  │
+│    [3] Italian     310 words                  │
+└─ 1-9 choose a language ───────────────────────┘
+```
+
+Three screens, one key each, and then you are learning. It never asks again.
+
+After that there is nothing to memorise: **the keys that work are always along the
+bottom of the pane**, and they change with what is on screen. `?` lists all of
+them. `l` changes language from anywhere — pick a number and it switches on the
+spot, deck and all.
 
 ## What you get, without doing anything else
 
@@ -85,7 +108,23 @@ The owl reacts as you go: asleep while Claude is idle, watching while a card is
 up, pleased when you get one right, and a bit startled when you do not. It steps
 aside entirely on a pane too narrow to hold it.
 
-## Two surfaces
+## A quiz in the chat
+
+If you are not in tmux — or you just want a couple of cards where you are:
+
+```
+/lingo
+```
+
+Claude asks a card using its own multiple-choice UI, you click an answer, and the
+schedule updates. It never sees which answer is right: `claudelingo next` withholds
+it and `claudelingo answer` does the grading, so the answer cannot leak into the
+transcript before you have replied and the deck stays the single source of truth.
+
+It stands aside if a pane is already open — two graders writing one deck is how
+progress gets lost.
+
+## Three surfaces
 
 Claude Code draws its own terminal UI and does not host third-party widgets, so
 there is no way to put an interactive box inside it. claudelingo works around that

@@ -38,7 +38,9 @@ export function testPack(): Pack {
 }
 
 export function testSettings(overrides: Partial<Settings> = {}): Settings {
-  return { ...DEFAULT_SETTINGS, lang: "xx", enrich: false, ...overrides };
+  // Onboarded by default: most tests are about the quiz, not the walkthrough.
+  // The walkthrough tests pass `onboarded: false` explicitly.
+  return { ...DEFAULT_SETTINGS, lang: "xx", enrich: false, onboarded: true, ...overrides };
 }
 
 export function testProgress(): Progress {

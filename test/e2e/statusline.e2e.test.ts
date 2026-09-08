@@ -17,9 +17,9 @@ function fresh(): Env {
 const SESSION_JSON = JSON.stringify({
   session_id: "abc123",
   transcript_path: "/tmp/transcript.jsonl",
-  cwd: "/data/workspace",
+  cwd: "/repo",
   model: { id: "claude-opus-5", display_name: "Opus" },
-  workspace: { current_dir: "/data/workspace", project_dir: "/data/workspace" },
+  workspace: { current_dir: "/repo", project_dir: "/repo" },
   cost: { total_duration_ms: 4200, total_lines_added: 12, total_lines_removed: 3 },
   exceeds_200k_tokens: false,
 });
@@ -90,7 +90,7 @@ describe("the status line Claude Code draws", () => {
 
   it("respects the configured language", async () => {
     const e = fresh();
-    fs.writeFileSync(path.join(e.home, "settings.json"), JSON.stringify({ lang: "it" }));
+    fs.writeFileSync(path.join(e.home, "settings.json"), JSON.stringify({ lang: "it", onboarded: true }));
     const { stdout } = await statusline(e);
     const term = /«(.+?)»/.exec(stdout)?.[1];
     expect(topTerms("it", 12)).toContain(term);

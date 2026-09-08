@@ -33,6 +33,10 @@
   },
   "files": [
     "dist",
+    "bin",
+    "hooks",
+    "skills",
+    ".claude-plugin",
     "scripts",
     "README.md",
     "LICENSE"
@@ -46,7 +50,8 @@
     "test:e2e": "npm run build && vitest run test/e2e",
     "test:watch": "vitest",
     "prepare": "npm run build",
-    "postinstall": "node scripts/welcome.mjs"
+    "postinstall": "node scripts/welcome.mjs",
+    "check:dist": "node scripts/check-dist.mjs"
   },
   "dependencies": {},
   "devDependencies": {

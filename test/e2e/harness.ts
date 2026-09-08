@@ -19,8 +19,14 @@ export interface Env {
   cleanup(): void;
 }
 
-export function makeEnv(): Env {
+export function makeEnv(options: { onboarded?: boolean } = {}): Env {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "claudelingo-e2e-"));
+  // Most tests are about the quiz, not the first-run walkthrough, and a pane
+  // that stops to introduce itself would block every one of them. The
+  // walkthrough's own tests pass `onboarded: false`.
+  if (options.onboarded !== false) {
+    fs.writeFileSync(path.join(home, "settings.json"), JSON.stringify({ onboarded: true }));
+  }
   return {
     home,
     cleanup() {

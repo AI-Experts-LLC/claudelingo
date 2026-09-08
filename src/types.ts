@@ -111,6 +111,8 @@ export interface Settings {
   model: string;
   /** Open the quiz pane automatically when a Claude Code session starts. */
   autoPane: boolean;
+  /** The first-run walkthrough has been completed. */
+  onboarded: boolean;
   /**
    * Ask before starting a quiz.
    *

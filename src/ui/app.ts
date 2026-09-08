@@ -9,7 +9,17 @@ import type {
   Word,
 } from "../types.js";
 
-export type Mode = "waiting" | "offer" | "teach" | "question" | "feedback" | "caughtup" | "quit";
+export type Mode =
+  | "welcome"
+  | "pickLanguage"
+  | "howItWorks"
+  | "waiting"
+  | "offer"
+  | "teach"
+  | "question"
+  | "feedback"
+  | "caughtup"
+  | "quit";
 
 /** Every distinct thing that can go wrong and needs saying. */
 export type ProblemKey =
@@ -22,7 +32,8 @@ export type ProblemKey =
   /** The status file cannot be written, so Codex turns are never recorded. */
   | "statusWrite"
   | "codex"
-  | "credentials";
+  | "credentials"
+  | "settings";
 
 export interface Key {
   /** The character typed, if it was a printable one. */
@@ -42,7 +53,16 @@ export type Event =
 export type Effect =
   | { type: "save"; progress: Progress }
   | { type: "enrich"; word: Word }
+  /** Load a different pack and deck, and remember the choice. */
+  | { type: "language"; code: string }
+  | { type: "settings"; settings: Settings }
   | { type: "quit" };
+
+export interface LanguageChoice {
+  code: string;
+  englishName: string;
+  words: number;
+}
 
 export interface AppState {
   mode: Mode;
@@ -77,6 +97,10 @@ export interface AppState {
   now: number;
   /** Bumped on every card so the renderer can tell two identical frames apart. */
   seq: number;
+  /** Every installed pack, for the picker. */
+  languages: LanguageChoice[];
+  /** Where to return after the language picker. */
+  pickerReturn: Mode | null;
   /**
    * The user has said yes to quizzing during this run of the pane.
    *
@@ -93,6 +117,11 @@ export interface Step {
   effects: Effect[];
 }
 
+/** Screens that own the pane until the user has finished with them. */
+export function isOnboarding(state: AppState): boolean {
+  return state.mode === "welcome" || state.mode === "pickLanguage" || state.mode === "howItWorks";
+}
+
 /** Quizzing only happens while the agent is working — unless the user opted in. */
 export function isActive(state: AppState): boolean {
   return state.agent === "busy" || state.settings.alwaysOn;
@@ -104,9 +133,13 @@ export function createState(
   settings: Settings,
   agent: AgentState,
   now: number,
+  languages: LanguageChoice[] = [],
 ): AppState {
   return {
-    mode: "waiting",
+    // Someone opening this for the first time is shown what it is and asked what
+    // they want to learn, rather than being handed a flashcard for a language
+    // they never chose.
+    mode: settings.onboarded ? "waiting" : "welcome",
     agent,
     card: null,
     progress,
@@ -123,6 +156,8 @@ export function createState(
     showHelp: false,
     now,
     seq: 0,
+    languages,
+    pickerReturn: null,
     // A pane the user launched themselves has already answered the question.
     consented: !settings.askFirst,
     declined: false,
@@ -224,6 +259,10 @@ export function reduce(state: AppState, event: Event, pack: Pack): Step {
   switch (event.type) {
     case "tick": {
       const next = { ...state, now: event.now };
+      // The walkthrough is safe from this by construction: every branch below
+      // acts only on `waiting` or `caughtup`, and its modes are neither. A guard
+      // here would be unreachable, and mutation testing confirms no test could
+      // tell whether it was present.
       // A caught-up or waiting screen should notice the moment a card falls due.
       // The agent may already have been working when the pane opened, so the
       // offer has to be reachable from a tick and not only from a transition.
@@ -244,6 +283,8 @@ export function reduce(state: AppState, event: Event, pack: Pack): Step {
 
     case "agent": {
       if (event.state === state.agent) return { state, effects: [] };
+      if (isOnboarding(state)) return { state: { ...state, agent: event.state }, effects: [] };
+
       const next = { ...state, agent: event.state };
       if (event.state === "busy") {
         // A fresh burst of work is a fresh chance to offer.
@@ -324,6 +365,14 @@ function reduceKey(state: AppState, key: Key, pack: Pack): Step {
   if (!typing) {
     if (key.ch === "q") return { state: { ...state, mode: "quit" }, effects: [{ type: "quit" }] };
     if (key.ch === "?") return { state: { ...state, showHelp: true }, effects: [] };
+    if (key.ch === "l" && state.languages.length > 1 && state.mode !== "pickLanguage") {
+      // Reachable from every screen: changing language is the thing people most
+      // often want and least often find.
+      return {
+        state: { ...state, mode: "pickLanguage", pickerReturn: state.mode },
+        effects: [],
+      };
+    }
     if (key.ch === "p") {
       const settings = { ...state.settings, alwaysOn: !state.settings.alwaysOn };
       const next: AppState = {
@@ -355,6 +404,55 @@ function reduceKey(state: AppState, key: Key, pack: Pack): Step {
   }
 
   switch (state.mode) {
+    case "welcome": {
+      if (!CONFIRM_KEYS.has(key.name ?? "") && key.ch !== "y") return { state, effects: [] };
+      return { state: { ...state, mode: "pickLanguage", pickerReturn: null }, effects: [] };
+    }
+
+    case "pickLanguage": {
+      const index = Number(key.ch) - 1;
+      const chosen = state.languages[index];
+      if (chosen) {
+        // Choosing what is already showing is not a switch. Sending it through
+        // the reload path releases and re-takes one lock file, and the release
+        // deletes the file the new claim thinks it holds.
+        if (chosen.code === state.settings.lang) {
+          return {
+            state: {
+              ...state,
+              // Mid-session this returns whence it came; during the first run
+              // there is nothing behind it, and the walkthrough must reach its
+              // last screen or the user lands nowhere and stays un-onboarded.
+              mode: state.pickerReturn ?? (state.settings.onboarded ? "waiting" : "howItWorks"),
+              pickerReturn: null,
+              ...(state.settings.onboarded ? { message: `still ${chosen.englishName}` } : {}),
+            },
+            effects: [],
+          };
+        }
+        // The runner owns the pack, the deck and the lock, and only it knows
+        // whether the switch worked — so only it records the choice. Writing
+        // `lang` here would persist a language the user never actually got.
+        return { state, effects: [{ type: "language", code: chosen.code }] };
+      }
+      // Escape only backs out of a picker opened later; during onboarding there
+      // is nothing behind it yet.
+      if (key.name === "escape" && state.pickerReturn) {
+        return { state: { ...state, mode: state.pickerReturn, pickerReturn: null }, effects: [] };
+      }
+      return { state, effects: [] };
+    }
+
+    case "howItWorks": {
+      if (!CONFIRM_KEYS.has(key.name ?? "")) return { state, effects: [] };
+      const settings = { ...state.settings, onboarded: true };
+      const ready: AppState = { ...state, settings, consented: true };
+      return {
+        state: isActive(ready) ? advance(ready, pack, ready.now) : { ...ready, mode: "waiting" },
+        effects: [{ type: "settings", settings }],
+      };
+    }
+
     case "waiting":
       return { state, effects: [] };
 

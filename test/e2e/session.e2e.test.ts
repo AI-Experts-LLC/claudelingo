@@ -19,7 +19,7 @@ const hasTmux = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status === 0;
 const SESSION_JSON = JSON.stringify({
   session_id: "abc",
   transcript_path: "/tmp/t.jsonl",
-  cwd: "/data/workspace",
+  cwd: "/repo",
   hook_event_name: "SessionStart",
   source: "startup",
 });
@@ -53,7 +53,7 @@ describe("opening the pane when a session starts", () => {
     const e = fresh();
     fs.writeFileSync(
       path.join(e.home, "settings.json"),
-      JSON.stringify({ lang: "es", autoPane: false }),
+      JSON.stringify({ lang: "es", autoPane: false, onboarded: true }),
     );
     const result = await sessionStart(e, { TMUX: "fake" });
     expect(result.code).toBe(0);

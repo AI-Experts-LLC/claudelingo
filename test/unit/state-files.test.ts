@@ -278,3 +278,31 @@ describe("the lock under a release race", () => {
     }
   });
 });
+
+describe("re-acquiring a lock this process already holds", () => {
+  it("does not let the older claim delete the live lock", () => {
+    // A language switch can adopt the same lock twice. Releasing the first
+    // closure then removes a file the second claim believes it holds — and the
+    // pid check cannot catch it, because both claims are this same process.
+    const file = path.join(dir(), "es.lock");
+    const first = lock.acquire(file);
+    const second = lock.acquire(file);
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+
+    first.lock.release();
+    expect(fs.existsSync(file), "the live lock was deleted").toBe(true);
+    expect(lock.holderPid(file)).toBe(process.pid);
+
+    second.lock.release();
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it("still lets the current claim release normally", () => {
+    const file = path.join(dir(), "fr.lock");
+    const held = lock.acquire(file);
+    expect(held.ok).toBe(true);
+    if (held.ok) held.lock.release();
+    expect(fs.existsSync(file)).toBe(false);
+  });
+});
