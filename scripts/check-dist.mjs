@@ -44,8 +44,19 @@ try {
     }
   }
 
+  // The reverse direction matters too: rename or delete a source file and its old
+  // .js stays in dist/ for ever, shipping code that no longer exists in src/.
+  const fresh = new Set(walk(out));
+  for (const rel of walk(path.join(root, "dist"))) {
+    if (!fresh.has(rel)) drifted.push(`${rel} (in dist/, but src/ no longer compiles to it)`);
+  }
+
   if (drifted.length) {
-    console.error("dist/ is out of date. Run `npm run build` and commit:\n  " + drifted.join("\n  "));
+    console.error(
+      "dist/ is out of date. Run `npm run build` and commit (tsc does not remove stale\n" +
+        "output, so delete any file listed as no longer compiled by hand):\n  " +
+        drifted.join("\n  "),
+    );
     process.exit(1);
   }
   console.log(`dist/ matches src/ (${walk(out).length} files)`);

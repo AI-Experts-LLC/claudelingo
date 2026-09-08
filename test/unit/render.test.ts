@@ -254,6 +254,32 @@ describe("problems on screen", () => {
     expect(text).toContain("Codex turns not detected");
   });
 
+  // A language switch on the very first run can quarantine a deck. That notice
+  // is the one message a user must not have to press enter to discover.
+  it.each(["welcome", "howItWorks"] as const)("shows a deck problem on the %s screen", (mode) => {
+    let state = createState(pack, testProgress(), testSettings({ onboarded: false }), "idle", T0);
+    if (mode === "howItWorks") state = { ...state, mode: "howItWorks" };
+    state = drive(state, [
+      { type: "problem", key: "deck", message: "kept a copy at progress-fr.json.corrupt-1" },
+    ]);
+    expect(state.mode).toBe(mode);
+    const text = frame(state, 72).join("\n");
+    expect(text).toContain("kept a copy at progress-fr.json.corrupt-1");
+    // …and still no stats panel, which is what onboarding suppresses.
+    expect(text).not.toContain("learned ");
+  });
+
+  it("shows a problem exactly once on the picker, which draws its own", () => {
+    let state = createState(pack, testProgress(), testSettings({ onboarded: false }), "idle", T0);
+    state = drive(state, [
+      { type: "problem", key: "deck", message: "kept a copy at progress-fr.json.corrupt-1" },
+      { type: "key", key: { name: "enter" } },
+    ]);
+    expect(state.mode).toBe("pickLanguage");
+    const hits = frame(state, 72).filter((line) => line.includes("corrupt-1"));
+    expect(hits).toHaveLength(1);
+  });
+
   it("keeps the panel exact even with several wrapped problems", () => {
     let state = busy();
     state = drive(state, [

@@ -382,7 +382,8 @@ function cmdAnswer(args) {
     // Parsing is not enough: a file that is valid JSON but the wrong shape throws
     // out of the grader, and the skill's contract is one line of JSON.
     const outstanding = pending.value;
-    if (typeof outstanding.id !== "string" ||
+    if (!outstanding ||
+        typeof outstanding.id !== "string" ||
         !Array.isArray(outstanding.choices) ||
         !Array.isArray(outstanding.accepted) ||
         typeof outstanding.answerIndex !== "number") {

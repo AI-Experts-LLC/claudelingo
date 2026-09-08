@@ -180,6 +180,32 @@ describe("the quiz the /lingo skill drives", () => {
     expect(fs.existsSync(path.join(e.home, "pending-es.json"))).toBe(false);
   });
 
+  // The skill parses stdout as JSON. A pending file that is valid JSON but the
+  // wrong shape — `null` especially, which dereferences before any shape check —
+  // must still come back as one line of JSON, not a stack trace.
+  it.each([
+    ["null", "null"],
+    ["a bare string", '"hola"'],
+    ["an array", "[1, 2, 3]"],
+    ["an object missing every field", "{}"],
+    ["an object with the wrong field types", '{"id": 7, "choices": "a", "accepted": 1, "answerIndex": "x"}'],
+  ])("answers a pending file that is %s with JSON, not a crash", async (_label, body) => {
+    const e = fresh();
+    await next(e);
+    await answer(e, ["--choice", "1"]);
+    await next(e);
+    const before = fs.readFileSync(progressFile(e, "es"), "utf8");
+    fs.writeFileSync(path.join(e.home, "pending-es.json"), body);
+
+    const { stdout, stderr, code } = await cli(["answer", "--choice", "1"], e);
+    expect(code).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout.trimEnd().split("\n")).toHaveLength(1);
+    expect(JSON.parse(stdout).error).toContain("unreadable");
+    // and it graded nothing
+    expect(fs.readFileSync(progressFile(e, "es"), "utf8")).toBe(before);
+  });
+
   it("emits one line of JSON, so a skill can parse it", async () => {
     const e = fresh();
     const { stdout } = await cli(["next", "--json"], e);

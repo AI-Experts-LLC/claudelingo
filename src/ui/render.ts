@@ -414,9 +414,15 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
     push(progressBar(s.total ? s.learned / s.total : 0, Math.min(24, body), theme));
     push(statusLine(state, pack, theme, body));
     if (state.message) push(`${theme.dim}${state.message}${theme.reset}`);
-    // Problems stay on screen until each is fixed: a pane that has silently
-    // stopped saving must not look identical to one that is working, and one
-    // problem clearing must not hide another that is still true.
+  }
+
+  // Problems stay on screen until each is fixed: a pane that has silently
+  // stopped saving must not look identical to one that is working, and one
+  // problem clearing must not hide another that is still true. They show during
+  // onboarding too — a switch can quarantine a deck on the very first run, and
+  // that notice must not wait for the walkthrough to end. The picker draws its
+  // own copy above the key list, so it is the one screen excluded here.
+  if (!state.showHelp && state.mode !== "pickLanguage") {
     for (const message of Object.values(state.problems)) {
       for (const line of wrap(message, body)) push(`${theme.red}${line}${theme.reset}`);
     }
