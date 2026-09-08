@@ -14,6 +14,10 @@ export interface RunOptions {
         pack: Pack;
         progress: Progress;
         progressFile: string;
+        /** True when that language's deck could not be read and must not be written. */
+        readOnly?: boolean;
+        /** Anything the user needs to know about that deck. */
+        problem?: string;
     } | null;
     /** Persist a settings change made from inside the pane. */
     saveSettings?: (settings: Settings) => void;

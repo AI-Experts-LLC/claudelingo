@@ -25,7 +25,15 @@ export interface RunOptions {
    * The runner cannot do this itself — packs, decks and the single-pane lock all
    * live outside the UI — so the caller supplies it.
    */
-  switchLanguage?: (code: string) => { pack: Pack; progress: Progress; progressFile: string } | null;
+  switchLanguage?: (code: string) => {
+    pack: Pack;
+    progress: Progress;
+    progressFile: string;
+    /** True when that language's deck could not be read and must not be written. */
+    readOnly?: boolean;
+    /** Anything the user needs to know about that deck. */
+    problem?: string;
+  } | null;
   /** Persist a settings change made from inside the pane. */
   saveSettings?: (settings: Settings) => void;
   progress: Progress;
@@ -106,9 +114,13 @@ export function run(options: RunOptions): Runner {
 
   const initialAgent = agentNow();
 
-  // Mutable: a language switch replaces all three.
+  // Mutable: a language switch replaces all of these. Read-only state in
+  // particular is per-language — captured once at startup it would let the pane
+  // overwrite an unreadable deck it switched INTO, and silently never save after
+  // switching AWAY from one.
   let pack = options.pack;
   let progressFile = options.progressFile;
+  let readOnly = options.readOnly ?? false;
 
   let state: AppState = createState(
     pack,
@@ -188,7 +200,7 @@ export function run(options: RunOptions): Runner {
     for (const effect of effects) {
       if (effect.type === "save") {
         // A deck we could not read is still on disk; writing would destroy it.
-        if (options.readOnly) continue;
+        if (readOnly) continue;
         try {
           writeJsonAtomic(progressFile, effect.progress);
           setProblem("save", null);
@@ -218,6 +230,8 @@ export function run(options: RunOptions): Runner {
           }
           pack = swapped.pack;
           progressFile = swapped.progressFile;
+          readOnly = swapped.readOnly ?? false;
+          setProblem("deck", swapped.problem ?? null);
           // Rebuilt rather than patched: the deck, the card on screen and the
           // statistics all belong to the language that was showing.
           const settings = { ...state.settings, lang: effect.code };
@@ -243,8 +257,15 @@ export function run(options: RunOptions): Runner {
           }
         } else {
           // Back where they were, with the reason on screen rather than the
-          // keypress simply looking dead.
-          state = { ...state, mode: state.pickerReturn ?? "waiting", pickerReturn: null };
+          // keypress simply looking dead. Mid-first-run there is nowhere behind
+          // to return to, and dropping into `waiting` would leave them
+          // un-onboarded with no way back — so they stay on the picker to choose
+          // again, now with the reason visible on it.
+          state = {
+            ...state,
+            mode: state.pickerReturn ?? (state.settings.onboarded ? "waiting" : "pickLanguage"),
+            pickerReturn: null,
+          };
           setProblem("settings", `could not switch to ${effect.code} — it may be open elsewhere`);
         }
       } else if (effect.type === "quit") {

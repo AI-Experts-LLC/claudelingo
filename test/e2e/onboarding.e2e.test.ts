@@ -220,3 +220,106 @@ describe("choosing the language already in use", () => {
     ]);
   });
 });
+
+describe("switching into a deck that cannot be read", () => {
+  /** A real French deck, made unreadable. */
+  function unreadableFrench(e: Env): { file: string; before: string } {
+    const now = Date.now();
+    const file = progressFile(e, "fr");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1, lang: "fr",
+        items: {
+          "fr:1": {
+            id: "fr:1", stage: "review", box: 5, step: 0,
+            due: now + 9e7, lastSeen: now, seen: 40, correct: 38, lapses: 1,
+          },
+        },
+        streak: 7, bestStreak: 12, totalAnswered: 99, totalCorrect: 90, introducedByDay: {},
+      }),
+    );
+    const before = fs.readFileSync(file, "utf8");
+    fs.chmodSync(file, 0o000);
+    return { file, before };
+  }
+
+  it("does not overwrite it with an empty one", async () => {
+    // Read-only state belongs to a language, not to the pane. Captured once at
+    // startup, a switch hands the pane a blank deck with saving still on.
+    const e = makeEnv();
+    env = e;
+    const { file, before } = unreadableFrench(e);
+    try {
+      await cli(["hook", "UserPromptSubmit"], e);
+      pane = new Pane(["--lang", "es", ...BASE], e);
+      await pane.waitForProse("most common word in Spanish");
+
+      pane.send("l");
+      await pane.waitForProse("Which language?");
+      pane.send("2");
+      await pane.waitForProse("could not be read");
+      expect(pane.flatFrame).toContain("Not saving");
+
+      // Answer several cards; none of them may reach that file.
+      for (let i = 0; i < 3; i++) {
+        pane.send(" ");
+        await pane.settle(250);
+      }
+      fs.chmodSync(file, 0o600);
+      expect(fs.readFileSync(file, "utf8")).toBe(before);
+    } finally {
+      fs.chmodSync(file, 0o600);
+    }
+  });
+
+  it("starts saving again after switching away to a healthy deck", async () => {
+    // The mirror image: read-only captured at startup would silently persist
+    // after moving to a language that is perfectly fine.
+    const e = makeEnv();
+    env = e;
+    const file = progressFile(e, "es");
+    fs.writeFileSync(file, '{"version":1,"lang":"es","items":{}}');
+    fs.chmodSync(file, 0o000);
+    try {
+      await cli(["hook", "UserPromptSubmit"], e);
+      pane = new Pane(["--lang", "es", ...BASE], e);
+      await pane.waitForProse("could not be read");
+
+      pane.send("l");
+      await pane.waitForProse("Which language?");
+      pane.send("2");
+      await pane.waitForProse("most common word in French");
+      // The Spanish warning belongs to Spanish and must not follow us.
+      expect(pane.flatFrame).not.toContain("Not saving");
+
+      pane.send(" ");
+      await pane.waitForProse("#2 most common word");
+      expect(fs.existsSync(progressFile(e, "fr")), "French progress was never saved").toBe(true);
+    } finally {
+      fs.chmodSync(file, 0o600);
+    }
+  });
+
+  it("keeps the walkthrough alive when the switch fails outright", async () => {
+    // Dropping into `waiting` un-onboarded is unrecoverable: `l` from there sets
+    // pickerReturn, so the same-language branch returns to `waiting` for ever.
+    const e = makeEnv({ onboarded: false });
+    env = e;
+    // Something else already owns French.
+    fs.writeFileSync(
+      path.join(e.home, "progress-fr.lock"),
+      JSON.stringify({ pid: 1, since: Date.now() }),
+    );
+    pane = new Pane(BASE, e);
+    await pane.waitForProse("Hello");
+    pane.send("\r");
+    await pane.waitForProse("Which language?");
+    pane.send("2");
+    await pane.waitForProse("could not switch to fr");
+    // Still on the picker, still able to choose something else.
+    expect(pane.flatFrame).toContain("Which language?");
+    pane.send("1");
+    await pane.waitForProse("How this works");
+  });
+});

@@ -52,9 +52,13 @@ export function run(options) {
         (Number(process.env.COLUMNS) || 64);
     const agentNow = () => effectiveState(readStatus(options.statusFile), Date.now(), options.settings.staleBusyMs);
     const initialAgent = agentNow();
-    // Mutable: a language switch replaces all three.
+    // Mutable: a language switch replaces all of these. Read-only state in
+    // particular is per-language — captured once at startup it would let the pane
+    // overwrite an unreadable deck it switched INTO, and silently never save after
+    // switching AWAY from one.
     let pack = options.pack;
     let progressFile = options.progressFile;
+    let readOnly = options.readOnly ?? false;
     let state = createState(pack, options.progress, options.settings, initialAgent, Date.now(), options.languages ?? []);
     /** True when nothing is drawing the panel, so problems have nowhere to appear. */
     const noPanel = !isTty && !options.forceRender;
@@ -129,7 +133,7 @@ export function run(options) {
         for (const effect of effects) {
             if (effect.type === "save") {
                 // A deck we could not read is still on disk; writing would destroy it.
-                if (options.readOnly)
+                if (readOnly)
                     continue;
                 try {
                     writeJsonAtomic(progressFile, effect.progress);
@@ -165,6 +169,8 @@ export function run(options) {
                     }
                     pack = swapped.pack;
                     progressFile = swapped.progressFile;
+                    readOnly = swapped.readOnly ?? false;
+                    setProblem("deck", swapped.problem ?? null);
                     // Rebuilt rather than patched: the deck, the card on screen and the
                     // statistics all belong to the language that was showing.
                     const settings = { ...state.settings, lang: effect.code };
@@ -184,8 +190,15 @@ export function run(options) {
                 }
                 else {
                     // Back where they were, with the reason on screen rather than the
-                    // keypress simply looking dead.
-                    state = { ...state, mode: state.pickerReturn ?? "waiting", pickerReturn: null };
+                    // keypress simply looking dead. Mid-first-run there is nowhere behind
+                    // to return to, and dropping into `waiting` would leave them
+                    // un-onboarded with no way back — so they stay on the picker to choose
+                    // again, now with the reason visible on it.
+                    state = {
+                        ...state,
+                        mode: state.pickerReturn ?? (state.settings.onboarded ? "waiting" : "pickLanguage"),
+                        pickerReturn: null,
+                    };
                     setProblem("settings", `could not switch to ${effect.code} — it may be open elsewhere`);
                 }
             }

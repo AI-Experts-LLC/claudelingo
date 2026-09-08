@@ -50,7 +50,8 @@ describe("the Claude Code plugin", () => {
     const source = fs.readFileSync(bin, "utf8");
     expect(source.startsWith("#!/bin/sh")).toBe(true);
     expect(source).toContain("dirname");
-    expect(source).not.toContain("/data/workspace"); // no absolute paths from here
+    // No absolute path from any developer machine, not just this one.
+    expect(source).not.toMatch(/^\/(Users|home|data)\//m);
   });
 
   it("ships the compiled output, because installing a plugin is a clone not a build", () => {

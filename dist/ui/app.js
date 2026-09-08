@@ -231,7 +231,7 @@ function reduceKey(state, key, pack) {
             return { state: { ...state, mode: "quit" }, effects: [{ type: "quit" }] };
         if (key.ch === "?")
             return { state: { ...state, showHelp: true }, effects: [] };
-        if (key.ch === "l" && state.languages.length > 1) {
+        if (key.ch === "l" && state.languages.length > 1 && state.mode !== "pickLanguage") {
             // Reachable from every screen: changing language is the thing people most
             // often want and least often find.
             return {

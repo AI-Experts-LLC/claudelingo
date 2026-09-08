@@ -375,6 +375,10 @@ function cmdAnswer(args) {
         emit({ error: "no question is outstanding — run `claudelingo next --json` first" });
         return;
     }
+    if (lock.isHeld(paths.lock(settings.lang))) {
+        emit({ error: "a claudelingo pane is already open — answer there instead" });
+        return;
+    }
     // Parsing is not enough: a file that is valid JSON but the wrong shape throws
     // out of the grader, and the skill's contract is one line of JSON.
     const outstanding = pending.value;
@@ -383,10 +387,6 @@ function cmdAnswer(args) {
         !Array.isArray(outstanding.accepted) ||
         typeof outstanding.answerIndex !== "number") {
         emit({ error: "the outstanding question is unreadable — run `claudelingo next --json` again" });
-        return;
-    }
-    if (lock.isHeld(paths.lock(settings.lang))) {
-        emit({ error: "a claudelingo pane is already open — answer there instead" });
         return;
     }
     const held = lock.acquire(paths.lock(settings.lang));
@@ -762,10 +762,16 @@ async function cmdRun(args) {
             held.lock.release();
         held = taken;
         currentLang = code;
+        // Passed through whole: `readOnly` and `problem` are properties of THIS
+        // language's deck. Dropping them let the pane write an empty deck over one
+        // it merely failed to read.
+        const loaded = loadProgress(code);
         return {
             pack: next,
-            progress: loadProgress(code).progress,
+            progress: loaded.progress,
             progressFile: paths.progress(code),
+            ...(loaded.readOnly ? { readOnly: true } : {}),
+            ...(loaded.problem ? { problem: loaded.problem } : {}),
         };
     };
     const runner = run({
