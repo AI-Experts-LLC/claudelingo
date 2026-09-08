@@ -617,3 +617,103 @@ describe("asking before it starts quizzing", () => {
     expect(state.mode).toBe("teach");
   });
 });
+
+describe("the first run", () => {
+  const langs = [
+    { code: "es", englishName: "Spanish", words: 312 },
+    { code: "fr", englishName: "French", words: 311 },
+  ];
+  const firstRun = () =>
+    createState(pack, testProgress(), testSettings({ onboarded: false }), "idle", T0, langs);
+
+  it("introduces itself instead of dealing a card at a stranger", () => {
+    expect(firstRun().mode).toBe("welcome");
+  });
+
+  it("asks what to learn before anything else", () => {
+    const state = feed(firstRun(), [named("enter")]).state;
+    expect(state.mode).toBe("pickLanguage");
+  });
+
+  it("acts on the number pressed, and remembers it", () => {
+    const picking = feed(firstRun(), [named("enter")]).state;
+    const { state, effects } = feed(picking, [press("2")]);
+    expect(state.settings.lang).toBe("fr");
+    expect(effects).toContainEqual({ type: "language", code: "fr" });
+    const saved = effects.find((e) => e.type === "settings");
+    expect(saved && saved.type === "settings" && saved.settings.lang).toBe("fr");
+  });
+
+  it("ignores a number nobody offered", () => {
+    const picking = feed(firstRun(), [named("enter")]).state;
+    expect(feed(picking, [press("9")]).state.mode).toBe("pickLanguage");
+  });
+
+  it("explains how it works, then starts", () => {
+    const state = feed(
+      { ...firstRun(), mode: "howItWorks" as const, agent: "busy" as const },
+      [named("enter")],
+    );
+    expect(state.state.mode).toBe("teach");
+    expect(state.state.settings.onboarded).toBe(true);
+    // And it does not ask "want a quiz?" straight after they said start.
+    expect(state.state.consented).toBe(true);
+    const saved = state.effects.find((e) => e.type === "settings");
+    expect(saved && saved.type === "settings" && saved.settings.onboarded).toBe(true);
+  });
+
+  it("is never interrupted by the agent or by time passing", () => {
+    // A card appearing mid-sentence during the walkthrough would be baffling.
+    const welcome = firstRun();
+    for (const event of [
+      { type: "agent", state: "busy" } as const,
+      { type: "tick", now: T0 + 600_000 } as const,
+    ]) {
+      const after = feed(welcome, [event]).state;
+      expect(after.mode).toBe("welcome");
+      expect(after.card).toBeNull();
+    }
+  });
+
+  it("does not repeat itself once completed", () => {
+    expect(createState(pack, testProgress(), testSettings({ onboarded: true }), "idle", T0).mode)
+      .toBe("waiting");
+  });
+});
+
+describe("changing language", () => {
+  const langs = [
+    { code: "es", englishName: "Spanish", words: 312 },
+    { code: "fr", englishName: "French", words: 311 },
+  ];
+  const running = () =>
+    createState(pack, testProgress(), testSettings({ onboarded: true }), "busy", T0, langs);
+
+  it("is one keypress from anywhere", () => {
+    for (const from of [
+      running(),
+      feed(running(), [{ type: "agent", state: "busy" }]).state,
+    ]) {
+      expect(feed(from, [press("l")]).state.mode).toBe("pickLanguage");
+    }
+  });
+
+  it("comes back to where it was called from on escape", () => {
+    const quizzing = feed(running(), [{ type: "tick", now: T0 + 1 }]).state;
+    const picking = feed(quizzing, [press("l")]).state;
+    expect(picking.pickerReturn).toBe(quizzing.mode);
+    expect(feed(picking, [named("escape")]).state.mode).toBe(quizzing.mode);
+  });
+
+  it("asks the runner to load the new pack, rather than pretending it can", () => {
+    // Packs, decks and the single-pane lock all live outside the reducer.
+    const picking = feed(running(), [press("l")]).state;
+    const { effects } = feed(picking, [press("2")]);
+    expect(effects.some((e) => e.type === "language" && e.code === "fr")).toBe(true);
+  });
+
+  it("offers nothing to pick when only one pack is installed", () => {
+    const alone = createState(pack, testProgress(), testSettings(), "busy", T0, [langs[0]!]);
+    expect(feed(alone, [press("l")]).state.mode).not.toBe("pickLanguage");
+  });
+});

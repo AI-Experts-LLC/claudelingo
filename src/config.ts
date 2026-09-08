@@ -13,6 +13,7 @@ export const DEFAULT_SETTINGS: Settings = {
   model: "claude-fable-5-1",
   autoPane: true,
   askFirst: false,
+  onboarded: false,
 };
 
 /**

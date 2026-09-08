@@ -1,7 +1,22 @@
 import type { AgentState, Pack, Progress, Settings, Word } from "../types.js";
-import { type Key, type ProblemKey } from "./app.js";
+import { type Key, type LanguageChoice, type ProblemKey } from "./app.js";
 export interface RunOptions {
     pack: Pack;
+    /** Every installed pack, so the picker can offer them. */
+    languages?: LanguageChoice[];
+    /**
+     * Swap to another language: load its pack and deck, and move the lock.
+     *
+     * The runner cannot do this itself — packs, decks and the single-pane lock all
+     * live outside the UI — so the caller supplies it.
+     */
+    switchLanguage?: (code: string) => {
+        pack: Pack;
+        progress: Progress;
+        progressFile: string;
+    } | null;
+    /** Persist a settings change made from inside the pane. */
+    saveSettings?: (settings: Settings) => void;
     progress: Progress;
     settings: Settings;
     progressFile: string;

@@ -1,11 +1,11 @@
 import type { AgentState, Card, Pack, Progress, Settings, Word } from "../types.js";
-export type Mode = "waiting" | "offer" | "teach" | "question" | "feedback" | "caughtup" | "quit";
+export type Mode = "welcome" | "pickLanguage" | "howItWorks" | "waiting" | "offer" | "teach" | "question" | "feedback" | "caughtup" | "quit";
 /** Every distinct thing that can go wrong and needs saying. */
 export type ProblemKey = "save" | "deck" | "settings" | "lock"
 /** The status file cannot be read, so the pane cannot see the agent. */
  | "status"
 /** The status file cannot be written, so Codex turns are never recorded. */
- | "statusWrite" | "codex" | "credentials";
+ | "statusWrite" | "codex" | "credentials" | "settings";
 export interface Key {
     /** The character typed, if it was a printable one. */
     ch?: string;
@@ -40,9 +40,22 @@ export type Effect = {
 } | {
     type: "enrich";
     word: Word;
+}
+/** Load a different pack and deck, and remember the choice. */
+ | {
+    type: "language";
+    code: string;
+} | {
+    type: "settings";
+    settings: Settings;
 } | {
     type: "quit";
 };
+export interface LanguageChoice {
+    code: string;
+    englishName: string;
+    words: number;
+}
 export interface AppState {
     mode: Mode;
     agent: AgentState;
@@ -76,6 +89,10 @@ export interface AppState {
     now: number;
     /** Bumped on every card so the renderer can tell two identical frames apart. */
     seq: number;
+    /** Every installed pack, for the picker. */
+    languages: LanguageChoice[];
+    /** Where to return after the language picker. */
+    pickerReturn: Mode | null;
     /**
      * The user has said yes to quizzing during this run of the pane.
      *
@@ -90,9 +107,11 @@ export interface Step {
     state: AppState;
     effects: Effect[];
 }
+/** Screens that own the pane until the user has finished with them. */
+export declare function isOnboarding(state: AppState): boolean;
 /** Quizzing only happens while the agent is working — unless the user opted in. */
 export declare function isActive(state: AppState): boolean;
-export declare function createState(pack: Pack, progress: Progress, settings: Settings, agent: AgentState, now: number): AppState;
+export declare function createState(pack: Pack, progress: Progress, settings: Settings, agent: AgentState, now: number, languages?: LanguageChoice[]): AppState;
 export declare function reduce(state: AppState, event: Event, pack: Pack): Step;
 export declare function summary(pack: Pack, state: AppState): import("../srs.js").Stats;
 export type { Card };

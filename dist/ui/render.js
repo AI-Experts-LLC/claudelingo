@@ -2,7 +2,7 @@ import { MAX_BOX, cardKindForBox } from "../srs.js";
 import { ANSI_PATTERN, ansi } from "./ansi.js";
 import { MASCOT_WIDTH, owl, remark } from "./mascot.js";
 import { sliceToWidth, stringWidth } from "./width.js";
-import { isActive, summary } from "./app.js";
+import { isActive, isOnboarding, summary } from "./app.js";
 export const COLOR = {
     reset: ansi.reset,
     dim: ansi.dim,
@@ -105,6 +105,10 @@ const KIND_LABEL = {
     teach: "new word",
 };
 const DOT = " · ";
+/** A key rendered so it reads as something you press. */
+function key(label, what, theme) {
+    return `${theme.cyan}[${label}]${theme.reset} ${what}`;
+}
 /**
  * Stats, most important first. Narrow panes drop entries off the end rather than
  * letting the line get truncated mid-word by the border.
@@ -129,13 +133,14 @@ function progressBar(fraction, width, theme) {
     return `${theme.cyan}${"█".repeat(filled)}${theme.reset}${theme.dim}${"░".repeat(empty)}${theme.reset}`;
 }
 const HELP = [
-    "1-4      answer a multiple-choice card",
-    "type     spell the word, then Enter",
-    "space    continue / next card",
-    "s        skip this word, no penalty",
-    "e        ask Claude for a memory hook",
-    "p        practise even when the agent is idle",
-    "q        quit      ?  this help",
+    "1-4    answer a multiple-choice card",
+    "type   spell the word out, then enter",
+    "space  next card",
+    "s      skip this word, no penalty",
+    "e      ask Claude for a hint about it",
+    "l      change language",
+    "p      practise even when Claude is idle",
+    "q      quit",
 ];
 function moodFor(state) {
     if (state.mode === "offer")
@@ -180,7 +185,54 @@ export function renderFrame(state, pack, width, theme) {
             push(`${theme.dim}${bird}${theme.reset}  ${text}`);
         }
     };
-    if (state.showHelp) {
+    if (state.mode === "welcome") {
+        push();
+        withOwl("watching", [
+            `${theme.bold}Hello.${theme.reset}`,
+            `${theme.dim}I teach you a language in the gaps${theme.reset}`,
+            `${theme.dim}while Claude is busy working.${theme.reset}`,
+        ]);
+        push();
+        push(`${theme.dim}A few words at a time. No homework.${theme.reset}`);
+        push();
+        push(key("enter", "let's go", theme));
+        push();
+    }
+    else if (state.mode === "pickLanguage") {
+        push();
+        withOwl("asking", [
+            `${theme.bold}Which language?${theme.reset}`,
+            "",
+            `${theme.dim}Press its number.${theme.reset}`,
+        ]);
+        push();
+        for (const [index, choice] of state.languages.entries()) {
+            const current = choice.code === state.settings.lang;
+            const mark = current ? `${theme.green}·${theme.reset}` : " ";
+            push(`${mark} ${key(String(index + 1), choice.englishName.padEnd(12), theme)}` +
+                `${theme.dim}${choice.words} words${theme.reset}`);
+        }
+        push();
+        if (state.pickerReturn)
+            push(`${theme.dim}esc  back${theme.reset}`);
+        push();
+    }
+    else if (state.mode === "howItWorks") {
+        push();
+        withOwl("watching", [
+            `${theme.bold}How this works${theme.reset}`,
+            `${theme.dim}1. I show you a word and what it means.${theme.reset}`,
+            `${theme.dim}2. Later I ask what it meant.${theme.reset}`,
+            `${theme.dim}3. Get it right and I ask less often.${theme.reset}`,
+        ]);
+        push();
+        push(`${theme.dim}Everything is one keypress. The keys you can${theme.reset}`);
+        push(`${theme.dim}press are always shown along the bottom.${theme.reset}`);
+        push();
+        push(key("enter", "start", theme));
+        push();
+    }
+    else if (state.showHelp) {
         push(`${theme.bold}keys${theme.reset}`);
         push();
         for (const line of HELP)
@@ -331,7 +383,7 @@ export function renderFrame(state, pack, width, theme) {
                 break;
         }
     }
-    if (!state.showHelp) {
+    if (!state.showHelp && !isOnboarding(state)) {
         const s = summary(pack, state);
         push(progressBar(s.total ? s.learned / s.total : 0, Math.min(24, body), theme));
         push(statusLine(state, pack, theme, body));
@@ -351,22 +403,28 @@ export function renderFrame(state, pack, width, theme) {
     const title = `${theme.bold}claudelingo${theme.reset}${DOT}${pack.englishName}   ` +
         `${marker} ${theme.dim}${agentLabel}${practising}${theme.reset}`;
     let footer;
-    if (state.showHelp)
+    if (state.mode === "welcome")
+        footer = "enter  continue";
+    else if (state.mode === "pickLanguage")
+        footer = state.pickerReturn ? "1-9 choose · esc back" : "1-9 choose a language";
+    else if (state.mode === "howItWorks")
+        footer = "enter  start";
+    else if (state.showHelp)
         footer = "any key to close";
     else if (state.mode === "offer")
-        footer = "y yes / n not now / q quit";
+        footer = "y yes · n not now · q quit";
     else if (!isActive(state))
-        footer = "p practise / q quit / ? help";
+        footer = "p practise · l language · ? help · q quit";
     else if (state.mode === "teach")
-        footer = "space got it / s skip / e hook / q quit";
+        footer = "space next · s skip · e hint · ? help";
     else if (state.mode === "feedback")
-        footer = "space next / e hook / q quit";
+        footer = "space next · e hint · ? help";
     else if (state.mode === "question" && state.card?.choices.length)
-        footer = "1-4 answer / s skip / q quit";
+        footer = "1-4 answer · s skip · ? help";
     else if (state.mode === "question")
-        footer = "type answer / enter submit";
+        footer = "type it, then enter · esc clear";
     else
-        footer = "q quit / ? help";
+        footer = "l language · ? help · q quit";
     return box(content, { width, title, footer, theme });
 }
 //# sourceMappingURL=render.js.map

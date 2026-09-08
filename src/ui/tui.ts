@@ -7,14 +7,27 @@ import {
   type Effect,
   type Event,
   type Key,
+  type LanguageChoice,
   type ProblemKey,
   createState,
   reduce,
 } from "./app.js";
 import { COLOR, PLAIN, type Theme, renderFrame } from "./render.js";
+import { isActive } from "./app.js";
 
 export interface RunOptions {
   pack: Pack;
+  /** Every installed pack, so the picker can offer them. */
+  languages?: LanguageChoice[];
+  /**
+   * Swap to another language: load its pack and deck, and move the lock.
+   *
+   * The runner cannot do this itself — packs, decks and the single-pane lock all
+   * live outside the UI — so the caller supplies it.
+   */
+  switchLanguage?: (code: string) => { pack: Pack; progress: Progress; progressFile: string } | null;
+  /** Persist a settings change made from inside the pane. */
+  saveSettings?: (settings: Settings) => void;
   progress: Progress;
   settings: Settings;
   progressFile: string;
@@ -93,12 +106,17 @@ export function run(options: RunOptions): Runner {
 
   const initialAgent = agentNow();
 
+  // Mutable: a language switch replaces all three.
+  let pack = options.pack;
+  let progressFile = options.progressFile;
+
   let state: AppState = createState(
-    options.pack,
+    pack,
     options.progress,
     options.settings,
     initialAgent,
     Date.now(),
+    options.languages ?? [],
   );
   /** True when nothing is drawing the panel, so problems have nowhere to appear. */
   const noPanel = !isTty && !options.forceRender;
@@ -129,7 +147,7 @@ export function run(options: RunOptions): Runner {
 
   // An agent already working when the pane opens should get a card straight away.
   if (initialAgent === "busy" || options.settings.alwaysOn) {
-    state = reduce(state, { type: "tick", now: Date.now() }, options.pack).state;
+    state = reduce(state, { type: "tick", now: Date.now() }, pack).state;
   }
 
   let lastFrame = "";
@@ -141,7 +159,7 @@ export function run(options: RunOptions): Runner {
 
   const paint = (force = false) => {
     if (stopped) return;
-    const frame = renderFrame(state, options.pack, width(), theme).join("\n");
+    const frame = renderFrame(state, pack, width(), theme).join("\n");
     if (!force && frame === lastFrame) return;
     lastFrame = frame;
     try {
@@ -172,12 +190,50 @@ export function run(options: RunOptions): Runner {
         // A deck we could not read is still on disk; writing would destroy it.
         if (options.readOnly) continue;
         try {
-          writeJsonAtomic(options.progressFile, effect.progress);
+          writeJsonAtomic(progressFile, effect.progress);
           setProblem("save", null);
         } catch (error) {
           // A read-only home or a full disk must not kill the pane mid-session and
           // leave the terminal in raw mode. Say so, keep going, keep retrying.
           setProblem("save", `progress is not saving: ${(error as Error).message}`);
+        }
+      } else if (effect.type === "settings") {
+        try {
+          options.saveSettings?.(effect.settings);
+          setProblem("settings", null);
+        } catch (error) {
+          setProblem("settings", `settings not saved: ${(error as Error).message}`);
+        }
+      } else if (effect.type === "language") {
+        const swapped = options.switchLanguage?.(effect.code);
+        if (swapped) {
+          pack = swapped.pack;
+          progressFile = swapped.progressFile;
+          // Rebuilt rather than patched: the deck, the card on screen and the
+          // statistics all belong to the language that was showing.
+          const settings = { ...state.settings, lang: effect.code };
+          const fresh = createState(
+            pack,
+            swapped.progress,
+            settings,
+            state.agent,
+            Date.now(),
+            state.languages,
+          );
+          state = {
+            ...fresh,
+            // Onboarding continues where it left off; a later switch goes
+            // straight back to quizzing.
+            mode: state.settings.onboarded ? "waiting" : "howItWorks",
+            consented: state.consented,
+            problems: state.problems,
+            message: `now studying ${pack.englishName}`,
+          };
+          if (state.mode === "waiting" && isActive(state)) {
+            state = reduce(state, { type: "tick", now: Date.now() }, pack).state;
+          }
+        } else {
+          setProblem("settings", `could not switch to ${effect.code}`);
         }
       } else if (effect.type === "quit") {
         stop();
@@ -215,7 +271,7 @@ export function run(options: RunOptions): Runner {
   const dispatch = (event: Event) => {
     if (stopped) return;
     if (event.type === "problem") announce(event.key, event.message);
-    const step = reduce(state, event, options.pack);
+    const step = reduce(state, event, pack);
     state = step.state;
     applyEffects(step.effects);
     paint();

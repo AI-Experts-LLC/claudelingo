@@ -713,9 +713,49 @@ async function cmdRun(args) {
     if (args.flags.width !== undefined && width === undefined) {
         process.stderr.write(`claudelingo: ignoring --width ${args.flags.width} (needs a number >= ${MIN_WIDTH})\n`);
     }
+    // Every installed pack, so the picker inside the pane can offer them.
+    const languages = listPacks().flatMap((code) => {
+        try {
+            const installed = loadPack(code);
+            return [{ code, englishName: installed.englishName, words: installed.words.length }];
+        }
+        catch {
+            return [];
+        }
+    });
+    /**
+     * Move to another language: new pack, new deck, and the lock moves with it.
+     *
+     * Held one language at a time, so switching has to release the old lock before
+     * taking the new one, or the pane blocks itself out of its own deck.
+     */
+    let held = acquired;
+    const switchLanguage = (code) => {
+        let next;
+        try {
+            next = loadPack(code);
+        }
+        catch {
+            return null;
+        }
+        const taken = lock.acquire(paths.lock(code));
+        if (!taken.ok)
+            return null;
+        if (held.ok)
+            held.lock.release();
+        held = taken;
+        return {
+            pack: next,
+            progress: loadProgress(code).progress,
+            progressFile: paths.progress(code),
+        };
+    };
     const runner = run({
         pack,
         progress,
+        languages,
+        switchLanguage,
+        saveSettings: (updated) => saveSettings(updated),
         // With no fetcher wired, the pane must not offer `e` at all — otherwise it
         // shows "asking Claude…" against a request that will never be made.
         settings: enrich ? settings : { ...settings, enrich: false },
@@ -731,8 +771,8 @@ async function cmdRun(args) {
         ...(process.env.CLAUDELINGO_FORCE_RENDER ? { forceRender: true } : {}),
     });
     const release = () => {
-        if (acquired.ok)
-            acquired.lock.release();
+        if (held.ok)
+            held.lock.release();
     };
     const onSignal = () => runner.stop();
     process.on("SIGINT", onSignal);

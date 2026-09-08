@@ -1,11 +1,18 @@
 import { applyAnswer, buildCard, isCorrect, makeRng, selectNext, stats } from "../srs.js";
+/** Screens that own the pane until the user has finished with them. */
+export function isOnboarding(state) {
+    return state.mode === "welcome" || state.mode === "pickLanguage" || state.mode === "howItWorks";
+}
 /** Quizzing only happens while the agent is working — unless the user opted in. */
 export function isActive(state) {
     return state.agent === "busy" || state.settings.alwaysOn;
 }
-export function createState(pack, progress, settings, agent, now) {
+export function createState(pack, progress, settings, agent, now, languages = []) {
     return {
-        mode: "waiting",
+        // Someone opening this for the first time is shown what it is and asked what
+        // they want to learn, rather than being handed a flashcard for a language
+        // they never chose.
+        mode: settings.onboarded ? "waiting" : "welcome",
         agent,
         card: null,
         progress,
@@ -22,6 +29,8 @@ export function createState(pack, progress, settings, agent, now) {
         showHelp: false,
         now,
         seq: 0,
+        languages,
+        pickerReturn: null,
         // A pane the user launched themselves has already answered the question.
         consented: !settings.askFirst,
         declined: false,
@@ -118,6 +127,9 @@ export function reduce(state, event, pack) {
     switch (event.type) {
         case "tick": {
             const next = { ...state, now: event.now };
+            // Nothing deals a card out from under the walkthrough.
+            if (isOnboarding(next))
+                return { state: next, effects: [] };
             // A caught-up or waiting screen should notice the moment a card falls due.
             // The agent may already have been working when the pane opened, so the
             // offer has to be reachable from a tick and not only from a transition.
@@ -138,6 +150,8 @@ export function reduce(state, event, pack) {
         case "agent": {
             if (event.state === state.agent)
                 return { state, effects: [] };
+            if (isOnboarding(state))
+                return { state: { ...state, agent: event.state }, effects: [] };
             const next = { ...state, agent: event.state };
             if (event.state === "busy") {
                 // A fresh burst of work is a fresh chance to offer.
@@ -213,6 +227,14 @@ function reduceKey(state, key, pack) {
             return { state: { ...state, mode: "quit" }, effects: [{ type: "quit" }] };
         if (key.ch === "?")
             return { state: { ...state, showHelp: true }, effects: [] };
+        if (key.ch === "l" && state.languages.length > 1) {
+            // Reachable from every screen: changing language is the thing people most
+            // often want and least often find.
+            return {
+                state: { ...state, mode: "pickLanguage", pickerReturn: state.mode },
+                effects: [],
+            };
+        }
         if (key.ch === "p") {
             const settings = { ...state.settings, alwaysOn: !state.settings.alwaysOn };
             const next = {
@@ -241,6 +263,42 @@ function reduceKey(state, key, pack) {
         }
     }
     switch (state.mode) {
+        case "welcome": {
+            if (!CONFIRM_KEYS.has(key.name ?? "") && key.ch !== "y")
+                return { state, effects: [] };
+            return { state: { ...state, mode: "pickLanguage", pickerReturn: null }, effects: [] };
+        }
+        case "pickLanguage": {
+            const index = Number(key.ch) - 1;
+            const chosen = state.languages[index];
+            if (chosen) {
+                const settings = { ...state.settings, lang: chosen.code };
+                // The runner owns the pack and the deck, so it reloads and rebuilds.
+                return {
+                    state: { ...state, settings },
+                    effects: [
+                        { type: "settings", settings },
+                        { type: "language", code: chosen.code },
+                    ],
+                };
+            }
+            // Escape only backs out of a picker opened later; during onboarding there
+            // is nothing behind it yet.
+            if (key.name === "escape" && state.pickerReturn) {
+                return { state: { ...state, mode: state.pickerReturn, pickerReturn: null }, effects: [] };
+            }
+            return { state, effects: [] };
+        }
+        case "howItWorks": {
+            if (!CONFIRM_KEYS.has(key.name ?? ""))
+                return { state, effects: [] };
+            const settings = { ...state.settings, onboarded: true };
+            const ready = { ...state, settings, consented: true };
+            return {
+                state: isActive(ready) ? advance(ready, pack, ready.now) : { ...ready, mode: "waiting" },
+                effects: [{ type: "settings", settings }],
+            };
+        }
         case "waiting":
             return { state, effects: [] };
         case "offer": {

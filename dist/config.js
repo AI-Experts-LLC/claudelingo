@@ -11,6 +11,7 @@ export const DEFAULT_SETTINGS = {
     model: "claude-fable-5-1",
     autoPane: true,
     askFirst: false,
+    onboarded: false,
 };
 /**
  * Root for all state. `CLAUDELINGO_HOME` exists so tests (and anyone running two
