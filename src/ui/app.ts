@@ -9,7 +9,7 @@ import type {
   Word,
 } from "../types.js";
 
-export type Mode = "waiting" | "teach" | "question" | "feedback" | "caughtup" | "quit";
+export type Mode = "waiting" | "offer" | "teach" | "question" | "feedback" | "caughtup" | "quit";
 
 /** Every distinct thing that can go wrong and needs saying. */
 export type ProblemKey =
@@ -77,6 +77,15 @@ export interface AppState {
   now: number;
   /** Bumped on every card so the renderer can tell two identical frames apart. */
   seq: number;
+  /**
+   * The user has said yes to quizzing during this run of the pane.
+   *
+   * Asked once rather than assumed: the pane appears on its own now, and jumping
+   * straight into flashcards the moment someone starts a task is presumptuous.
+   */
+  consented: boolean;
+  /** Said "not now" for the current burst of work. Cleared when the agent next starts. */
+  declined: boolean;
 }
 
 export interface Step {
@@ -114,6 +123,9 @@ export function createState(
     showHelp: false,
     now,
     seq: 0,
+    // A pane the user launched themselves has already answered the question.
+    consented: !settings.askFirst,
+    declined: false,
   };
 }
 
@@ -213,7 +225,16 @@ export function reduce(state: AppState, event: Event, pack: Pack): Step {
     case "tick": {
       const next = { ...state, now: event.now };
       // A caught-up or waiting screen should notice the moment a card falls due.
-      if (isActive(next) && (next.mode === "caughtup" || next.mode === "waiting")) {
+      // The agent may already have been working when the pane opened, so the
+      // offer has to be reachable from a tick and not only from a transition.
+      if (isActive(next) && !next.consented && !next.declined && next.mode === "waiting") {
+        return { state: { ...next, mode: "offer" }, effects: [] };
+      }
+      if (
+        isActive(next) &&
+        next.consented &&
+        (next.mode === "caughtup" || next.mode === "waiting")
+      ) {
         const ready = selectNext(pack, next.progress, next.settings, event.now);
         if (ready) return { state: advance(next, pack, event.now), effects: [] };
         if (next.mode === "waiting") return { state: { ...next, mode: "caughtup" }, effects: [] };
@@ -225,16 +246,24 @@ export function reduce(state: AppState, event: Event, pack: Pack): Step {
       if (event.state === state.agent) return { state, effects: [] };
       const next = { ...state, agent: event.state };
       if (event.state === "busy") {
+        // A fresh burst of work is a fresh chance to offer.
+        const fresh = { ...next, declined: false };
+        // A card can only be on screen once consent was given, so there is
+        // nothing here to protect it from — `p` records consent for exactly that
+        // reason (see the `p` handler).
+        if (!fresh.consented) {
+          return { state: { ...fresh, mode: "offer" }, effects: [] };
+        }
         // Put back exactly the screen the user was on, and only if it was an
         // unanswered card. A graded card resumed as a question would be answered
         // twice, double-counting `seen` and double-promoting the box.
-        if (state.card && state.resumeMode && next.mode === "waiting") {
-          return { state: { ...next, mode: state.resumeMode, resumeMode: null }, effects: [] };
+        if (state.card && state.resumeMode && fresh.mode === "waiting") {
+          return { state: { ...fresh, mode: state.resumeMode, resumeMode: null }, effects: [] };
         }
-        if (next.mode === "waiting" || next.mode === "caughtup") {
-          return { state: advance(next, pack, next.now), effects: [] };
+        if (fresh.mode === "waiting" || fresh.mode === "caughtup") {
+          return { state: advance(fresh, pack, fresh.now), effects: [] };
         }
-        return { state: next, effects: [] };
+        return { state: fresh, effects: [] };
       }
       // Agent went idle: stand down unless the user asked to keep practising.
       if (next.settings.alwaysOn) return { state: next, effects: [] };
@@ -300,6 +329,9 @@ function reduceKey(state: AppState, key: Key, pack: Pack): Step {
       const next: AppState = {
         ...state,
         settings,
+        // Asking to practise IS the answer to "want a quiz?". Without this the
+        // next prompt the user submits replaces their card with the offer.
+        consented: settings.alwaysOn ? true : state.consented,
         message: settings.alwaysOn ? "practice mode on" : "practice mode off",
       };
       if (settings.alwaysOn && next.mode === "waiting") {
@@ -325,6 +357,19 @@ function reduceKey(state: AppState, key: Key, pack: Pack): Step {
   switch (state.mode) {
     case "waiting":
       return { state, effects: [] };
+
+    case "offer": {
+      const yes = key.ch === "y" || key.name === "enter" || key.name === "space";
+      const no = key.ch === "n" || key.name === "escape";
+      if (yes) {
+        // Said once, remembered for the rest of this pane's life.
+        return { state: advance({ ...state, consented: true }, pack, state.now), effects: [] };
+      }
+      if (no) {
+        return { state: { ...state, mode: "waiting", declined: true }, effects: [] };
+      }
+      return { state, effects: [] };
+    }
 
     case "caughtup":
       return { state, effects: [] };

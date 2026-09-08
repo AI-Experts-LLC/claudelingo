@@ -40,33 +40,73 @@ export interface AskOptions {
   run?: (args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>;
 }
 
+/**
+ * Most a reply may occupy in memory.
+ *
+ * A hook is two lines and a pack a few hundred kilobytes; anything past this is a
+ * runaway, and accumulating it unbounded lets a misbehaving child abort the
+ * process with a V8 heap failure that no `catch` can see.
+ */
+const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+
 function runClaude(
   args: string[],
   timeoutMs: number,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn("claude", args, { stdio: ["ignore", "pipe", "pipe"] });
+    // `detached` puts the child in its own process group so the whole tree can be
+    // signalled. Killing only the direct child leaves grandchildren holding the
+    // stdio pipes open, so `close` never fires and this process cannot exit —
+    // and Claude Code does spawn subprocesses.
+    const child = spawn("claude", args, { stdio: ["ignore", "pipe", "pipe"], detached: true });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+
+    const stop = () => {
+      try {
+        process.kill(-(child.pid as number), "SIGKILL");
+      } catch {
+        // Already gone, or never started.
+      }
+      // Streams a grandchild may still hold; without this the loop stays alive.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    };
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+
     const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new EnrichError(`no reply within ${Math.round(timeoutMs / 1000)}s`));
+      stop();
+      finish(() => reject(new EnrichError(`no reply within ${Math.round(timeoutMs / 1000)}s`)));
     }, timeoutMs);
 
-    child.stdout.on("data", (d) => (stdout += d.toString()));
-    child.stderr.on("data", (d) => (stderr += d.toString()));
+    const collect = (into: "out" | "err") => (chunk: Buffer) => {
+      if (into === "out") stdout += chunk.toString();
+      else stderr += chunk.toString();
+      if (stdout.length + stderr.length > MAX_OUTPUT_BYTES) {
+        stop();
+        finish(() => reject(new EnrichError("the reply was too large to read")));
+      }
+    };
+
+    child.stdout.on("data", collect("out"));
+    child.stderr.on("data", collect("err"));
     child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(
-        (error as NodeJS.ErrnoException).code === "ENOENT"
-          ? new EnrichError("the `claude` command is not on your PATH")
-          : new EnrichError(error.message),
+      finish(() =>
+        reject(
+          (error as NodeJS.ErrnoException).code === "ENOENT"
+            ? new EnrichError("the `claude` command is not on your PATH")
+            : new EnrichError(error.message),
+        ),
       );
     });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ code: code ?? 0, stdout, stderr });
-    });
+    child.on("close", (code) => finish(() => resolve({ code: code ?? 0, stdout, stderr })));
   });
 }
 
@@ -82,9 +122,12 @@ export async function ask(prompt: string, options: AskOptions = {}): Promise<str
   const base = ["-p", "--output-format", "json", "--max-turns", "1"];
   if (options.system) base.push("--append-system-prompt", options.system);
 
+  const deadline = Date.now() + timeoutMs;
   const attempt = async (model?: string) => {
     const args = model ? [...base, "--model", model, prompt] : [...base, prompt];
-    const { code, stdout, stderr } = await run(args, timeoutMs);
+    // One budget across both attempts, so a retry cannot double the wait.
+    const remaining = Math.max(1000, deadline - Date.now());
+    const { code, stdout, stderr } = await run(args, remaining);
 
     let parsed: PrintResult;
     try {
@@ -109,8 +152,14 @@ export async function ask(prompt: string, options: AskOptions = {}): Promise<str
     return await attempt(model);
   } catch (error) {
     // The preferred model may not exist in this Claude Code build. The session's
-    // own model is a better answer than no answer.
-    if (error instanceof EnrichError && /model/i.test(error.message)) return attempt();
+    // own model is a better answer than no answer — but only retry for that, not
+    // for any failure whose text happens to mention a model.
+    const unavailable =
+      error instanceof EnrichError &&
+      /(issue with the selected model|model catalog|unrecognized_model|unknown model|does not exist)/i.test(
+        error.message,
+      );
+    if (unavailable) return attempt();
     throw error;
   }
 }
@@ -259,8 +308,11 @@ function probeClaude(): boolean {
   return dirs.some((dir) => {
     for (const name of ["claude", "claude.cmd", "claude.exe"]) {
       try {
-        fs.accessSync(path.join(dir, name), fs.constants.X_OK);
-        return true;
+        const candidate = path.join(dir, name);
+        fs.accessSync(candidate, fs.constants.X_OK);
+        // A *directory* named `claude` is executable-by-permission but is not the
+        // command; offering `e` on that basis fails on every press.
+        if (fs.statSync(candidate).isFile()) return true;
       } catch {
         // Keep looking.
       }

@@ -29,12 +29,12 @@ const BIN = "claudelingo";
 
 const USAGE = `claudelingo — learn a language while your coding agent works
 
-  claudelingo [options]            open the companion pane
+  claudelingo start [args]         start Claude Code with the pane beside it
+  claudelingo [options]            open the companion pane on its own
   claudelingo init [--project]     install Claude Code + Codex integrations
   claudelingo uninit [--project]   remove them again
   claudelingo hook <event>         report agent state (called by hooks)
   claudelingo notify [json]        Codex notify target
-  claudelingo claude [args]        start Claude Code with the pane beside it
   claudelingo status               show the current agent state
   claudelingo statusline           the line Claude Code draws (called by Claude Code)
   claudelingo stats                show your progress
@@ -53,6 +53,8 @@ Options
   --overwrite        replace an existing generated pack
   --no-statusline    do not touch Claude Code's status line (for: init)
   --no-auto-pane     do not open the pane automatically (for: init)
+  --auto-pane        open it automatically again (for: init)
+  --ask              ask before starting a quiz (set for panes that self-open)
   --source <name>    claude | codex | manual (for: hook)
   -h, --help         this message
 `;
@@ -88,7 +90,7 @@ export function parseArgs(argv: string[]): Args {
 
   const known = new Set([
     "init", "uninit", "hook", "notify", "status", "statusline", "session-start", "stats",
-    "langs", "pack", "reset", "claude", "help",
+    "langs", "pack", "reset", "claude", "start", "help",
   ]);
   const first = positional[0];
   const command = first && known.has(first) ? first : "run";
@@ -120,6 +122,8 @@ function settingsFrom(flags: Args["flags"]): Resolved {
   if (typeof flags.model === "string" && flags.model) settings.model = flags.model;
   if (flags["auto-pane"] === false) settings.autoPane = false;
   if (flags["auto-pane"] === true) settings.autoPane = true;
+  if (flags.ask === true) settings.askFirst = true;
+  if (flags.ask === false) settings.askFirst = false;
   return loaded.problem ? { settings, problem: loaded.problem } : { settings };
 }
 
@@ -402,12 +406,15 @@ async function cmdSessionStart(args: Args): Promise<void> {
     if (!process.env.TMUX) return;
 
     // A pane already studying this language holds the lock. Opening a second one
-    // would just produce a pane that exits immediately with a refusal.
-    if (lock.holderPid(paths.lock(settings.lang)) !== null) return;
+    // would just produce a pane that exits immediately with a refusal. Checked for
+    // liveness: a lock left by a killed pane would otherwise disable this for good.
+    if (lock.isHeld(paths.lock(settings.lang))) return;
 
     const entry = process.argv[1];
     if (!entry) return;
-    const pane = [process.execPath, fs.realpathSync(entry), "--lang", settings.lang];
+    // `--ask`: this pane appeared without being asked for, so it checks before
+    // it starts quizzing.
+    const pane = [process.execPath, fs.realpathSync(entry), "--lang", settings.lang, "--ask"];
     const passEnv: Record<string, string> = {};
     if (process.env.CLAUDELINGO_HOME) passEnv.CLAUDELINGO_HOME = process.env.CLAUDELINGO_HOME;
 
@@ -426,8 +433,8 @@ async function cmdLaunch(args: Args, agentArgs: string[]): Promise<void> {
   // the tmux server's PATH, which may well not include wherever claudelingo lives.
   const entry = process.argv[1];
   const pane = entry
-    ? [process.execPath, fs.realpathSync(entry), "--lang", settings.lang]
-    : [BIN, "--lang", settings.lang];
+    ? [process.execPath, fs.realpathSync(entry), "--lang", settings.lang, "--ask"]
+    : [BIN, "--lang", settings.lang, "--ask"];
 
   const passEnv: Record<string, string> = {};
   if (process.env.CLAUDELINGO_HOME) passEnv.CLAUDELINGO_HOME = process.env.CLAUDELINGO_HOME;
@@ -691,7 +698,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   // Claude Code. Parsing first would let `claudelingo claude --help` print OUR
   // usage and never start the agent; splitting on any `claude` token would
   // truncate `claudelingo hook Stop --source claude`.
-  const split = subcommandIndex(argv, "claude");
+  const split = ["claude", "start"]
+    .map((name) => subcommandIndex(argv, name))
+    .find((i) => i !== -1) ?? -1;
   const own = split === -1 ? argv : argv.slice(0, split + 1);
   const forwarded = split === -1 ? [] : argv.slice(split + 1);
   const args = parseArgs(own);
@@ -707,6 +716,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     case "status": return cmdStatus();
     case "statusline": return cmdStatusline(args);
     case "session-start": return cmdSessionStart(args);
+    // `start` is the name to remember; `claude` is kept because the flag
+    // pass-through reads naturally after it.
+    case "start":
     case "claude": return cmdLaunch(args, forwarded);
     case "stats": return cmdStats(args);
     case "langs": return cmdLangs();

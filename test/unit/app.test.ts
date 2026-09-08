@@ -540,3 +540,126 @@ describe("surfacing failures", () => {
     expect(after.problems.credentials).toContain("no Anthropic credential");
   });
 });
+
+describe("asking before it starts quizzing", () => {
+  const asking = () => start({ settings: { askFirst: true } });
+
+  it("offers rather than dealing a card unannounced", () => {
+    // The pane opens by itself now; jumping straight into flashcards the moment
+    // someone starts a task is presumptuous.
+    const { state } = feed(asking(), [{ type: "agent", state: "busy" }]);
+    expect(state.mode).toBe("offer");
+    expect(state.card).toBeNull();
+    expect(state.progress.items).toEqual({});
+  });
+
+  it("offers from a tick too, for a pane opened while the agent was already busy", () => {
+    const already = createState(pack, testProgress(), testSettings({ askFirst: true }), "busy", T0);
+    const { state } = feed(already, [{ type: "tick", now: T0 + 1000 }]);
+    expect(state.mode).toBe("offer");
+  });
+
+  it("starts on y, and never asks again", () => {
+    const offered = feed(asking(), [{ type: "agent", state: "busy" }]).state;
+    const started = feed(offered, [press("y")]).state;
+    expect(started.mode).toBe("teach");
+    expect(started.consented).toBe(true);
+
+    // A later burst of work goes straight to a card.
+    const later = feed(started, [
+      { type: "agent", state: "idle" },
+      { type: "agent", state: "busy" },
+    ]).state;
+    expect(later.mode).not.toBe("offer");
+  });
+
+  it("accepts enter and space as yes, since they are what the rest of the pane uses", () => {
+    for (const key of [named("enter"), named("space")]) {
+      const offered = feed(asking(), [{ type: "agent", state: "busy" }]).state;
+      expect(feed(offered, [key]).state.mode).toBe("teach");
+    }
+  });
+
+  it("backs off on n, and asks again next time the agent starts", () => {
+    const offered = feed(asking(), [{ type: "agent", state: "busy" }]).state;
+    const declined = feed(offered, [press("n")]).state;
+    expect(declined.mode).toBe("waiting");
+    expect(declined.consented).toBe(false);
+
+    // Still declined for THIS burst: a tick must not sneak a card in.
+    const ticked = feed(declined, [{ type: "tick", now: T0 + 60_000 }]).state;
+    expect(ticked.mode).toBe("waiting");
+
+    // The next burst is a fresh chance to ask.
+    const again = feed(ticked, [
+      { type: "agent", state: "idle" },
+      { type: "agent", state: "busy" },
+    ]).state;
+    expect(again.mode).toBe("offer");
+  });
+
+  it("ignores keys that mean neither yes nor no", () => {
+    const offered = feed(asking(), [{ type: "agent", state: "busy" }]).state;
+    expect(feed(offered, [press("k")]).state.mode).toBe("offer");
+  });
+
+  it("still quits from the offer", () => {
+    const offered = feed(asking(), [{ type: "agent", state: "busy" }]).state;
+    expect(feed(offered, [press("q")]).state.mode).toBe("quit");
+  });
+
+  it("does not ask when the user opened the pane themselves", () => {
+    // `--no-ask` is for a pane someone started deliberately: they have already
+    // answered the question by running it.
+    const { state } = feed(start({ settings: { askFirst: false } }), [
+      { type: "agent", state: "busy" },
+    ]);
+    expect(state.mode).toBe("teach");
+  });
+});
+
+describe("consent is not lost once given", () => {
+  const asking = () => start({ settings: { askFirst: true } });
+
+  it("treats pressing p as the answer to the question", () => {
+    // The pane opens idle and invites "press p to practise". Without this, the
+    // first prompt the user submits replaces the card they are working on.
+    const idlePane = asking();
+    const practising = feed(idlePane, [press("p")]).state;
+    expect(practising.consented).toBe(true);
+
+    const working = feed(practising, [{ type: "agent", state: "busy" }]).state;
+    expect(working.mode).not.toBe("offer");
+  });
+
+  it("does not throw away a half-typed answer when the next prompt arrives", () => {
+    // The failure this guards: pressing p, starting to type, then submitting a
+    // prompt to Claude — and the card being replaced by "Want a quiz?".
+    const recall: Progress = {
+      ...testProgress(),
+      items: {
+        "xx:1": {
+          id: "xx:1", stage: "review", box: 5, step: 0,
+          due: T0 - MINUTE, lastSeen: T0, seen: 9, correct: 9, lapses: 0,
+        },
+      },
+    };
+    let state = createState(pack, recall, testSettings({ askFirst: true }), "idle", T0);
+    state = feed(state, [press("p")]).state;
+    state = feed(state, [press("t"), press("i"), press("e")]).state;
+    expect(state.input).toBe("tie");
+
+    // A prompt is submitted while they are mid-answer.
+    const after = feed(state, [
+      { type: "agent", state: "idle" },
+      { type: "agent", state: "busy" },
+    ]).state;
+    expect(after.mode).toBe("question");
+    expect(after.input).toBe("tie");
+  });
+
+  it("still offers when there is no card to protect", () => {
+    const offered = feed(asking(), [{ type: "agent", state: "busy" }]).state;
+    expect(offered.mode).toBe("offer");
+  });
+});

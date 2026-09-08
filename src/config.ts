@@ -12,6 +12,7 @@ export const DEFAULT_SETTINGS: Settings = {
   enrich: true,
   model: "claude-fable-5-1",
   autoPane: true,
+  askFirst: false,
 };
 
 /**

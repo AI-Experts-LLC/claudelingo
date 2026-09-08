@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PLAIN, box, renderFrame, visibleWidth, wrap } from "../../src/ui/render.js";
 import { COLOR } from "../../src/ui/render.js";
 import { createState, reduce } from "../../src/ui/app.js";
+import { MASCOT_HEIGHT, MASCOT_WIDTH, owl } from "../../src/ui/mascot.js";
 import type { AppState, Event } from "../../src/ui/app.js";
 import type { Progress } from "../../src/types.js";
 import { MINUTE, T0, testPack, testProgress, testSettings } from "../helpers.js";
@@ -269,5 +270,121 @@ describe("truncation of wide titles", () => {
     // one column adrift.
     const lines = box(["x"], { width: 20, title: "日".repeat(30), footer: "f", theme: PLAIN });
     for (const line of lines) expect(visibleWidth(line)).toBe(20);
+  });
+});
+
+describe("the owl", () => {
+  it("appears beside the text without moving it as the mood changes", () => {
+    // Fixed gutter: the words must not shift about as the expression changes.
+    const columnOf = (state: AppState) => {
+      const line = frame(state, 60).find((l) => /Standing by|new word|correct|Want a quiz/.test(l));
+      return line?.indexOf(line.trim().split(/\s{2,}/).at(-1) as string);
+    };
+    const waiting = idle();
+    const teaching = busy();
+    expect(columnOf(waiting)).toBe(columnOf(teaching));
+  });
+
+  it("sleeps while the agent is idle and watches while a card is up", () => {
+    expect(frame(idle(), 60).join("\n")).toContain("(-.-)");
+    expect(frame(busy(), 60).join("\n")).toContain("(o.o)");
+  });
+
+  it("reacts to the answer", () => {
+    const learned: Progress = {
+      ...testProgress(),
+      items: {
+        "xx:1": {
+          id: "xx:1", stage: "learning", box: 1, step: 0,
+          due: T0 - MINUTE, lastSeen: T0, seen: 1, correct: 1, lapses: 0,
+        },
+      },
+    };
+    let state = drive(createState(pack, learned, testSettings(), "idle", T0), [
+      { type: "agent", state: "busy" },
+    ]);
+    const right = String((state.card?.answerIndex ?? 0) + 1);
+    const wrong = String((((state.card?.answerIndex ?? 0) + 1) % 4) + 1);
+
+    expect(frame(drive(state, [{ type: "key", key: { ch: right } }]), 60).join("\n")).toContain("(^.^)");
+    expect(frame(drive(state, [{ type: "key", key: { ch: wrong } }]), 60).join("\n")).toContain("(o.O)");
+  });
+
+  it("steps aside on a pane too narrow to hold it", () => {
+    // The words matter more than the bird.
+    const narrow = frame(busy(), 28).join("\n");
+    expect(narrow).not.toContain("(o.o)");
+    expect(narrow).toContain("new word");
+  });
+
+  it("never breaks the panel, at any width or mood", () => {
+    const offering = drive(
+      createState(pack, testProgress(), testSettings({ askFirst: true }), "idle", T0),
+      [{ type: "agent", state: "busy" }],
+    );
+    for (const state of [idle(), busy(), offering]) {
+      for (const width of [24, 30, 40, 56, 80, 120]) {
+        for (const line of frame(state, width)) expect(visibleWidth(line)).toBe(width);
+      }
+    }
+  });
+});
+
+describe("the offer screen", () => {
+  it("says what is happening and what the keys do", () => {
+    const state = drive(
+      createState(pack, testProgress(), testSettings({ askFirst: true }), "idle", T0),
+      [{ type: "agent", state: "busy" }],
+    );
+    const text = frame(state, 60).join("\n");
+    expect(text).toContain("Claude is working");
+    expect(text).toContain("Want a quiz?");
+    expect(text).toContain("yes, go on");
+    expect(text).toContain("not now");
+    expect(text).toContain("(o.-)");
+  });
+
+  it("says how much is waiting", () => {
+    const due: Progress = {
+      ...testProgress(),
+      items: {
+        "xx:1": {
+          id: "xx:1", stage: "review", box: 2, step: 0,
+          due: T0 - MINUTE, lastSeen: T0, seen: 4, correct: 4, lapses: 0,
+        },
+        "xx:2": {
+          id: "xx:2", stage: "review", box: 2, step: 0,
+          due: T0 - MINUTE, lastSeen: T0, seen: 4, correct: 4, lapses: 0,
+        },
+      },
+    };
+    const state = drive(
+      createState(pack, due, testSettings({ askFirst: true }), "idle", T0),
+      [{ type: "agent", state: "busy" }],
+    );
+    expect(frame(state, 60).join("\n")).toContain("2 cards ready");
+  });
+});
+
+describe("the mascot's shape", () => {
+  it("gives every mood the same footprint", () => {
+    // The gutter is fixed so the text beside it never shifts; that only holds if
+    // every line of every mood is padded to the same width.
+    for (const mood of ["asleep", "watching", "asking", "happy", "oops", "proud"] as const) {
+      const art = owl(mood);
+      expect(art, mood).toHaveLength(MASCOT_HEIGHT);
+      for (const line of art) {
+        expect([...line].length, `${mood}: ${JSON.stringify(line)}`).toBe(MASCOT_WIDTH);
+      }
+    }
+  });
+
+  it("is plain ASCII, so it survives a terminal without unicode", () => {
+    for (const mood of ["asleep", "watching", "asking", "happy", "oops", "proud"] as const) {
+      for (const line of owl(mood)) {
+        // eslint-disable-next-line no-control-regex
+        expect(line, mood).toMatch(/^[\x20-\x7e]*$/);
+      }
+    }
   });
 });

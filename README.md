@@ -53,14 +53,37 @@ optional and only used to place the pane beside you.
 
 ## What you get, without doing anything else
 
-Open Claude Code. That is the whole workflow.
+One command:
 
-- **Words appear under your prompt**, on Claude Code's status line, while it works.
-- **The quiz pane opens itself** beside your session when you are in tmux.
-- Both go quiet the moment Claude needs you back.
+```bash
+claudelingo start
+```
 
-`claudelingo init --no-statusline` or `--no-auto-pane` if you would rather have
-only one of them, and `claudelingo uninit` takes everything back out.
+Claude Code opens with the pane already beside it. Or just run `claude` as usual —
+the pane opens itself, because `init` wires that up.
+
+Then, when Claude starts working on something, the pane asks rather than assuming:
+
+```
+┌─ claudelingo · Spanish   ● agent working ──────────┐
+│                                                    │
+│   ,___,  Claude is working.                        │
+│   (o.-)  Want a quiz?                              │
+│   /)_)   3 cards ready                             │
+│                                                    │
+│  y  yes, go on                                     │
+│  n  not now                                        │
+│                                                    │
+└─ y yes / n not now / q quit ───────────────────────┘
+```
+
+Say yes once and it stops asking for the rest of that pane's life. Say no and it
+asks again next time Claude picks something up. A pane you opened yourself never
+asks — running it was the answer.
+
+The owl reacts as you go: asleep while Claude is idle, watching while a card is
+up, pleased when you get one right, and a bit startled when you do not. It steps
+aside entirely on a pane too narrow to hold it.
 
 ## Two surfaces
 
@@ -148,14 +171,12 @@ box, and works on a word you have not been taught yet. While you are typing an a
 
 Press `e` on any card to ask Claude for a memory hook — a cognate, an etymology, or
 a vivid image — plus a one-line example sentence. Answers are cached on disk, so a
-word is only ever paid for once. This uses **Claude Fable 5.1** (`claude-fable-5-1`)
-at low effort, with a server-side fallback so a policy refusal is rescued inside the
-same call rather than surfacing as a blank.
+word is only ever paid for once.
 
-It needs a credential — `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or an
-`ant auth login` profile (all three are detected). Without one the pane says so once,
-on startup, and does not offer `e` at all, instead of producing an auth error on every
-card; everything else still works. Run with `--no-enrich` to turn it off entirely.
+This runs through the `claude` command in print mode, on the Claude Code login you
+already have. There is no API key to set up and no second bill. If `claude` is not
+on your PATH the pane says so once, on startup, and does not offer `e` at all;
+everything else still works. `--no-enrich` turns it off entirely.
 
 ## Other languages
 
@@ -196,8 +217,8 @@ distinction in the gloss itself (`"to be (permanent)"` vs `"to be (state, place)
 ## Commands
 
 ```
-claudelingo                      open the companion pane
-claudelingo claude [args]        start Claude Code with the pane beside it
+claudelingo start [args]         start Claude Code with the pane beside it
+claudelingo                      open the companion pane on its own
 claudelingo init [--project]     install the Claude Code + Codex integrations
 claudelingo uninit [--project]   remove them again
 claudelingo hook <event>         report agent state (called by the hooks)
@@ -210,8 +231,9 @@ claudelingo pack generate        build a pack for another language
 claudelingo reset --yes          erase progress for the current language
 ```
 
-Options: `--lang <code>`, `--always-on`, `--no-enrich`, `--no-color`,
-`--width <n>` (20–1000; anything else is ignored with a warning), `--model <id>`.
+Options: `--lang <code>`, `--always-on`, `--ask` / no `--ask`, `--no-enrich`,
+`--no-color`, `--width <n>` (20–1000; anything else is ignored with a warning),
+`--model <id>`. For `init`: `--no-statusline`, `--no-auto-pane` / `--auto-pane`.
 
 `init` exits non-zero if either integration fails to install, so a pane that will
 never wake up is not reported as a success.

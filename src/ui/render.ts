@@ -1,6 +1,7 @@
 import { MAX_BOX, cardKindForBox } from "../srs.js";
 import type { Pack } from "../types.js";
 import { ANSI_PATTERN, ansi } from "./ansi.js";
+import { MASCOT_WIDTH, type Mood, owl, remark } from "./mascot.js";
 import { sliceToWidth, stringWidth } from "./width.js";
 import { type AppState, isActive, summary } from "./app.js";
 
@@ -155,12 +156,46 @@ const HELP = [
   "q        quit      ?  this help",
 ];
 
+function moodFor(state: AppState): Mood {
+  if (state.mode === "offer") return "asking";
+  if (state.mode === "feedback") {
+    if (!state.lastCorrect) return "oops";
+    return state.progress.streak >= 5 ? "proud" : "happy";
+  }
+  if (state.mode === "caughtup") return "proud";
+  if (state.mode === "waiting") return "asleep";
+  return "watching";
+}
+
 export function renderFrame(state: AppState, pack: Pack, width: number, theme: Theme): string[] {
   const inner = Math.max(10, width - 2);
   const pad = "  ";
   const body = Math.max(8, inner - pad.length * 2);
   const content: string[] = [];
   const push = (line = "") => content.push(line ? pad + line : "");
+
+  /**
+   * Draw the owl in a left gutter beside up to three lines of text.
+   *
+   * The gutter is a fixed width whatever the mood, so the text beside it does not
+   * jump about as the expression changes.
+   */
+  const withOwl = (mood: Mood, lines: string[]) => {
+    const art = owl(mood);
+    const gutter = MASCOT_WIDTH + 2;
+    // Too narrow for a companion: the words matter more than the bird, and eight
+    // columns of owl in a thirty-column pane leaves nothing for the vocabulary.
+    if (body < gutter + 18) {
+      for (const line of lines) push(line);
+      return;
+    }
+    const rows = Math.max(art.length, lines.length);
+    for (let i = 0; i < rows; i++) {
+      const bird = art[i] ?? " ".repeat(MASCOT_WIDTH);
+      const text = lines[i] ?? "";
+      push(`${theme.dim}${bird}${theme.reset}  ${text}`);
+    }
+  };
 
   if (state.showHelp) {
     push(`${theme.bold}keys${theme.reset}`);
@@ -172,10 +207,36 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
     switch (state.mode) {
       case "waiting": {
         push();
-        push(`${theme.dim}Standing by — you have the floor.${theme.reset}`);
+        // Two different situations wear this screen: nothing is happening, or
+        // the user said "not now" while Claude is still working.
+        const declinedWhileBusy = state.declined && state.agent === "busy";
+        withOwl("asleep", [
+          declinedWhileBusy
+            ? `${theme.dim}Not now, then.${theme.reset}`
+            : `${theme.dim}Standing by — you have the floor.${theme.reset}`,
+          "",
+          declinedWhileBusy
+            ? `${theme.dim}I'll ask again next time you start${theme.reset}`
+            : `${theme.dim}Press p to practise anyway.${theme.reset}`,
+          declinedWhileBusy ? `${theme.dim}something. Or press p now.${theme.reset}` : "",
+        ]);
         push();
-        push(`${theme.dim}Cards resume the moment Claude or Codex${theme.reset}`);
-        push(`${theme.dim}starts working. Press p to practise now.${theme.reset}`);
+        break;
+      }
+
+      case "offer": {
+        const s = summary(pack, state);
+        push();
+        withOwl("asking", [
+          `${theme.bold}Claude is working.${theme.reset}`,
+          `${theme.cyan}Want a quiz?${theme.reset}`,
+          s.due > 0
+            ? `${theme.dim}${s.due} card${s.due === 1 ? "" : "s"} ready${theme.reset}`
+            : `${theme.dim}a new word is ready${theme.reset}`,
+        ]);
+        push();
+        push(`${theme.cyan}y${theme.reset}  yes, go on`);
+        push(`${theme.dim}n  not now${theme.reset}`);
         push();
         break;
       }
@@ -186,11 +247,11 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
           .map((i) => i.due)
           .sort((a, b) => a - b)[0];
         push();
-        push(`${theme.green}All caught up.${theme.reset}`);
-        push();
-        push(
-          `${theme.dim}${s.learned} of ${s.total} words started, ${s.mastered} mastered.${theme.reset}`,
-        );
+        withOwl("proud", [
+          `${theme.green}All caught up.${theme.reset}`,
+          "",
+          `${theme.dim}${s.learned} of ${s.total} started, ${s.mastered} mastered.${theme.reset}`,
+        ]);
         if (next !== undefined) {
           push(`${theme.dim}Next review in ${relative(next - state.now)}.${theme.reset}`);
         }
@@ -201,13 +262,14 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
       case "teach": {
         const card = state.card;
         if (!card) break;
-        push(`${theme.dim}new word${theme.reset}`);
-        push();
-        push(
+        // The note rides in the same block, so it lines up with the text column
+        // rather than starting back at the border.
+        withOwl("watching", [
+          `${theme.dim}new word${theme.reset}`,
           `${theme.bold}${theme.cyan}${card.word.term}${theme.reset}   ${theme.dim}${card.word.pos}${theme.reset}`,
-        );
-        push(`${theme.bold}${card.word.gloss}${theme.reset}`);
-        if (card.word.note) push(`${theme.dim}${card.word.note}${theme.reset}`);
+          `${theme.bold}${card.word.gloss}${theme.reset}`,
+          ...(card.word.note ? [`${theme.dim}${card.word.note}${theme.reset}`] : []),
+        ]);
         push();
         push(`${theme.dim}#${card.word.rank} most common word in ${pack.englishName}${theme.reset}`);
         if (state.enrichPending) push(`${theme.dim}asking Claude for a memory hook…${theme.reset}`);
@@ -257,19 +319,19 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
       case "feedback": {
         const card = state.card;
         if (!card) break;
+        const mood = moodFor(state);
         const said = state.lastAnswer
           ? `${theme.dim} — you said "${state.lastAnswer}"${theme.reset}`
           : "";
-        push(
+        const cheer = remark(mood, state.progress.streak);
+        withOwl(mood, [
           state.lastCorrect
-            ? `${theme.green}correct${theme.reset}`
+            ? `${theme.green}correct${theme.reset}${cheer ? `${theme.dim}  ${cheer}${theme.reset}` : ""}`
             : `${theme.red}not quite${theme.reset}${said}`,
-        );
-        push();
-        push(
+          "",
           `${theme.bold}${theme.cyan}${card.word.term}${theme.reset}${DOT}${theme.bold}${card.word.gloss}${theme.reset}`,
-        );
-        if (card.word.note) push(`${theme.dim}${card.word.note}${theme.reset}`);
+          ...(card.word.note ? [`${theme.dim}${card.word.note}${theme.reset}`] : []),
+        ]);
         const item = state.progress.items[card.word.id];
         if (item) {
           const nextKind = KIND_LABEL[cardKindForBox(item.box)];
@@ -316,6 +378,7 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
 
   let footer: string;
   if (state.showHelp) footer = "any key to close";
+  else if (state.mode === "offer") footer = "y yes / n not now / q quit";
   else if (!isActive(state)) footer = "p practise / q quit / ? help";
   else if (state.mode === "teach") footer = "space got it / s skip / e hook / q quit";
   else if (state.mode === "feedback") footer = "space next / e hook / q quit";
