@@ -53,14 +53,37 @@ optional and only used to place the pane beside you.
 
 ## What you get, without doing anything else
 
-Open Claude Code. That is the whole workflow.
+One command:
 
-- **Words appear under your prompt**, on Claude Code's status line, while it works.
-- **The quiz pane opens itself** beside your session when you are in tmux.
-- Both go quiet the moment Claude needs you back.
+```bash
+claudelingo start
+```
 
-`claudelingo init --no-statusline` or `--no-auto-pane` if you would rather have
-only one of them, and `claudelingo uninit` takes everything back out.
+Claude Code opens with the pane already beside it. Or just run `claude` as usual —
+the pane opens itself, because `init` wires that up.
+
+Then, when Claude starts working on something, the pane asks rather than assuming:
+
+```
+┌─ claudelingo · Spanish   ● agent working ──────────┐
+│                                                    │
+│   ,___,  Claude is working.                        │
+│   (o.-)  Want a quiz?                              │
+│   /)_)   3 cards ready                             │
+│                                                    │
+│  y  yes, go on                                     │
+│  n  not now                                        │
+│                                                    │
+└─ y yes / n not now / q quit ───────────────────────┘
+```
+
+Say yes once and it stops asking for the rest of that pane's life. Say no and it
+asks again next time Claude picks something up. A pane you opened yourself never
+asks — running it was the answer.
+
+The owl reacts as you go: asleep while Claude is idle, watching while a card is
+up, pleased when you get one right, and a bit startled when you do not. It steps
+aside entirely on a pane too narrow to hold it.
 
 ## Two surfaces
 

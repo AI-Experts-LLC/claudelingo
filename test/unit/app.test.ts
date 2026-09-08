@@ -540,3 +540,80 @@ describe("surfacing failures", () => {
     expect(after.problems.credentials).toContain("no Anthropic credential");
   });
 });
+
+describe("asking before it starts quizzing", () => {
+  const asking = () => start({ settings: { askFirst: true } });
+
+  it("offers rather than dealing a card unannounced", () => {
+    // The pane opens by itself now; jumping straight into flashcards the moment
+    // someone starts a task is presumptuous.
+    const { state } = feed(asking(), [{ type: "agent", state: "busy" }]);
+    expect(state.mode).toBe("offer");
+    expect(state.card).toBeNull();
+    expect(state.progress.items).toEqual({});
+  });
+
+  it("offers from a tick too, for a pane opened while the agent was already busy", () => {
+    const already = createState(pack, testProgress(), testSettings({ askFirst: true }), "busy", T0);
+    const { state } = feed(already, [{ type: "tick", now: T0 + 1000 }]);
+    expect(state.mode).toBe("offer");
+  });
+
+  it("starts on y, and never asks again", () => {
+    const offered = feed(asking(), [{ type: "agent", state: "busy" }]).state;
+    const started = feed(offered, [press("y")]).state;
+    expect(started.mode).toBe("teach");
+    expect(started.consented).toBe(true);
+
+    // A later burst of work goes straight to a card.
+    const later = feed(started, [
+      { type: "agent", state: "idle" },
+      { type: "agent", state: "busy" },
+    ]).state;
+    expect(later.mode).not.toBe("offer");
+  });
+
+  it("accepts enter and space as yes, since they are what the rest of the pane uses", () => {
+    for (const key of [named("enter"), named("space")]) {
+      const offered = feed(asking(), [{ type: "agent", state: "busy" }]).state;
+      expect(feed(offered, [key]).state.mode).toBe("teach");
+    }
+  });
+
+  it("backs off on n, and asks again next time the agent starts", () => {
+    const offered = feed(asking(), [{ type: "agent", state: "busy" }]).state;
+    const declined = feed(offered, [press("n")]).state;
+    expect(declined.mode).toBe("waiting");
+    expect(declined.consented).toBe(false);
+
+    // Still declined for THIS burst: a tick must not sneak a card in.
+    const ticked = feed(declined, [{ type: "tick", now: T0 + 60_000 }]).state;
+    expect(ticked.mode).toBe("waiting");
+
+    // The next burst is a fresh chance to ask.
+    const again = feed(ticked, [
+      { type: "agent", state: "idle" },
+      { type: "agent", state: "busy" },
+    ]).state;
+    expect(again.mode).toBe("offer");
+  });
+
+  it("ignores keys that mean neither yes nor no", () => {
+    const offered = feed(asking(), [{ type: "agent", state: "busy" }]).state;
+    expect(feed(offered, [press("k")]).state.mode).toBe("offer");
+  });
+
+  it("still quits from the offer", () => {
+    const offered = feed(asking(), [{ type: "agent", state: "busy" }]).state;
+    expect(feed(offered, [press("q")]).state.mode).toBe("quit");
+  });
+
+  it("does not ask when the user opened the pane themselves", () => {
+    // `--no-ask` is for a pane someone started deliberately: they have already
+    // answered the question by running it.
+    const { state } = feed(start({ settings: { askFirst: false } }), [
+      { type: "agent", state: "busy" },
+    ]);
+    expect(state.mode).toBe("teach");
+  });
+});

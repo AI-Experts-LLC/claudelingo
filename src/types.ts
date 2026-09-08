@@ -111,4 +111,12 @@ export interface Settings {
   model: string;
   /** Open the quiz pane automatically when a Claude Code session starts. */
   autoPane: boolean;
+  /**
+   * Ask before starting a quiz.
+   *
+   * Off by default: someone who runs `claudelingo` has already answered the
+   * question. The panes that open on their own — the SessionStart hook and
+   * `claudelingo start` — pass `--ask`, because those appear unbidden.
+   */
+  askFirst: boolean;
 }
