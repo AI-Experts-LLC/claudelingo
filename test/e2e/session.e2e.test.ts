@@ -19,7 +19,7 @@ const hasTmux = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status === 0;
 const SESSION_JSON = JSON.stringify({
   session_id: "abc",
   transcript_path: "/tmp/t.jsonl",
-  cwd: "/data/workspace",
+  cwd: "/repo",
   hook_event_name: "SessionStart",
   source: "startup",
 });

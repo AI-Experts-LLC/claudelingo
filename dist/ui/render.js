@@ -213,6 +213,10 @@ export function renderFrame(state, pack, width, theme) {
                 `${theme.dim}${choice.words} words${theme.reset}`);
         }
         push();
+        for (const message of Object.values(state.problems)) {
+            for (const line of wrap(message, body))
+                push(`${theme.red}${line}${theme.reset}`);
+        }
         if (state.pickerReturn)
             push(`${theme.dim}esc  back${theme.reset}`);
         push();

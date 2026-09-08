@@ -207,6 +207,15 @@ export function run(options: RunOptions): Runner {
       } else if (effect.type === "language") {
         const swapped = options.switchLanguage?.(effect.code);
         if (swapped) {
+          // Recorded here, not by the reducer: only this knows the switch really
+          // happened. Writing it earlier means a failed switch still changes
+          // which language opens next time.
+          try {
+            options.saveSettings?.({ ...state.settings, lang: effect.code });
+            setProblem("settings", null);
+          } catch (error) {
+            setProblem("settings", `settings not saved: ${(error as Error).message}`);
+          }
           pack = swapped.pack;
           progressFile = swapped.progressFile;
           // Rebuilt rather than patched: the deck, the card on screen and the
@@ -233,7 +242,10 @@ export function run(options: RunOptions): Runner {
             state = reduce(state, { type: "tick", now: Date.now() }, pack).state;
           }
         } else {
-          setProblem("settings", `could not switch to ${effect.code}`);
+          // Back where they were, with the reason on screen rather than the
+          // keypress simply looking dead.
+          state = { ...state, mode: state.pickerReturn ?? "waiting", pickerReturn: null };
+          setProblem("settings", `could not switch to ${effect.code} — it may be open elsewhere`);
         }
       } else if (effect.type === "quit") {
         stop();

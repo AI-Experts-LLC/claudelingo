@@ -232,6 +232,9 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
       );
     }
     push();
+    for (const message of Object.values(state.problems)) {
+      for (const line of wrap(message, body)) push(`${theme.red}${line}${theme.reset}`);
+    }
     if (state.pickerReturn) push(`${theme.dim}esc  back${theme.reset}`);
     push();
   } else if (state.mode === "howItWorks") {

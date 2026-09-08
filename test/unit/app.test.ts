@@ -645,13 +645,33 @@ describe("the first run", () => {
     expect(state.mode).toBe("pickLanguage");
   });
 
-  it("acts on the number pressed, and remembers it", () => {
+  it("asks the runner to switch, and does not record it until that works", () => {
+    // Writing `lang` here would persist a language the user never actually got
+    // if the switch then failed — they would restart into it.
     const picking = feed(firstRun(), [named("enter")]).state;
     const { state, effects } = feed(picking, [press("2")]);
-    expect(state.settings.lang).toBe("fr");
-    expect(effects).toContainEqual({ type: "language", code: "fr" });
-    const saved = effects.find((e) => e.type === "settings");
-    expect(saved && saved.type === "settings" && saved.settings.lang).toBe("fr");
+    expect(effects).toEqual([{ type: "language", code: "fr" }]);
+    expect(state.settings.lang).not.toBe("fr");
+  });
+
+  it("carries on through the walkthrough when the default language is chosen", () => {
+    // The default is offered as [1], so this is the likeliest first-run path of
+    // all — and it must not be mistaken for "nothing happened".
+    const onDefault = createState(
+      pack,
+      testProgress(),
+      // Settings whose language IS the first option, as a real first run has.
+      testSettings({ lang: "es", onboarded: false, askFirst: true }),
+      "idle",
+      T0,
+      langs,
+    );
+    const picking = feed(onDefault, [named("enter")]).state;
+    const { state, effects } = feed(picking, [press("1")]);
+    expect(state.mode).toBe("howItWorks");
+    // Nothing to switch: touching the lock for the language already held is what
+    // deletes it.
+    expect(effects).toEqual([]);
   });
 
   it("ignores a number nobody offered", () => {

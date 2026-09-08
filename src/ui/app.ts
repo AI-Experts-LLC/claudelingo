@@ -413,15 +413,27 @@ function reduceKey(state: AppState, key: Key, pack: Pack): Step {
       const index = Number(key.ch) - 1;
       const chosen = state.languages[index];
       if (chosen) {
-        const settings = { ...state.settings, lang: chosen.code };
-        // The runner owns the pack and the deck, so it reloads and rebuilds.
-        return {
-          state: { ...state, settings },
-          effects: [
-            { type: "settings", settings },
-            { type: "language", code: chosen.code },
-          ],
-        };
+        // Choosing what is already showing is not a switch. Sending it through
+        // the reload path releases and re-takes one lock file, and the release
+        // deletes the file the new claim thinks it holds.
+        if (chosen.code === state.settings.lang) {
+          return {
+            state: {
+              ...state,
+              // Mid-session this returns whence it came; during the first run
+              // there is nothing behind it, and the walkthrough must reach its
+              // last screen or the user lands nowhere and stays un-onboarded.
+              mode: state.pickerReturn ?? (state.settings.onboarded ? "waiting" : "howItWorks"),
+              pickerReturn: null,
+              ...(state.settings.onboarded ? { message: `still ${chosen.englishName}` } : {}),
+            },
+            effects: [],
+          };
+        }
+        // The runner owns the pack, the deck and the lock, and only it knows
+        // whether the switch worked — so only it records the choice. Writing
+        // `lang` here would persist a language the user never actually got.
+        return { state, effects: [{ type: "language", code: chosen.code }] };
       }
       // Escape only backs out of a picker opened later; during onboarding there
       // is nothing behind it yet.

@@ -178,3 +178,45 @@ describe("nobody has to learn a command", () => {
     }
   });
 });
+
+describe("choosing the language already in use", () => {
+  it("keeps the deck lock, so a second pane is still refused", async () => {
+    // The reviewer's finding: the picker offers the current language like any
+    // other, and going round the acquire/release cycle on one file deletes the
+    // lock this pane is holding. A new user is defaulted to Spanish and shown
+    // Spanish as [1], so it is the likeliest first run there is.
+    const e = firstTime();
+    await cli(["hook", "UserPromptSubmit"], e);
+    pane = new Pane(BASE, e);
+    await pane.waitForProse("Hello");
+    pane.send("\r");
+    await pane.waitForProse("Which language?");
+    pane.send("1");
+    await pane.waitForProse("How this works");
+    pane.send("\r");
+    await pane.waitForProse("most common word in Spanish");
+
+    const locks = fs.readdirSync(e.home).filter((f) => f.endsWith(".lock"));
+    expect(locks, "the pane released its own lock").toEqual(["progress-es.lock"]);
+
+    const second = await cli(["--lang", "es", "--no-color"], e);
+    expect(second.code).toBe(1);
+    expect(second.stderr).toContain("already studying Spanish");
+  });
+
+  it("says so and stays put when picked mid-session", async () => {
+    const e = makeEnv();
+    env = e;
+    await cli(["hook", "UserPromptSubmit"], e);
+    pane = new Pane(["--lang", "es", ...BASE], e);
+    await pane.waitForProse("most common word in Spanish");
+
+    pane.send("l");
+    await pane.waitForProse("Which language?");
+    pane.send("1");
+    await pane.waitForProse("still Spanish");
+    expect(fs.readdirSync(e.home).filter((f) => f.endsWith(".lock"))).toEqual([
+      "progress-es.lock",
+    ]);
+  });
+});

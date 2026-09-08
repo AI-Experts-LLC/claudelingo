@@ -33,13 +33,28 @@ function read(file) {
     }
     return { state: "unreadable" };
 }
+/** Rising counter, so a newer claim on the same path supersedes an older one. */
+let claimCounter = 0;
+const claims = new Map();
 function releaseFor(file) {
     let released = false;
+    /**
+     * Which claim this closure represents.
+     *
+     * One process can hold two closures for the same file — `acquire` adopts a lock
+     * this pid already owns and returns a fresh one. Releasing the older closure
+     * would then delete a lock the newer claim believes it holds, and the pid check
+     * below cannot catch it because both claims are this same process.
+     */
+    const claim = ++claimCounter;
+    claims.set(file, claim);
     return {
         release() {
             if (released)
                 return;
             released = true;
+            if (claims.get(file) !== claim)
+                return;
             // Only remove a lock that is still ours: a reclaimed one may already
             // belong to a pane that started after us.
             const current = read(file);

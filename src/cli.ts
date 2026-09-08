@@ -429,6 +429,18 @@ function cmdAnswer(args: Args): void {
     emit({ error: "no question is outstanding — run `claudelingo next --json` first" });
     return;
   }
+  // Parsing is not enough: a file that is valid JSON but the wrong shape throws
+  // out of the grader, and the skill's contract is one line of JSON.
+  const outstanding = pending.value;
+  if (
+    typeof outstanding.id !== "string" ||
+    !Array.isArray(outstanding.choices) ||
+    !Array.isArray(outstanding.accepted) ||
+    typeof outstanding.answerIndex !== "number"
+  ) {
+    emit({ error: "the outstanding question is unreadable — run `claudelingo next --json` again" });
+    return;
+  }
   if (lock.isHeld(paths.lock(settings.lang))) {
     emit({ error: "a claudelingo pane is already open — answer there instead" });
     return;
@@ -812,7 +824,12 @@ async function cmdRun(args: Args): Promise<void> {
    * taking the new one, or the pane blocks itself out of its own deck.
    */
   let held = acquired;
+  let currentLang = settings.lang;
   const switchLanguage = (code: string) => {
+    // Belt and braces: the reducer already refuses to emit this for the language
+    // in use, because the acquire/release round trip on one file deletes the very
+    // lock this process holds.
+    if (code === currentLang) return null;
     let next: Pack;
     try {
       next = loadPack(code);
@@ -823,6 +840,7 @@ async function cmdRun(args: Args): Promise<void> {
     if (!taken.ok) return null;
     if (held.ok) held.lock.release();
     held = taken;
+    currentLang = code;
     return {
       pack: next,
       progress: loadProgress(code).progress,
