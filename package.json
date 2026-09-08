@@ -5,14 +5,37 @@
   "type": "module",
   "license": "MIT",
   "author": "AI Experts LLC",
-  "repository": { "type": "git", "url": "git+https://github.com/AI-Experts-LLC/claudelingo.git" },
-  "keywords": ["claude-code", "codex", "language-learning", "spaced-repetition", "tui", "vocabulary"],
-  "engines": { "node": ">=20.11" },
-  "bin": { "claudelingo": "dist/cli.js" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AI-Experts-LLC/claudelingo.git"
+  },
+  "keywords": [
+    "claude-code",
+    "codex",
+    "language-learning",
+    "spaced-repetition",
+    "tui",
+    "vocabulary"
+  ],
+  "engines": {
+    "node": ">=20.11"
+  },
+  "bin": {
+    "claudelingo": "dist/cli.js"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
-  "files": ["dist", "README.md", "LICENSE"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/copy-packs.mjs",
     "dev": "tsx src/cli.ts",
@@ -20,11 +43,11 @@
     "test": "npm run build && vitest run",
     "test:unit": "vitest run test/unit",
     "test:e2e": "npm run build && vitest run test/e2e",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepare": "npm run build",
+    "postinstall": "node scripts/welcome.mjs"
   },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.71.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",

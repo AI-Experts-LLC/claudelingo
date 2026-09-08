@@ -11,6 +11,7 @@ export const DEFAULT_SETTINGS: Settings = {
   alwaysOn: false,
   enrich: true,
   model: "claude-fable-5-1",
+  autoPane: true,
 };
 
 /**

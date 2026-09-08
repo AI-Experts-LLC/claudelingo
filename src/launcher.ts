@@ -365,3 +365,20 @@ export async function launch(options: LaunchOptions): Promise<LaunchResult> {
   if (pane) run("tmux", ["kill-pane", "-t", pane]);
   return { plan, code };
 }
+
+/**
+ * Open the quiz pane beside the current tmux pane and return.
+ *
+ * Used by the SessionStart hook, which has no agent to run — Claude Code is
+ * already running, and it is what started us.
+ */
+export function openPaneBeside(options: {
+  pane: string[];
+  passEnv?: Record<string, string>;
+  paneWidthPercent?: number;
+  run?: Runner;
+}): boolean {
+  const run = options.run ?? defaultRun;
+  const full: LaunchOptions = { agent: [], ...options };
+  return openPane(full, run) !== null;
+}

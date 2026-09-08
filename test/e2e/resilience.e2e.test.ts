@@ -199,101 +199,80 @@ describe("an agent that never came back", () => {
   });
 });
 
-describe("memory hooks against a real HTTP round trip", () => {
-  /** A stand-in for the Anthropic API, so the live path runs without a credential. */
-  function stubServer(handler: http.RequestListener): Promise<{ url: string; close(): void }> {
-    return new Promise((resolve) => {
-      const server = http.createServer(handler);
-      server.listen(0, "127.0.0.1", () => {
-        const port = (server.address() as { port: number }).port;
-        resolve({
-          url: `http://127.0.0.1:${port}`,
-          close: () => server.close(),
-        });
-      });
-    });
+describe("memory hooks through the user's own Claude Code", () => {
+  /** A stand-in `claude` binary, so nothing here spends the user's real quota. */
+  function stubClaude(e: Env, script: string): string {
+    const bin = path.join(e.home, "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    const file = path.join(bin, "claude");
+    fs.writeFileSync(file, script);
+    fs.chmodSync(file, 0o755);
+    return bin;
   }
 
-  it("renders a hook fetched over the wire, and caches it", async () => {
-    const e = fresh();
-    const server = await stubServer((req, res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(
-        JSON.stringify({
-          id: "msg_1",
-          type: "message",
-          role: "assistant",
-          model: "claude-fable-5-1",
-          stop_reason: "end_turn",
-          content: [{ type: "text", text: "el is the, as in El Nino" }],
-          usage: { input_tokens: 1, output_tokens: 1 },
-        }),
-      );
-    });
-    try {
-      await cli(["hook", "UserPromptSubmit"], e);
-      const pane = open(["--lang", "es", "--width", "62", "--no-color"], e, {
-        ANTHROPIC_API_KEY: "test-key-not-real",
-        ANTHROPIC_BASE_URL: server.url,
-      });
-      await pane.waitForText("#1 most common word");
-      pane.send("e");
-      await pane.waitForProse("El Nino");
+  const success = (text: string) =>
+    `#!/bin/sh\nprintf '%s' '${JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: text,
+    }).replace(/'/g, "'\\''")}'\n`;
 
-      // Cached, so the same word is never paid for twice.
-      const cached = fs.readdirSync(path.join(e.home, "cache"));
-      expect(cached).toHaveLength(1);
-    } finally {
-      server.close();
-    }
+  it("fetches a hook with no API key anywhere in sight", async () => {
+    const e = fresh();
+    const bin = stubClaude(e, success("el is the, as in El Nino"));
+    await cli(["hook", "UserPromptSubmit"], e);
+    const pane = open(["--lang", "es", "--width", "62", "--no-color"], e, {
+      PATH: `${bin}:${process.env.PATH}`,
+      // Deliberately empty: this path must not depend on either of them.
+      ANTHROPIC_API_KEY: "",
+      ANTHROPIC_AUTH_TOKEN: "",
+    });
+    await pane.waitForText("#1 most common word");
+    pane.send("e");
+    await pane.waitForProse("El Nino");
+    expect(fs.readdirSync(path.join(e.home, "cache"))).toHaveLength(1);
   });
 
   it("shows a failure as an error, and lets the user try again", async () => {
     const e = fresh();
-    let calls = 0;
-    const server = await stubServer((req, res) => {
-      calls += 1;
-      res.socket?.destroy(); // connection refused, mid-request
-    });
-    try {
-      await cli(["hook", "UserPromptSubmit"], e);
-      const pane = open(["--lang", "es", "--width", "62", "--no-color"], e, {
-        ANTHROPIC_API_KEY: "test-key-not-real",
-        ANTHROPIC_BASE_URL: server.url,
-      });
-      await pane.waitForText("#1 most common word");
-
-      pane.send("e");
-      await pane.waitForProse("no hook:");
-      // Nothing was cached, and the card is not poisoned.
-      expect(fs.existsSync(path.join(e.home, "cache"))).toBe(false);
-
-      pane.send("e");
-      await pane.until(() => calls >= 2, 15_000);
-    } finally {
-      server.close();
-    }
-  });
-
-  it("says once, up front, when there is no credential at all", async () => {
-    const e = fresh();
+    const counter = path.join(e.home, "calls");
+    const bin = stubClaude(
+      e,
+      `#!/bin/sh\necho x >> ${counter}\nprintf 'not json at all'\n`,
+    );
     await cli(["hook", "UserPromptSubmit"], e);
     const pane = open(["--lang", "es", "--width", "62", "--no-color"], e, {
-      ANTHROPIC_API_KEY: "",
-      ANTHROPIC_AUTH_TOKEN: "",
+      PATH: `${bin}:${process.env.PATH}`,
     });
-    await pane.waitForProse("no Anthropic credential");
+    await pane.waitForText("#1 most common word");
 
-    // Pressing `e` must be inert, not produce an auth error. Waiting on text the
-    // pane has already shown would return instantly and assert nothing, so give
-    // a real request time to fail and then check the frame is still clean.
+    pane.send("e");
+    await pane.waitForProse("no hook:");
+    expect(fs.existsSync(path.join(e.home, "cache"))).toBe(false);
+
+    pane.send("e");
+    // A retry means a second invocation; the card must not be poisoned.
+    await pane.until(
+      () => fs.existsSync(counter) && fs.readFileSync(counter, "utf8").trim().split("\n").length >= 2,
+      15_000,
+    );
+  }, 30_000);
+
+  it("says once, up front, when Claude Code is not on the PATH", async () => {
+    const e = fresh();
+    await cli(["hook", "UserPromptSubmit"], e);
+    // A PATH with no `claude` at all — the only thing this feature needs.
+    const pane = open(["--lang", "es", "--width", "62", "--no-color"], e, {
+      PATH: path.join(e.home, "empty-bin"),
+    });
+    await pane.waitForProse("not on this PATH");
+
     const framesBefore = pane.frames.length;
     pane.send("e");
     await pane.settle(2000);
     expect(pane.flatFrame).not.toContain("no hook:");
     expect(pane.flatFrame).not.toContain("asking Claude");
-    expect(pane.flatFrame).toContain("no Anthropic credential");
-    // Nothing was even attempted, so the pane had no reason to repaint.
     expect(pane.frames.length).toBe(framesBefore);
   });
 });
