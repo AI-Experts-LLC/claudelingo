@@ -13,6 +13,7 @@ import { DEFAULT_MODEL, cachedHook, generatePack, hasClaude, memoryHook, } from 
 import { run } from "./ui/tui.js";
 import { defaultWidth, renderPanel, renderStatusLine, statusLineState } from "./statusline.js";
 import { launch, openPaneBeside } from "./launcher.js";
+import { standing } from "./ui/tiers.js";
 const BIN = "claudelingo";
 const USAGE = `claudelingo — learn a language while your coding agent works
 
@@ -965,8 +966,17 @@ function cmdStats(args) {
     if (problem)
         process.stderr.write(`${problem}\n`);
     const s = stats(pack, progress, Date.now());
+    const where = standing(s.learned);
     const rows = [
         ["language", `${pack.englishName} (${pack.code})`],
+        // The same line the pane's `t` screen leads with: a count alone does not say
+        // whether it is a lot.
+        [
+            "standing",
+            where.next
+                ? `${where.tier.name} — ${where.toGo} more for "${where.next.name}"`
+                : where.tier.name,
+        ],
         ["words started", `${s.learned} of ${s.total}`],
         ["learning", String(s.learning)],
         ["in review", String(s.review)],
@@ -977,9 +987,19 @@ function cmdStats(args) {
         ["accuracy", progress.totalAnswered ? `${Math.round(s.accuracy * 100)}%` : "—"],
     ];
     const width = Math.max(...rows.map(([label]) => label.length));
-    for (const [label, value] of rows) {
-        process.stdout.write(`${label.padEnd(width)}  ${value}\n`);
-    }
+    // `--json` is honoured here like everywhere else: a flag the docs offer and
+    // the code ignores is how `/lingo stats` ends up parsing a table.
+    emit({
+        language: { code: pack.code, englishName: pack.englishName },
+        standing: {
+            tier: where.tier.name,
+            next: where.next?.name ?? null,
+            toGo: where.toGo,
+        },
+        ...s,
+        totalAnswered: progress.totalAnswered,
+        ...(problem ? { problem } : {}),
+    }, rows.map(([label, value]) => `${label.padEnd(width)}  ${value}`).join("\n"));
 }
 function cmdLangs() {
     const codes = listPacks();
