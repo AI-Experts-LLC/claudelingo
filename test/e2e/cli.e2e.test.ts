@@ -422,7 +422,9 @@ describe("claudelingo pack generate", () => {
     // Throwing here cost a real run 693 words of French and 673 of Italian —
     // about half an hour of quota — because one bad reply discarded the lot.
     const e = fresh();
-    const bin = stubFailingAt(e, 3);
+    // The second request fails: with 150 asked for there are two chunks, and
+    // the retry is the third call.
+    const bin = stubFailingAt(e, 2);
     const result = await cli(
       ["pack", "generate", "--lang", "Testish", "--code", "tf", "--count", "150"],
       e,

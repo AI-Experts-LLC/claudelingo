@@ -339,10 +339,16 @@ export async function generatePack(
     words.push(row);
   }
 
-  // Chunks overlap however firmly they are told not to, so asking for exactly
-  // `count` ranks returns fewer than `count` distinct words. Keep going past the
-  // nominal end until the target is met or the model stops adding anything.
-  const maxChunks = Math.ceil(count / PACK_CHUNK) * 3;
+  // Deliberately no top-up past the requested ranks.
+  //
+  // Chunks overlap, so asking for `count` ranks yields fewer than `count` words
+  // — and the obvious fix, "keep asking until the target is met", is how a real
+  // run ended up with `padernete` and `achufladamente` in it. Past the point
+  // where the model actually knows the frequency order it starts reciting the
+  // dictionary alphabetically to fill the quota. A short pack of real words
+  // beats a full one padded with sludge, so it stops at the end of the range and
+  // says what it got.
+  const maxChunks = Math.ceil(count / PACK_CHUNK);
   let from = Math.floor(words.length / PACK_CHUNK) * PACK_CHUNK + 1;
   let barren = 0;
 
@@ -396,6 +402,9 @@ export async function generatePack(
   }
 
   if (!words.length) throw new EnrichError("Claude returned no words");
+  if (words.length < count) {
+    onProgress?.(words.length, count, `stopped at ${words.length}: the ranks asked for are used up`);
+  }
   return { code, name: language, englishName: language, words };
 }
 

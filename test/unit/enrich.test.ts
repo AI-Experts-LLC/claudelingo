@@ -171,13 +171,23 @@ describe("pack generation", () => {
   });
 
   it("stops asking once a language has no more words to give", async () => {
-    // Every reply the same two words: without a barren counter this asks for
-    // ever, burning quota on a language that has run dry.
+    // Every reply the same word: without a barren counter this asks for ever,
+    // burning quota on a language that has run dry.
     const fake = fakeClaude([ok('{"words":[{"term":"uno","gloss":"one","pos":"num"}]}')]);
     const pack = await generatePack("X", "xx", 500, { run: fake.run });
     expect(pack.words).toHaveLength(1);
-    // One productive call, then three that add nothing, and it stops.
-    expect(fake.calls.length).toBeLessThanOrEqual(5);
+    expect(fake.calls.length).toBeLessThanOrEqual(4);
+  });
+
+  it("returns a short pack rather than padding it past the ranks asked for", async () => {
+    // Asking past the end is how a real run ended up with "padernete" and
+    // "achufladamente": beyond what the model knows about frequency it recites
+    // the dictionary to fill the quota. Five chunks asked, five chunks' worth
+    // returned — and no sixth request to top the count up.
+    const fake = fakeClaude([ok('{"words":[{"term":"uno","gloss":"one","pos":"num"}]}')]);
+    const pack = await generatePack("X", "xx", 500, { run: fake.run });
+    expect(pack.words.length).toBeLessThan(500);
+    expect(fake.calls.length).toBeLessThanOrEqual(Math.ceil(500 / 100));
   });
 
   it("fails loudly when it never got a single word", async () => {
