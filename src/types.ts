@@ -114,6 +114,13 @@ export interface Settings {
   /** The first-run walkthrough has been completed. */
   onboarded: boolean;
   /**
+   * Draw the full panel under the prompt rather than a single line.
+   *
+   * Claude Code renders one row per line printed, so the whole widget fits there.
+   * Off gives back the vertical space and returns to the one-line drill.
+   */
+  panel: boolean;
+  /**
    * Ask before starting a quiz.
    *
    * Off by default: someone who runs `claudelingo` has already answered the

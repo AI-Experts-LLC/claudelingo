@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stateForEvent } from "../../src/agentState.js";
@@ -753,5 +754,178 @@ describe("Claude Code status line", () => {
     const settings = JSON.parse(fs.readFileSync(file, "utf8"));
     expect(settings.statusLine).toBeUndefined();
     expect(settings.hooks.Stop).toBeDefined();
+  });
+});
+
+describe("the status line command that gets written", () => {
+  it("stays the bare name for a standalone install", () => {
+    // Whatever the install path is, it must not be baked in: a standalone
+    // install can move, and the name on PATH follows it.
+    expect(claudeCode.statusLineCommand("/opt/claudelingo/dist/cli.js", "claudelingo")).toBe(
+      "claudelingo",
+    );
+  });
+
+  it("recognises our own line whichever form it was written in", () => {
+    // A bare name and an absolute path are both ours. Comparing against one
+    // exact string made re-running init report our own line as someone else's,
+    // and left it behind on uninstall.
+    for (const command of [
+      "claudelingo statusline",
+      "/home/me/.claude/plugins/claudelingo/bin/claudelingo statusline",
+      '"/home/me/my plugins/claudelingo/bin/claudelingo" statusline',
+    ]) {
+      const file = path.join(dir(), "settings.json");
+      fs.writeFileSync(file, JSON.stringify({ statusLine: { type: "command", command } }));
+      expect(claudeCode.hasOurStatusLine(file, "claudelingo")).toBe(true);
+      // …and re-installing over it does not throw StatusLineTaken.
+      expect(() => claudeCode.install(file, "claudelingo", {})).not.toThrow();
+      claudeCode.uninstall(file, "claudelingo");
+      expect(JSON.parse(fs.readFileSync(file, "utf8")).statusLine).toBeUndefined();
+    }
+  });
+
+  it("still refuses to take over someone else's", () => {
+    const file = path.join(dir(), "settings.json");
+    const theirs = { type: "command", command: "ccstatusline" };
+    fs.writeFileSync(file, JSON.stringify({ statusLine: theirs }));
+    const result = claudeCode.install(file, "claudelingo", {});
+    expect(result.statusLineProblem).toContain("already configured");
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).statusLine).toEqual(theirs);
+    // …and leaves it alone on the way out, too.
+    claudeCode.uninstall(file, "claudelingo");
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).statusLine).toEqual(theirs);
+  });
+});
+
+describe("re-installing over our own status line", () => {
+  it("keeps the arguments and extra fields the user chose", () => {
+    // `claudelingo statusline --compact` with their own padding is a combination
+    // the README suggests. Overwriting the whole object silently undid both.
+    const file = path.join(dir(), "settings.json");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        statusLine: {
+          type: "command",
+          command: "claudelingo statusline --compact",
+          padding: 0,
+          refreshInterval: 10,
+        },
+      }),
+    );
+    claudeCode.install(file, "claudelingo", {});
+    const after = JSON.parse(fs.readFileSync(file, "utf8")).statusLine;
+    expect(after.command).toContain("--compact");
+    expect(after.padding).toBe(0);
+    expect(after.refreshInterval).toBe(10);
+  });
+
+  it("survives an install path that contains the word statusline", () => {
+    // Scanning for the word anywhere in the command spliced the path into the
+    // arguments and produced a command that would not run.
+    const file = path.join(dir(), "settings.json");
+    const exec = "/home/me/.claude/plugins/marketplaces/statusline-tools/claudelingo/bin/claudelingo";
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ statusLine: { type: "command", command: `${exec} statusline --compact` } }),
+    );
+    claudeCode.install(file, "claudelingo", { statusLineBin: exec });
+    const after = JSON.parse(fs.readFileSync(file, "utf8")).statusLine;
+    expect(after.command).toBe(`${exec} statusline --compact`);
+  });
+
+  it("does not claim a different tool's command that merely mentions us", () => {
+    const file = path.join(dir(), "settings.json");
+    const theirs = "my-statusline --data ~/.claudelingo/progress.json";
+    fs.writeFileSync(file, JSON.stringify({ statusLine: { type: "command", command: theirs } }));
+    const result = claudeCode.install(file, "claudelingo", {});
+    expect(result.statusLineProblem).toContain("already configured");
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).statusLine.command).toBe(theirs);
+    claudeCode.uninstall(file, "claudelingo");
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).statusLine.command).toBe(theirs);
+  });
+
+  it("still recognises our own quoted absolute command", () => {
+    const file = path.join(dir(), "settings.json");
+    const command = '"/home/me/my plugins/claudelingo/bin/claudelingo" statusline';
+    fs.writeFileSync(file, JSON.stringify({ statusLine: { type: "command", command } }));
+    expect(claudeCode.hasOurStatusLine(file, "claudelingo")).toBe(true);
+  });
+
+  it("still repairs the executable when it has gone stale", () => {
+    const file = path.join(dir(), "settings.json");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        statusLine: { type: "command", command: "/gone/away/claudelingo statusline --compact" },
+      }),
+    );
+    claudeCode.install(file, "claudelingo", { statusLineBin: "claudelingo" });
+    const after = JSON.parse(fs.readFileSync(file, "utf8")).statusLine;
+    expect(after.command).toBe("claudelingo statusline --compact");
+  });
+});
+
+describe("what statusLine gets pointed at", () => {
+  /**
+   * A plugin's `bin/` is on the PATH Claude Code gives its *hooks*. The status
+   * line is configured in the main settings file and does not get that PATH, so
+   * a bare name there can resolve to nothing — a blank panel, no error anywhere.
+   */
+  function pluginTree(base: string): string {
+    const root = path.join(base, ".claude", "plugins", "marketplaces", "mp", "claude lingo");
+    fs.mkdirSync(path.join(root, "bin"), { recursive: true });
+    fs.mkdirSync(path.join(root, "dist"), { recursive: true });
+    fs.writeFileSync(path.join(root, "package.json"), "{}");
+    fs.writeFileSync(path.join(root, "bin", "claudelingo"), "#!/bin/sh\n");
+    return root;
+  }
+
+  it("writes the plugin's own absolute path, quoted for the spaces in it", () => {
+    const home = dir();
+    const root = pluginTree(home);
+    const spy = vi.spyOn(os, "homedir").mockReturnValue(home);
+    try {
+      const command = claudeCode.statusLineCommand(path.join(root, "dist", "cli.js"), "claudelingo");
+      expect(command).not.toBe("claudelingo");
+      expect(command).toContain(path.join(root, "bin", "claudelingo"));
+      expect(command.startsWith('"')).toBe(true);
+      // It has to survive a shell, because that is how Claude Code runs it.
+      const written = `${command} statusline`;
+      expect(written).toContain("claude lingo");
+      expect(claudeCode.install).toBeTruthy();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("leaves a standalone install on the bare name, which follows it if it moves", () => {
+    const home = dir();
+    const spy = vi.spyOn(os, "homedir").mockReturnValue(home);
+    try {
+      const elsewhere = path.join(home, "src");
+      fs.mkdirSync(path.join(elsewhere, "dist"), { recursive: true });
+      fs.writeFileSync(path.join(elsewhere, "package.json"), "{}");
+      expect(
+        claudeCode.statusLineCommand(path.join(elsewhere, "dist", "cli.js"), "claudelingo"),
+      ).toBe("claudelingo");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("falls back to the bare name rather than writing a path with no binary at it", () => {
+    const home = dir();
+    const root = pluginTree(home);
+    fs.rmSync(path.join(root, "bin", "claudelingo"));
+    const spy = vi.spyOn(os, "homedir").mockReturnValue(home);
+    try {
+      expect(
+        claudeCode.statusLineCommand(path.join(root, "dist", "cli.js"), "claudelingo"),
+      ).toBe("claudelingo");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

@@ -88,6 +88,29 @@ export function selectNext(pack, progress, settings, now) {
     return next ? { word: next, item: null } : null;
 }
 /** When the next item becomes eligible, or null if there is nothing scheduled. */
+/**
+ * A skip costs nothing but a delay — punishing it would poison the box levels.
+ *
+ * Shared by the pane and by `claudelingo skip`, so the two cannot drift: a word
+ * with no progress row yet gets one in the `new` stage, because without it
+ * `selectNext` hands back the very card that was just skipped.
+ */
+export const SKIP_DELAY_MS = 10 * MINUTE;
+export function deferItem(existing, id, now) {
+    if (existing)
+        return { ...existing, due: now + SKIP_DELAY_MS };
+    return {
+        id,
+        stage: "new",
+        box: 0,
+        step: 0,
+        due: now + SKIP_DELAY_MS,
+        lastSeen: 0,
+        seen: 0,
+        correct: 0,
+        lapses: 0,
+    };
+}
 export function nextDueAt(progress) {
     const times = Object.values(progress.items).map((i) => i.due);
     return times.length ? Math.min(...times) : null;

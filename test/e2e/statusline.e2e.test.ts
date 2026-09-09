@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { CLI, type Env, REPO, cli, makeEnv, progressFile, requireBuild } from "./harness.js";
+import { PANEL_ROWS } from "../../src/statusline.js";
 
 let env: Env;
 beforeAll(requireBuild);
@@ -66,15 +67,55 @@ function seed(e: Env): void {
 }
 
 describe("the status line Claude Code draws", () => {
-  it("prints exactly one line of vocabulary from the deck", async () => {
+  it("prints exactly one line of vocabulary from the deck when compact", async () => {
     const e = fresh();
     seed(e);
-    const { stdout, code } = await statusline(e);
+    const { stdout, code } = await statusline(e, ["--compact"]);
     expect(code).toBe(0);
     expect(stdout.trimEnd().split("\n")).toHaveLength(1);
     expect(stdout).toMatch(/«.+»/);
     expect(stdout).toContain("streak 7");
     expect(stdout).toContain("/312");
+  });
+
+  // Claude Code renders one row per line printed, so the row count *is* the
+  // panel's height on screen. A drifting count would push the conversation around.
+  it("prints the panel — three rows, always the same three", async () => {
+    const e = fresh();
+    seed(e);
+    const { stdout, code } = await statusline(e);
+    expect(code).toBe(0);
+    const rows = stdout.trimEnd().split("\n");
+    expect(rows).toHaveLength(PANEL_ROWS);
+    expect(stdout).toMatch(/«.+»/);
+    expect(stdout).toContain("streak 7");
+    // The bottom row is the control surface: it must name the command to type,
+    // because nothing here can take a keypress.
+    expect(rows[PANEL_ROWS - 1]).toContain("/lingo");
+  });
+
+  it("shows the outstanding question, and never which answer is right", async () => {
+    const e = fresh();
+    seed(e);
+    const dealt = await cli(["next", "--json"], e);
+    const card = JSON.parse(dealt.stdout.trim()) as {
+      card: { question: string; choices: string[] };
+    };
+    const { stdout } = await statusline(e);
+    expect(stdout).toContain(card.card.question.slice(0, 20));
+    // The pending file holds answerIndex; leaking it here would answer the very
+    // question on screen.
+    expect(stdout).not.toContain("answerIndex");
+    const pending = JSON.parse(
+      fs.readFileSync(path.join(e.home, "pending-es.json"), "utf8"),
+    ) as { answerIndex: number; choices: string[] };
+    for (const [index, choice] of pending.choices.entries()) {
+      // Every choice appears; none is marked. The panel must not distinguish them.
+      expect(stdout).toContain(choice);
+      if (index === pending.answerIndex) {
+        expect(stdout).not.toMatch(new RegExp(`[✓*→]\\s*${choice.replace(/[.*+?^$()|[\]\\]/g, "\\$&")}`));
+      }
+    }
   });
 
   it("works on a completely fresh install", async () => {
@@ -119,7 +160,69 @@ describe("the status line Claude Code draws", () => {
     const { stdout, code } = await statusline(e);
     expect(code).toBe(0);
     expect(stdout).not.toContain("Error");
-    expect(stdout.split("\n")).toHaveLength(2); // one line plus the trailing newline
+    expect(stdout).not.toContain("at ");
+    // A corrupt deck is recovered, not fatal, so the panel still draws — what
+    // matters is that it is the panel and not a stack trace.
+    expect(stdout.trimEnd().split("\n").length).toBeLessThanOrEqual(PANEL_ROWS)
+  });
+
+  // The CLI decides "is something outstanding?" from the file's *presence*. That
+  // decision had no test at all: reverting it left the whole suite green while the
+  // panel went back to revealing the answer to the card on screen.
+  it.each([
+    ["missing its question field", (p: string) => {
+      const d = JSON.parse(fs.readFileSync(p, "utf8"));
+      delete d.question;
+      fs.writeFileSync(p, JSON.stringify(d));
+    }],
+    ["truncated", (p: string) => fs.writeFileSync(p, '{ "id": "es:1"')],
+    ["empty", (p: string) => fs.writeFileSync(p, "")],
+    ["holding null", (p: string) => fs.writeFileSync(p, "null")],
+  ])("says a question is waiting when the pending file is %s", async (_name, damage) => {
+    const e = fresh();
+    seed(e);
+    const dealt = await cli(["next", "--json"], e);
+    const card = JSON.parse(dealt.stdout.trim()) as { card: { id: string } };
+    const pendingPath = path.join(e.home, "pending-es.json");
+    damage(pendingPath);
+
+    const term = /^es:(\d+)$/.exec(card.card.id);
+    expect(term).toBeTruthy();
+
+    for (const extra of [[], ["--compact"]]) {
+      const { stdout } = await statusline(e, extra);
+      expect(stdout).toContain("waiting");
+      // and the drill — the thing that would give the game away — is not running
+      expect(stdout).not.toMatch(/«.+» = [^?]/);
+    }
+    // The panel offers `/lingo skip` as the way out; it must actually work.
+    const skipped = await cli(["skip"], e);
+    expect(JSON.parse(skipped.stdout.trim())).toMatchObject({ skipped: true });
+    expect(fs.existsSync(pendingPath)).toBe(false);
+  });
+
+  it("shows a healthy question without answering it, in the one-line form too", async () => {
+    const e = fresh();
+    seed(e);
+    await cli(["next", "--json"], e);
+    const { stdout } = await statusline(e, ["--compact"]);
+    expect(stdout).toContain("waiting");
+    expect(stdout).not.toMatch(/«.+» = [^?]/);
+  });
+
+  it("stays three rows when the pending file contains newlines", async () => {
+    const e = fresh();
+    seed(e);
+    await cli(["next", "--json"], e);
+    const file = path.join(e.home, "pending-es.json");
+    const stored = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    stored.question = "What does\n\n«el»\r\nmean?";
+    stored.choices = ["one\ntwo", "three", "four", "five"];
+    fs.writeFileSync(file, JSON.stringify(stored));
+
+    const { stdout } = await statusline(e);
+    // Rows on screen, not array entries: a newline inside one is two rows there.
+    expect(stdout.trimEnd().split("\n")).toHaveLength(PANEL_ROWS);
   });
 
   it("returns quickly, because Claude Code cancels a slow one", async () => {

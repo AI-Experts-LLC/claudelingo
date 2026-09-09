@@ -206,6 +206,57 @@ describe("the quiz the /lingo skill drives", () => {
     expect(fs.readFileSync(progressFile(e, "es"), "utf8")).toBe(before);
   });
 
+  // `--choice` with nothing after it used to become -1: graded wrong, the box
+  // demoted, and success reported. A missing value must be refused instead.
+  it.each([["--choice"], ["--text"]])("refuses %s with no value rather than grading it", async (flag) => {
+    const e = fresh();
+    await next(e);
+    await answer(e, ["--choice", "1"]);
+    await next(e);
+    const before = fs.readFileSync(progressFile(e, "es"), "utf8");
+
+    const { stdout, stderr, code } = await cli(["answer", flag], e);
+    expect(code).toBe(1);
+    expect(stderr).toContain("needs a value");
+    expect(stdout).toBe("");
+    // Nothing graded, and the question is still outstanding to answer properly.
+    expect(fs.readFileSync(progressFile(e, "es"), "utf8")).toBe(before);
+    expect(fs.existsSync(path.join(e.home, "pending-es.json"))).toBe(true);
+  });
+
+  // Round 2's blocker: no answer at all is not a wrong answer. This grades
+  // nothing, where it used to demote a box and break a streak while reporting
+  // `{"correct":false}` and exit 0 — indistinguishable from getting it wrong.
+  it("refuses to grade when neither --choice nor --text is given", async () => {
+    const e = fresh();
+    // Get onto a real review card, where being marked wrong actually costs
+    // something: a box level, a stage, and the streak.
+    await next(e);
+    await answer(e, ["--choice", "1"]);
+    const stored = JSON.parse(fs.readFileSync(progressFile(e, "es"), "utf8")) as {
+      items: Record<string, Record<string, unknown>>;
+      streak: number;
+    };
+    const id = Object.keys(stored.items)[0]!;
+    stored.items[id] = { ...stored.items[id], stage: "review", box: 3, due: Date.now() - 1000 };
+    stored.streak = 4;
+    fs.writeFileSync(progressFile(e, "es"), JSON.stringify(stored));
+    await next(e);
+    const before = fs.readFileSync(progressFile(e, "es"), "utf8");
+
+    const { stdout, code } = await cli(["answer"], e);
+    expect(code).toBe(0);
+    const result = JSON.parse(stdout.trim()) as { error?: string; correct?: boolean };
+    expect(result.error).toBeTruthy();
+    expect(result.correct).toBeUndefined();
+    // Nothing graded: same bytes, and the question still there to answer properly.
+    expect(fs.readFileSync(progressFile(e, "es"), "utf8")).toBe(before);
+    expect(fs.existsSync(path.join(e.home, "pending-es.json"))).toBe(true);
+
+    const proper = await answer(e, ["--choice", "1"]);
+    expect(typeof proper.correct).toBe("boolean");
+  });
+
   it("emits one line of JSON, so a skill can parse it", async () => {
     const e = fresh();
     const { stdout } = await cli(["next", "--json"], e);

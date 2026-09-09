@@ -12,6 +12,7 @@ export const DEFAULT_SETTINGS = {
     autoPane: true,
     askFirst: false,
     onboarded: false,
+    panel: true,
 };
 /**
  * Root for all state. `CLAUDELINGO_HOME` exists so tests (and anyone running two

@@ -1,7 +1,17 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { type Env, Pane, cli, makeEnv, readProgress, requireBuild, statusFile } from "./harness.js";
+import {
+  type Env,
+  Pane,
+  REPO,
+  cli,
+  makeEnv,
+  readProgress,
+  requireBuild,
+  statusFile,
+} from "./harness.js";
 
 let env: Env;
 beforeAll(requireBuild);
@@ -326,6 +336,179 @@ describe("init reports what actually happened", () => {
     return { home, codexHome, vars: { HOME: home, USERPROFILE: home, CODEX_HOME: codexHome } };
   }
 
+  // `/lingo` is how anyone outside tmux uses this at all. It ships with the
+  // plugin, and used to ship with *nothing* on the standalone install route —
+  // "Unknown command: /lingo" with no explanation anywhere.
+  it("links the /lingo skill so the standalone install has it too", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const result = await cli(["init"], e, vars);
+    expect(result.code).toBe(0);
+
+    const link = path.join(home, ".claude", "skills", "lingo");
+    expect(fs.existsSync(path.join(link, "SKILL.md"))).toBe(true);
+    expect(fs.readFileSync(path.join(link, "SKILL.md"), "utf8")).toContain("name: lingo");
+    expect(result.stdout).toContain("/lingo");
+
+    // Re-running says so rather than relinking, and uninit takes it away again.
+    const again = await cli(["init"], e, vars);
+    expect(again.stdout).toContain("already installed");
+    await cli(["uninit"], e, vars);
+    expect(fs.existsSync(link)).toBe(false);
+  });
+
+  // A plugin brings its own hooks and skill; the one thing it cannot bring is the
+  // status line, which Claude Code takes only from the main config.
+  // A relative link is anchored at the directory holding it, not at the process's
+  // cwd. Resolving it wrongly made another tool's live skill look like a dead
+  // link of ours — and whether it survived depended on where init was run from.
+  it("leaves a relative symlink to another tool's skill alone", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const theirs = path.join(home, "othertool", "skills", "lingo");
+    fs.mkdirSync(theirs, { recursive: true });
+    fs.writeFileSync(path.join(theirs, "SKILL.md"), "name: someone else\n");
+    const skills = path.join(home, ".claude", "skills");
+    fs.mkdirSync(skills, { recursive: true });
+    fs.symlinkSync(path.join("..", "..", "othertool", "skills", "lingo"), path.join(skills, "lingo"));
+
+    const result = await cli(["init"], e, vars);
+    expect(result.stderr).toContain("not ours");
+    expect(fs.readlinkSync(path.join(skills, "lingo"))).toBe("../../othertool/skills/lingo");
+    expect(fs.readFileSync(path.join(theirs, "SKILL.md"), "utf8")).toContain("someone else");
+
+    await cli(["uninit"], e, vars);
+    expect(fs.existsSync(path.join(theirs, "SKILL.md"))).toBe(true);
+    expect(fs.readlinkSync(path.join(skills, "lingo"))).toBe("../../othertool/skills/lingo");
+  });
+
+  // The mirror of the case above: a relative link that really is ours must still
+  // be removed by uninit. Resolving it against the process's cwd instead of the
+  // link's own directory gets this wrong in both directions.
+  it("removes its own skill link even when that link is relative", async () => {
+    const e = fresh();
+    // Deliberately a *shallow* home. `path.resolve` clamps at `/`, so a link
+    // buried deeper than the process's cwd resolves the same either way and the
+    // wrong base is invisible; the two only diverge when the link's directory is
+    // shallower than the cwd, which is the ordinary case for a real `~`.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "cl-"));
+    const vars = { HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, "codex") };
+    const skills = path.join(home, ".claude", "skills");
+    fs.mkdirSync(skills, { recursive: true });
+    const ours = path.join(REPO, "skills", "lingo");
+    const relative = path.relative(skills, ours);
+    expect(relative.split(path.sep).filter((p) => p === "..").length).toBeLessThan(
+      REPO.split(path.sep).filter(Boolean).length,
+    );
+    fs.symlinkSync(relative, path.join(skills, "lingo"));
+    // Sanity: the link resolves to our skill, and is relative.
+    expect(path.isAbsolute(fs.readlinkSync(path.join(skills, "lingo")))).toBe(false);
+    expect(fs.existsSync(path.join(skills, "lingo", "SKILL.md"))).toBe(true);
+
+    await cli(["init"], e, vars);
+    // init must recognise it as already ours and leave it exactly as it is — if
+    // it silently rewrites it to an absolute link, the uninit assertion below
+    // stops testing anything about relative links at all.
+    expect(fs.readlinkSync(path.join(skills, "lingo"))).toBe(relative);
+    const removed = await cli(["uninit"], e, vars);
+    expect(removed.stdout).toContain("/lingo skill");
+    expect(fs.existsSync(path.join(skills, "lingo"))).toBe(false);
+    // …and our source is of course untouched.
+    expect(fs.existsSync(path.join(ours, "SKILL.md"))).toBe(true);
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("installs just the status line with --statusline-only", async () => {
+    const e = fresh();
+    const { home, codexHome, vars } = fakeEnvs(e);
+    const result = await cli(["init", "--statusline-only"], e, vars);
+    expect(result.code).toBe(0);
+
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(home, ".claude", "settings.json"), "utf8"),
+    ) as { statusLine?: unknown; hooks?: unknown };
+    expect(settings.statusLine).toBeTruthy();
+    expect(settings.hooks).toBeUndefined();
+    expect(fs.existsSync(path.join(codexHome, "config.toml"))).toBe(false);
+    expect(fs.existsSync(path.join(home, ".claude", "skills", "lingo"))).toBe(false);
+    // It also must not claim to have installed hooks it deliberately skipped.
+    expect(result.stdout).not.toContain("hooks installed");
+  });
+
+  // `statusLineCommand` is tested in isolation, but the single line wiring it
+  // into `init` could be deleted with the whole suite green — reproducing exactly
+  // the failure it exists to prevent: a bare name the status line has no PATH
+  // for, and a blank panel with no error anywhere.
+  it("points a plugin's status line at the plugin's own binary", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const result = await cli(["init", "--statusline-only"], e, {
+      ...vars,
+      // What Claude Code sets when it runs a plugin's own commands.
+      CLAUDE_PLUGIN_ROOT: path.join(home, ".claude", "plugins", "claudelingo"),
+    });
+    expect(result.code).toBe(0);
+
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(home, ".claude", "settings.json"), "utf8"),
+    ) as { statusLine: { command: string } };
+    const command = settings.statusLine.command;
+    expect(command).toContain("statusline");
+    // The executable, not the bare name.
+    const exec = command.startsWith('"') ? command.slice(1, command.indexOf('"', 1)) : command.split(" ")[0]!;
+    expect(path.isAbsolute(exec), `statusLine runs "${exec}", which needs a PATH it will not get`).toBe(true);
+    expect(fs.existsSync(exec)).toBe(true);
+  });
+
+  it("blames the right half when --statusline-only cannot be installed", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const file = path.join(home, ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "{ not valid json");
+
+    const result = await cli(["init", "--statusline-only"], e, vars);
+    expect(result.code).toBe(1);
+    // It never sets out to install hooks in this mode, so saying they failed
+    // sends the reader looking in the wrong place.
+    expect(result.stderr).not.toContain("hooks NOT installed");
+    expect(result.stderr).toContain("Status line NOT installed");
+    expect(fs.readFileSync(file, "utf8")).toBe("{ not valid json");
+  });
+
+  it("leaves another tool's settings alone when only the status line is wanted", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const file = path.join(home, ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ model: "opus", hooks: { Stop: ["theirs"] } }));
+
+    await cli(["init", "--statusline-only"], e, vars);
+    const settings = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    expect(settings.model).toBe("opus");
+    expect(settings.hooks).toEqual({ Stop: ["theirs"] });
+    expect(settings.statusLine).toBeTruthy();
+  });
+
+  it("never replaces someone else's lingo skill, and never removes it", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const theirs = path.join(e.home, "their-skill");
+    fs.mkdirSync(theirs, { recursive: true });
+    fs.writeFileSync(path.join(theirs, "SKILL.md"), "name: someone else's\n");
+    const link = path.join(home, ".claude", "skills", "lingo");
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(theirs, link);
+
+    const result = await cli(["init"], e, vars);
+    expect(result.stderr).toContain("not ours");
+    expect(fs.readlinkSync(link)).toBe(theirs);
+    expect(fs.readFileSync(path.join(theirs, "SKILL.md"), "utf8")).toContain("someone else");
+
+    await cli(["uninit"], e, vars);
+    expect(fs.readlinkSync(link)).toBe(theirs);
+  });
+
   it("exits non-zero when the Claude Code side cannot be installed", async () => {
     // Reporting success here is how a user ends up staring at a pane that never
     // wakes up, with no idea why.
@@ -390,10 +573,60 @@ describe("init reports what actually happened", () => {
     const result = await cli(["uninit"], e, vars);
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("NOT removed");
-    expect(result.stdout).toContain("Removed: Codex notify");
+    expect(result.stderr).toContain("Claude Code hooks");
+    // The half that could be cleaned up still was, and is named.
+    expect(result.stdout).toMatch(/^Removed: .*Codex notify/m);
     expect(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")).not.toContain(
       "claudelingo",
     );
+  });
+});
+
+describe("a mistyped command", () => {
+  it("says so instead of opening the pane and waiting on stdin", async () => {
+    const e = fresh();
+    for (const typo of ["bogusnonsense", "stat", "skipp", "Lang"]) {
+      const result = await cli([typo], e);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("unknown command");
+      // Naming the word is the whole point: a typo must not read as a hang.
+      expect(result.stderr).toContain(typo);
+      expect(result.stdout).toBe("");
+    }
+  });
+
+  it("still knows every command the panel and the skill tell people to type", async () => {
+    const e = fresh();
+    for (const args of [["skip"], ["lang"], ["panel"], ["stats"], ["langs"]]) {
+      const result = await cli(args, e);
+      expect(result.stderr).not.toContain("unknown command");
+    }
+  });
+});
+
+describe("flags around `start`", () => {
+  // Everything after `start` is forwarded to the agent, so this used to study the
+  // configured language and hand `--lang` to Claude Code, which has no such flag.
+  it.each([["--lang", "fr"], ["--lang=fr"]])("refuses %s after start", async (...flag) => {
+    const e = fresh();
+    // Shielded even though the guard fires before anything launches: the check
+    // that keeps the suite off the real binary is a per-call-site one, and an
+    // exception "because this one is safe" is how it stops being safe later.
+    const bin = stubClaude(e, "ok");
+    const result = await cli(["start", ...flag], e, withStub(bin));
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("passed on to the agent");
+    expect(result.stderr).toContain("Put it first");
+    expect(result.stdout).toBe("");
+  });
+
+  it("still forwards the agent's own flags untouched", async () => {
+    const e = fresh();
+    // Behind a stand-in `claude`: `start` launches the agent, and the real binary
+    // would spend the user's quota on every run of the suite.
+    const bin = stubClaude(e, "ok");
+    const result = await cli(["start", "--model", "opus"], e, withStub(bin));
+    expect(result.stderr).not.toContain("passed on to the agent");
   });
 });
 
@@ -416,7 +649,10 @@ describe("generated pack codes", () => {
     // `--lang Estonian` defaults to code "es". Writing it would cost a real
     // generation, print "Study it with: claudelingo --lang es", and study Spanish.
     const e = fresh();
-    const result = await cli(["pack", "generate", "--lang", "Estonian"], e);
+    // Shielded even though the code clash is caught before any generation: the
+    // guard is per call site on purpose.
+    const bin = stubClaude(e, { code: "es", name: "E", englishName: "Estonian", words: [] });
+    const result = await cli(["pack", "generate", "--lang", "Estonian"], e, withStub(bin));
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("already in use");
     expect(result.stderr).toContain("--code");

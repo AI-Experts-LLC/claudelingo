@@ -93,22 +93,72 @@ export function removeHooks(settings) {
  * that would silently replace whatever they had configured, and unlike the hooks
  * there is nowhere for both to live.
  */
+/**
+ * Is this status-line command ours?
+ *
+ * Asked by marker rather than by exact binary, because the command we write is
+ * not always the same string: a standalone install writes the bare name and a
+ * plugin writes its own absolute path. Comparing against one of those would make
+ * re-running `init` report our own line as "already configured by someone else",
+ * and would leave it behind on uninstall.
+ */
+/**
+ * Split `"/path/to/claudelingo" statusline --compact` into its parts.
+ *
+ * Scanning for the word "statusline" anywhere in the string was wrong twice
+ * over: it matched inside the install path (a plugin under a directory called
+ * `statusline-tools` produced a command that would not run), and it let any
+ * third-party command that merely mentioned us be claimed as ours.
+ */
+function splitCommand(command) {
+    const trimmed = (command ?? "").trim();
+    if (!trimmed)
+        return null;
+    if (trimmed.startsWith('"')) {
+        const end = trimmed.indexOf('"', 1);
+        if (end === -1)
+            return null;
+        return { exec: trimmed.slice(1, end), rest: trimmed.slice(end + 1).trim() };
+    }
+    const space = trimmed.search(/\s/);
+    if (space === -1)
+        return { exec: trimmed, rest: "" };
+    return { exec: trimmed.slice(0, space), rest: trimmed.slice(space).trim() };
+}
+function isOurStatusLine(command) {
+    const split = splitCommand(command);
+    // Ours means: the program being run *is* claudelingo, and it is being asked
+    // for a status line. Not "the string mentions claudelingo somewhere".
+    return !!split && path.basename(split.exec) === MARKER && /^statusline\b/.test(split.rest);
+}
 export function withStatusLine(settings, bin) {
     const existing = settings.statusLine;
     const ours = `${bin} statusline`;
-    if (existing && !existing.command?.includes(`${bin} statusline`)) {
+    if (existing && !isOurStatusLine(existing.command)) {
         throw new StatusLineTaken(`a status line is already configured (${existing.command}). Claude Code allows ` +
             "only one, so claudelingo has left it alone. Remove it and re-run " +
             "`claudelingo init` to use claudelingo's instead, or run " +
             "`claudelingo init --no-statusline` to skip this part.");
     }
+    // Re-installing over our own line must not quietly undo how the user set it
+    // up. `claudelingo statusline --compact` with a `padding` of their own is a
+    // combination the README suggests, and overwriting the whole object dropped
+    // both. Keep their arguments and any extra fields; update only the executable,
+    // which is the part that goes stale when a plugin moves.
+    const kept = splitCommand(existing?.command);
+    const args = kept ? kept.rest.slice("statusline".length) : "";
     return {
         ...settings,
-        statusLine: { type: "command", command: ours, refreshInterval: STATUS_REFRESH_SECONDS },
+        statusLine: {
+            ...existing,
+            type: "command",
+            command: `${ours}${args}`,
+            refreshInterval: existing?.refreshInterval ?? STATUS_REFRESH_SECONDS,
+        },
     };
 }
 export function removeStatusLine(settings, bin) {
-    if (!settings.statusLine?.command?.includes(`${bin} statusline`))
+    if (!isOurStatusLine(settings.statusLine?.command))
         return settings;
     const next = { ...settings };
     delete next.statusLine;
@@ -148,11 +198,14 @@ export function writeSettings(file, settings) {
 }
 export function install(file, bin, options = {}) {
     const current = readSettings(file);
-    let next = withHooks(current, bin);
+    // A plugin install already brings the hooks with it; only the status line has
+    // to come from the main config, because Claude Code will not take one from a
+    // plugin. `hooks: false` is that case.
+    let next = options.hooks === false ? current : withHooks(current, bin);
     const result = {};
     if (options.statusLine !== false) {
         try {
-            next = withStatusLine(next, bin);
+            next = withStatusLine(next, options.statusLineBin ?? bin);
         }
         catch (error) {
             // The hooks are the load-bearing half; a taken status line must not stop
@@ -170,7 +223,7 @@ export function hasOurStatusLine(file, bin) {
     if (!fs.existsSync(file))
         return false;
     try {
-        return Boolean(readSettings(file).statusLine?.command?.includes(`${bin} statusline`));
+        return isOurStatusLine(readSettings(file).statusLine?.command);
     }
     catch {
         return false;
@@ -180,5 +233,153 @@ export function uninstall(file, bin) {
     if (!fs.existsSync(file))
         return;
     writeSettings(file, removeStatusLine(removeHooks(readSettings(file)), bin));
+}
+/* ── The /lingo skill ────────────────────────────────────────────────────────
+ *
+ * A plugin install carries `skills/` with it and Claude Code finds it there. The
+ * standalone installer does not, so `/lingo` came back "Unknown command" for
+ * anyone who took that route — the README promised it either way. `init` links it
+ * in, unless we are *running as* the plugin, where a second copy under the same
+ * name would be ambiguous.
+ */
+export function skillsDir() {
+    return path.join(os.homedir(), ".claude", "skills");
+}
+/**
+ * The package root above a file inside the build.
+ *
+ * Walked rather than counted: callers live at different depths (`dist/cli.js` and
+ * `dist/integrations/claudeCode.js`), and a hardcoded number of `..` silently
+ * resolved above the package for one of them — which is exactly how a skill goes
+ * missing without anyone noticing.
+ */
+export function packageRoot(fromFile) {
+    let dir = path.dirname(path.resolve(fromFile));
+    for (let i = 0; i < 6; i++) {
+        if (fs.existsSync(path.join(dir, "package.json")))
+            return dir;
+        const up = path.dirname(dir);
+        if (up === dir)
+            break;
+        dir = up;
+    }
+    return null;
+}
+/** Where this build keeps its skills, or null when it has none beside it. */
+export function bundledSkill(fromFile) {
+    const root = packageRoot(fromFile);
+    if (!root)
+        return null;
+    const dir = path.join(root, "skills", "lingo");
+    return fs.existsSync(path.join(dir, "SKILL.md")) ? dir : null;
+}
+/** True when this copy is itself an installed Claude Code plugin. */
+export function runningAsPlugin(fromFile) {
+    if (process.env.CLAUDE_PLUGIN_ROOT)
+        return true;
+    const root = packageRoot(fromFile);
+    if (!root)
+        return false;
+    const plugins = path.join(os.homedir(), ".claude", "plugins") + path.sep;
+    return path.resolve(root).startsWith(plugins);
+}
+/**
+ * Where a symlink actually points.
+ *
+ * A relative link is anchored at the directory holding the link, not at the
+ * process's cwd — `path.resolve` alone gets this wrong, and the consequence is
+ * not cosmetic: a live relative link to another tool's skill looks like a dead
+ * link of ours, and gets deleted. Whether it survived depended on which
+ * directory `init` happened to be run from.
+ */
+function linkTarget(link, read) {
+    return path.resolve(path.dirname(link), read);
+}
+/**
+ * Link `skills/lingo` into the user's skills directory.
+ *
+ * A directory that is not ours is never touched or overwritten — someone else's
+ * `lingo` skill is theirs, and silently replacing it would be the same class of
+ * mistake as overwriting a deck.
+ */
+export function installSkill(fromFile) {
+    if (runningAsPlugin(fromFile))
+        return { state: "plugin" };
+    const source = bundledSkill(fromFile);
+    if (!source)
+        return { state: "missing" };
+    const target = path.join(skillsDir(), "lingo");
+    let existing = null;
+    try {
+        existing = fs.readlinkSync(target);
+    }
+    catch (error) {
+        const code = error.code;
+        if (code === "EINVAL")
+            return { state: "taken", path: target };
+        if (code !== "ENOENT")
+            throw error;
+    }
+    if (existing !== null) {
+        const points = linkTarget(target, existing);
+        if (points === path.resolve(source))
+            return { state: "already" };
+        // Anything else that is still there belongs to someone: a different skill, or
+        // another copy of this one that is on disk and working. Only a link whose
+        // target has gone is safe to replace — matching on the path text was a guess,
+        // and a guess is not good enough to justify deleting.
+        if (fs.existsSync(points))
+            return { state: "taken", path: target };
+    }
+    fs.mkdirSync(skillsDir(), { recursive: true });
+    // Replacing our own stale link, so the target is not someone else's work.
+    fs.rmSync(target, { force: true });
+    fs.symlinkSync(source, target);
+    return { state: "linked", path: target };
+}
+/**
+ * Remove the link, but only when it points at *this* build's skill.
+ *
+ * Uninstalling must not take someone else's `lingo` with it, and "the path has
+ * our name in it" is not proof of ownership.
+ */
+export function uninstallSkill(fromFile) {
+    const source = bundledSkill(fromFile);
+    if (!source)
+        return false;
+    const target = path.join(skillsDir(), "lingo");
+    let existing;
+    try {
+        existing = fs.readlinkSync(target);
+    }
+    catch {
+        return false;
+    }
+    if (linkTarget(target, existing) !== path.resolve(source))
+        return false;
+    fs.rmSync(target, { force: true });
+    return true;
+}
+/**
+ * The command to write into `statusLine`.
+ *
+ * A standalone install puts `claudelingo` on PATH, so the bare name is right and
+ * stays right when the install moves. A *plugin* install does not: Claude Code
+ * adds a plugin's `bin/` to the PATH it gives hooks, but the status line is
+ * configured in the main settings file and a bare name there can resolve to
+ * nothing — a silently blank panel with no error anywhere. So a plugin writes its
+ * own absolute path, quoted, because plugins get installed under paths with
+ * spaces in them.
+ */
+export function statusLineCommand(fromFile, bin) {
+    if (!runningAsPlugin(fromFile))
+        return bin;
+    const root = packageRoot(fromFile);
+    if (!root)
+        return bin;
+    const own = path.join(root, "bin", "claudelingo");
+    if (!fs.existsSync(own))
+        return bin;
+    return own.includes(" ") ? `"${own}"` : own;
 }
 //# sourceMappingURL=claudeCode.js.map

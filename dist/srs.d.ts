@@ -30,6 +30,15 @@ export declare function selectNext(pack: Pack, progress: Progress, settings: Set
     item: ItemProgress | null;
 } | null;
 /** When the next item becomes eligible, or null if there is nothing scheduled. */
+/**
+ * A skip costs nothing but a delay — punishing it would poison the box levels.
+ *
+ * Shared by the pane and by `claudelingo skip`, so the two cannot drift: a word
+ * with no progress row yet gets one in the `new` stage, because without it
+ * `selectNext` hands back the very card that was just skipped.
+ */
+export declare const SKIP_DELAY_MS: number;
+export declare function deferItem(existing: ItemProgress | undefined, id: string, now: number): ItemProgress;
 export declare function nextDueAt(progress: Progress): number | null;
 /** Strip case, accents, and surrounding punctuation so "Qué" matches "que". */
 export declare function normalize(text: string): string;

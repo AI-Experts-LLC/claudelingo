@@ -14,6 +14,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoPane: true,
   askFirst: false,
   onboarded: false,
+  panel: true,
 };
 
 /**
