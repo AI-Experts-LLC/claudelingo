@@ -211,7 +211,11 @@ function reduceKey(state, key, pack) {
         if (state.screen === "words") {
             const step = 6;
             if (key.name === "down" || key.ch === "j") {
-                return { state: { ...state, wordsFrom: state.wordsFrom + step }, effects: [] };
+                // Clamped here, not just where it is drawn: an unbounded number means
+                // pressing k afterwards does nothing visible for as long as you held j.
+                const met = pack.words.filter((word) => state.progress.items[word.id]).length;
+                const last = Math.max(0, met - 1);
+                return { state: { ...state, wordsFrom: Math.min(last, state.wordsFrom + step) }, effects: [] };
             }
             if (key.name === "up" || key.ch === "k") {
                 return { state: { ...state, wordsFrom: Math.max(0, state.wordsFrom - step) }, effects: [] };

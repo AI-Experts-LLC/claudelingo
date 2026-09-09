@@ -714,8 +714,24 @@ function cmdAnswer(args) {
                 return;
             }
         }
+        // A bare number typed at a multiple-choice card is a choice, not a word:
+        // `/lingo 5` falls through the skill's table into `--text "5"`, and grading
+        // that as a wrong answer costs a box for a mistyped index. If it names an
+        // option, take it as one; if it names no option, say so.
+        let asChoice = choice;
+        if (choice === undefined && typed !== undefined && card.choices.length) {
+            const exact = card.choices.some((c) => normalize(c) === typed);
+            const asNumber = /^\d+$/.test(typed) ? Number(typed) - 1 : Number.NaN;
+            if (!exact && Number.isInteger(asNumber)) {
+                if (asNumber < 0 || asNumber >= card.choices.length) {
+                    emit({ error: `there is no option ${typed} — pick 1 to ${card.choices.length}` });
+                    return;
+                }
+                asChoice = asNumber;
+            }
+        }
         const correct = isCorrect(card, {
-            ...(choice !== undefined ? { choice } : {}),
+            ...(asChoice !== undefined ? { choice: asChoice } : {}),
             ...(text !== undefined ? { text } : {}),
         });
         const now = Date.now();

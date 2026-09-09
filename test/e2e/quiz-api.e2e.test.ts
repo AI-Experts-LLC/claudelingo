@@ -380,6 +380,51 @@ describe("the quiz the /lingo skill drives", () => {
     }
   });
 
+  // The guards protected `--choice`; the text path walked round them. A correct
+  // choice was thrown away whenever any text came with it — box demoted, lapse
+  // recorded, streak zeroed, for the right answer.
+  it("takes the option you picked, even with stray text alongside", async () => {
+    const e = fresh();
+    await reviewCard(e, 3);
+    await next(e);
+    const pending = JSON.parse(
+      fs.readFileSync(path.join(e.home, "pending-es.json"), "utf8"),
+    ) as { answerIndex: number; choices: string[] };
+    const right = String(pending.answerIndex + 1);
+
+    const before = JSON.parse(fs.readFileSync(progressFile(e, "es"), "utf8")) as {
+      items: Record<string, { box: number; lapses: number }>;
+      streak: number;
+    };
+    const id = Object.keys(before.items)[0]!;
+
+    const graded = await answer(e, ["--json", "--choice", right, "--text", right]);
+    expect(graded.correct, "the picked option was the right one").toBe(true);
+    const after = JSON.parse(fs.readFileSync(progressFile(e, "es"), "utf8")) as typeof before;
+    expect(after.items[id]!.box).toBeGreaterThan(before.items[id]!.box);
+    expect(after.items[id]!.lapses).toBe(before.items[id]!.lapses);
+    expect(after.streak).toBeGreaterThan(before.streak);
+  });
+
+  // `/lingo 5` is not in the skill's table, so it arrives here as `--text "5"`.
+  it("refuses a typed number that names no option, instead of grading it", async () => {
+    const e = fresh();
+    await reviewCard(e, 3);
+    const card = (await next(e)).card as { choices: string[] };
+    const tooBig = String(card.choices.length + 1);
+    const before = fs.readFileSync(progressFile(e, "es"), "utf8");
+
+    const { stdout } = await cli(["answer", "--json", "--text", tooBig], e);
+    const result = JSON.parse(stdout.trim()) as { error?: string; correct?: boolean };
+    expect(result.error).toContain("no option");
+    expect(result.correct).toBeUndefined();
+    expect(fs.readFileSync(progressFile(e, "es"), "utf8")).toBe(before);
+
+    // …while a number that does name one answers it.
+    const graded = await answer(e, ["--json", "--text", "1"]);
+    expect(typeof graded.correct).toBe("boolean");
+  });
+
   it("refuses a number on a card that wants typing", async () => {
     const e = fresh();
     // Box 5 is the recall stage: no choices at all.

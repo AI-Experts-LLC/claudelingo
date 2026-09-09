@@ -530,6 +530,15 @@ describe("the screens you can put over the pane", () => {
     expect(frame(state, 72).join("\n")).toContain(`1–8 of ${all}`);
   });
 
+  it("stops walking at the end of the list, so coming back is one press", () => {
+    let state = drive(met(pack.words.length), [{ type: "key", key: { ch: "w" } }]);
+    for (let i = 0; i < 20; i++) state = drive(state, [{ type: "key", key: { name: "down" } }]);
+    // Unbounded here means k does nothing visible for as long as j was held.
+    expect(state.wordsFrom).toBeLessThan(pack.words.length);
+    const back = drive(state, [{ type: "key", key: { name: "up" } }]);
+    expect(back.wordsFrom).toBeLessThan(state.wordsFrom);
+  });
+
   it("closes on any other key, and the walkthrough keeps them out entirely", () => {
     const open = drive(met(3), [{ type: "key", key: { ch: "t" } }]);
     expect(drive(open, [{ type: "key", key: { ch: "x" } }]).screen).toBeNull();

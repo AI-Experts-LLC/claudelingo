@@ -186,7 +186,9 @@ describe("the status line Claude Code draws", () => {
     const { stdout, code } = await statusline(e);
     expect(code).toBe(0);
     expect(stdout).not.toContain("Error");
-    expect(stdout).not.toContain("at ");
+    // A stack frame, not the word "at": Spanish glosses include "to, at", so the
+    // bare substring made this test fail whenever the clock landed on one.
+    expect(stdout).not.toMatch(/^\s*at .*:\d+/m);
     // A corrupt deck is recovered, not fatal, so the panel still draws — what
     // matters is that it is the panel and not a stack trace.
     expect(stdout.trimEnd().split("\n").length).toBeLessThanOrEqual(PANEL_ROWS)

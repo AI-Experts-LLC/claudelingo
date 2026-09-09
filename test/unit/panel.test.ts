@@ -162,6 +162,19 @@ describe("the panel under the prompt", () => {
     }
   });
 
+  it("shows a cached memory hook with the meaning, and only then", () => {
+    // It was computed on every tick and rendered nowhere: the drill used to show
+    // it, and the drill is gone.
+    const hook = "«de» — DEparting *from* somewhere";
+    const progress = seeded();
+    const hidden = renderPanel(pack, progress, T0, { ...plain, hook }).join("\n");
+    const shown = renderPanel(pack, progress, T0 + 5000, { ...plain, hook }).join("\n");
+    const revealing = [hidden, shown].filter((frame) => frame.includes("DEparting"));
+    expect(revealing, "the hook shows in exactly one half of the slot").toHaveLength(1);
+    // It replaces the hints rather than adding a row: the height is the promise.
+    expect(renderPanel(pack, progress, T0 + 5000, { ...plain, hook })).toHaveLength(PANEL_ROWS);
+  });
+
   it("says there is nothing to answer on a teach card", () => {
     const rows = renderPanel(pack, seeded(), T0, {
       ...plain,
