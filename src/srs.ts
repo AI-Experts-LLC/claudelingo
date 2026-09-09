@@ -19,9 +19,18 @@ export const MAX_BOX = 5;
  * The teaching ramp: a word is shown before it is ever asked, recognised before it
  * has to be produced, and only typed out once it is genuinely familiar.
  */
-export function cardKindForBox(box: number): CardKind {
+/**
+ * What to ask at a given box, and whether the word can carry a sentence.
+ *
+ * A cloze sits between recognising a word and producing it cold: the sentence
+ * gives you the grammar and the company the word keeps, which is most of what
+ * "knowing" it means, and it is the first time the word is asked for in context
+ * rather than in isolation. Words without an example sentence skip straight on.
+ */
+export function cardKindForBox(box: number, hasExample = false): CardKind {
   if (box <= 2) return "recognize";
-  if (box <= 4) return "reverse";
+  if (box === 3) return "reverse";
+  if (box === 4) return hasExample ? "cloze" : "reverse";
   return "recall";
 }
 
@@ -173,7 +182,10 @@ export function normalize(text: string): string {
 }
 
 export function buildCard(pack: Pack, word: Word, item: ItemProgress | null, rng: () => number): Card {
-  const kind: CardKind = item === null || item.stage === "new" ? "teach" : cardKindForBox(item.box);
+  const kind: CardKind =
+    item === null || item.stage === "new"
+      ? "teach"
+      : cardKindForBox(item.box, Boolean(word.example));
 
   if (kind === "teach") {
     return { kind, word, prompt: word.term, choices: [], answerIndex: -1, accepted: [word.term] };
@@ -192,6 +204,20 @@ export function buildCard(pack: Pack, word: Word, item: ItemProgress | null, rng
 
   const distractors = pickDistractors(pack, word, rng, 3);
   const label = (w: Word) => (kind === "recognize" ? w.gloss : w.term);
+  if (kind === "cloze" && word.example) {
+    // The sentence with its word blanked out. Matched case-insensitively because
+    // the sentence may well start with it.
+    const blanked = word.example.text.replace(new RegExp(escapeForRegex(word.term), "iu"), "____");
+    const options = shuffle([word, ...distractors], rng);
+    return {
+      kind,
+      word,
+      prompt: blanked,
+      choices: options.map((w) => w.term),
+      answerIndex: options.findIndex((w) => w.id === word.id),
+      accepted: [word.term],
+    };
+  }
   const options = shuffle([word, ...distractors], rng);
   return {
     kind,
@@ -209,12 +235,19 @@ export function buildCard(pack: Pack, word: Word, item: ItemProgress | null, rng
  * Shared by the CLI and the panel so the two cannot drift into asking the same
  * card two different ways.
  */
+/** Escape a term so it can be matched literally inside a sentence. */
+function escapeForRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function questionFor(card: Card, pack: Pack): string {
   switch (card.kind) {
     case "recognize":
       return `What does "${card.prompt}" mean?`;
     case "reverse":
       return `How do you say "${card.prompt}" in ${pack.englishName}?`;
+    case "cloze":
+      return `Fill the gap:  ${card.prompt}`;
     case "teach":
       return `New word: "${card.word.term}" (${card.word.pos}) means "${card.word.gloss}".`;
     default:

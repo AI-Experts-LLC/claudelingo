@@ -1120,6 +1120,7 @@ async function cmdPack(args: Args): Promise<void> {
     );
   }
   const count = Number(args.flags.count ?? 300);
+  if (!Number.isInteger(count) || count < 1) fail(`--count needs a whole number, not "${args.flags.count}"`);
   const model = (args.flags.model as string) || loadSettings().settings.model;
 
   if (!hasClaude()) fail("the `claude` command is not on your PATH");
@@ -1128,7 +1129,12 @@ async function cmdPack(args: Args): Promise<void> {
       "through your Claude Code session…\n",
   );
   try {
-    const raw = await generatePack(language, code, count, { model });
+    const raw = await generatePack(language, code, count, {
+      model,
+      // A thousand words is minutes of work, in chunks. Silence for that long
+      // reads as a hang.
+      onProgress: (done, total) => process.stdout.write(`  ${done}/${total} words\n`),
+    });
     const file = savePack(raw, { overwrite: args.flags.overwrite === true });
     process.stdout.write(`Wrote ${raw.words.length} words to ${file}\n`);
     process.stdout.write(`Study it with: ${BIN} --lang ${raw.code}\n`);

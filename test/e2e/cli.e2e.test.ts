@@ -266,6 +266,73 @@ function withStub(bin: string): Record<string, string> {
 }
 
 describe("claudelingo pack generate", () => {
+  /** A stand-in that answers each request differently, so chunks can be told apart. */
+  function stubChunks(e: Env): string {
+    const bin = path.join(e.home, "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    const counter = path.join(e.home, "chunk-count");
+    const script = path.join(e.home, "chunk-stub.mjs");
+    // Written as a Node script rather than shell: each call bumps a counter and
+    // answers with words numbered from it, plus one word repeated every time —
+    // which is what the real thing does at a chunk boundary.
+    fs.writeFileSync(
+      script,
+      [
+        `import fs from "node:fs";`,
+        `const counter = ${JSON.stringify(counter)};`,
+        `const n = Number(fs.readFileSync(counter, "utf8").trim() || 0) + 1;`,
+        `fs.writeFileSync(counter, String(n));`,
+        `const a = n * 10;`,
+        `const words = [`,
+        `  { term: "w" + a + "1", gloss: "g" + a + "1", pos: "noun",`,
+        `    example: "una w" + a + "1 aquí | a w" + a + "1 here" },`,
+        `  { term: "w" + a + "2", gloss: "g" + a + "2", pos: "verb",`,
+        `    example: "this sentence omits the word | nope" },`,
+        `  { term: "repeat", gloss: "same every time", pos: "adj" },`,
+        `];`,
+        `process.stdout.write(JSON.stringify({`,
+        `  type: "result", subtype: "success", is_error: false,`,
+        `  result: JSON.stringify({ words }),`,
+        `}));`,
+      ].join("\n"),
+    );
+    fs.writeFileSync(counter, "0");
+    const file = path.join(bin, "claude");
+    fs.writeFileSync(file, `#!/bin/sh\nexec ${process.execPath} ${JSON.stringify(script)}\n`);
+    fs.chmodSync(file, 0o755);
+    return bin;
+  }
+
+  it("asks for a long pack in chunks, and drops what repeats across them", async () => {
+    const e = fresh();
+    const bin = stubChunks(e);
+    const generated = await cli(
+      // More than one chunk's worth, so the boundary behaviour is exercised.
+      ["pack", "generate", "--lang", "Testish", "--code", "tt", "--count", "150"],
+      e,
+      withStub(bin),
+    );
+    expect(generated.code).toBe(0);
+    // Progress is reported, because a thousand words is minutes of silence.
+    expect(generated.stdout).toMatch(/\d+\/150 words/);
+
+    const pack = JSON.parse(
+      fs.readFileSync(path.join(e.home, "packs", "tt.json"), "utf8"),
+    ) as { words: string[][] };
+    const terms = pack.words.map((w) => w[0]);
+    // More than one chunk was asked for…
+    const calls = Number(fs.readFileSync(path.join(e.home, "chunk-count"), "utf8").trim());
+    expect(calls).toBeGreaterThan(1);
+    // …the boundary repeat appears once, not once per chunk…
+    expect(terms.filter((t) => t === "repeat")).toHaveLength(1);
+    expect(new Set(terms).size).toBe(terms.length);
+    // …and a sentence survives only where it contains its own word.
+    const withSentence = pack.words.find((w) => w[0] === "w101");
+    expect(withSentence?.[4]).toContain("w101");
+    const omitted = pack.words.find((w) => w[0] === "w102");
+    expect(omitted?.[4]).toBeUndefined();
+  });
+
   it("writes a pack that loads back and can be studied", async () => {
     const e = fresh();
     const bin = stubClaude(e, {

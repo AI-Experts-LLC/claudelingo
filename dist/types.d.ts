@@ -10,6 +10,11 @@ export interface Word {
     gloss: string;
     /** Coarse part of speech, used to pick plausible distractors. */
     pos: string;
+    /** A sentence using the word, and its translation. Absent in older packs. */
+    example?: {
+        text: string;
+        translation: string;
+    };
     /** Optional extra: noun gender, an irregular form, a usage caveat. */
     note?: string;
 }
@@ -27,13 +32,19 @@ export interface RawPack {
     code: string;
     name: string;
     englishName: string;
-    /** `[term, gloss, pos, note?]`, ordered most-frequent first. */
-    words: Array<[string, string, string] | [string, string, string, string]>;
+    /**
+     * `[term, gloss, pos, note?, example?]`, ordered most-frequent first.
+     *
+     * `example` is a short sentence using the word, with its English translation
+     * after a `|`. It is what a cloze card blanks out, and it is optional: packs
+     * written before sentences existed stay valid.
+     */
+    words: Array<[string, string, string] | [string, string, string, string] | [string, string, string, string, string]>;
 }
 /** Where an item sits in the teach -> recognise -> produce progression. */
 export type Stage = "new" | "learning" | "review";
 /** What we are about to ask. `teach` is a no-fail introduction, not a question. */
-export type CardKind = "teach" | "recognize" | "reverse" | "recall";
+export type CardKind = "teach" | "recognize" | "reverse" | "recall" | "cloze";
 export interface ItemProgress {
     /** Word id. */
     id: string;
