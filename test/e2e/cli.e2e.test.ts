@@ -428,6 +428,16 @@ describe("init reports what actually happened", () => {
   // install it is a total failure. A taken slot is returned as a problem rather
   // than thrown, so it never reached the failure list and this exited 0 having
   // done nothing — against a README that promises the opposite.
+  it("does not promise a panel when told not to install one", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const result = await cli(["init", "--no-statusline"], e, vars);
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain("panel appears under your prompt");
+    const settings = JSON.parse(fs.readFileSync(path.join(home, ".claude", "settings.json"), "utf8"));
+    expect(settings.statusLine).toBeUndefined();
+  });
+
   it("exits non-zero when --statusline-only installs nothing", async () => {
     const e = fresh();
     const { home, vars } = fakeEnvs(e);

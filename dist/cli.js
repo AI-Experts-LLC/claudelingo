@@ -4,7 +4,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_SETTINGS, ensureHome, loadSettings, paths, quarantine, readJsonFile, saveSettings, writeJsonAtomic, } from "./config.js";
 import * as lock from "./lock.js";
-import { applyAnswer, buildCard, deferItem, emptyProgress, isCorrect, makeRng, selectNext, stats, } from "./srs.js";
+import { applyAnswer, buildCard, deferItem, emptyProgress, isCorrect, makeRng, normalize, selectNext, stats, } from "./srs.js";
 import { listPacks, loadPack, savePack } from "./packs/index.js";
 import { readStatus, stateForEvent, writeStatus } from "./agentState.js";
 import * as claudeCode from "./integrations/claudeCode.js";
@@ -66,8 +66,14 @@ export function parseArgs(argv) {
             const name = rawName;
             if (inline !== undefined)
                 flags[name] = inline;
-            else if (takesValue.has(name))
-                flags[name] = argv[++i] ?? "";
+            else if (takesValue.has(name)) {
+                // `--text --json` used to make the text literally "--json": the caller
+                // silently left JSON mode *and* graded an answer nobody gave. A flag is
+                // never the value of another flag; leaving it empty makes
+                // `requireFlagValues` reject it with the message it already has.
+                const next = argv[i + 1];
+                flags[name] = next === undefined || next.startsWith("--") ? "" : (i++, next);
+            }
             // A trailing `--lang` with nothing after it is a typo, not a request for
             // the configured default.
             else if (name.startsWith("no-"))
@@ -439,7 +445,13 @@ function cmdNext(args) {
             note: card.word.note ?? null,
         },
         stats: stats(pack, progress, now),
-    }, [question, numbered, card.word.note ? `  (${card.word.note})` : ""]
+    }, 
+    // The note is shown on a `teach` card, where the word and its meaning are
+    // both on screen anyway. Beside a question it is a hint — sometimes the
+    // answer outright: "favor" carries "masculine, as in: por favor". The JSON
+    // form keeps it as its own field for the skill to withhold; printing it here
+    // put it under the question unconditionally.
+    [question, numbered, card.kind === "teach" && card.word.note ? `  (${card.word.note})` : ""]
         .filter(Boolean)
         .join("\n"));
 }
@@ -677,7 +689,10 @@ function cmdAnswer(args) {
         // breaks a streak while reporting `{"correct":false}` — indistinguishable
         // from the user actually getting it wrong, and this command is driven by a
         // model's output, so one malformed call would cost them progress silently.
-        if (choice === undefined && text === undefined) {
+        // `--text "   "` is no answer at all, the same as no flag: `normalize` makes
+        // it empty, and grading empty as a miss costs a box for saying nothing.
+        const typed = text === undefined ? undefined : normalize(text);
+        if (choice === undefined && (typed === undefined || typed.length === 0)) {
             emit({ error: "say which answer: --choice N, or --text \"...\"" });
             return;
         }
@@ -791,6 +806,15 @@ async function cmdStatusline(args) {
         // question, and grading stays with `answer`, which holds the lock.
         const pendingFile = paths.pending(settings.lang);
         // Presence, not parseability — see `outstanding` in StatusLineOptions.
+        //
+        // A running pane counts too. It builds its card in memory and writes no
+        // pending file, so the status line had no idea a question was on screen and
+        // went on drilling the same overdue pool — within one rotation printing the
+        // answer to the very card the pane was asking.
+        // Two separate facts, and the renderers want both: a pending file on disk,
+        // and a pane holding the deck with its card in memory. Folding one into the
+        // other left a line nothing could prove was doing anything.
+        const paneOpen = lock.isHeld(paths.lock(settings.lang));
         const outstanding = fs.existsSync(pendingFile);
         const stored = readJsonFile(pendingFile);
         const value = stored.ok ? stored.value : null;
@@ -807,7 +831,7 @@ async function cmdStatusline(args) {
         // `outstanding` is presence on disk; `pending` is the readable form of it.
         // Both renderers need both: the panel shows the question, the one-line form
         // has no room for it and must say so rather than drilling the same word.
-        const full = { ...options, pending, outstanding };
+        const full = { ...options, pending, outstanding, paneOpen };
         if (!wantPanel) {
             process.stdout.write(`${renderStatusLine(pack, progress, Date.now(), full)}\n`);
             return;

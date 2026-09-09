@@ -2,7 +2,16 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { CLI, type Env, REPO, cli, makeEnv, progressFile, requireBuild } from "./harness.js";
+import {
+  CLI,
+  type Env,
+  Pane,
+  REPO,
+  cli,
+  makeEnv,
+  progressFile,
+  requireBuild,
+} from "./harness.js";
 import { PANEL_ROWS } from "../../src/statusline.js";
 
 let env: Env;
@@ -223,6 +232,27 @@ describe("the status line Claude Code draws", () => {
     const { stdout } = await statusline(e);
     // Rows on screen, not array entries: a newline inside one is two rows there.
     expect(stdout.trimEnd().split("\n")).toHaveLength(PANEL_ROWS);
+  });
+
+  // The pane keeps its card in memory and writes no pending file. Nothing told
+  // the status line a question was on screen, so it drilled on and printed the
+  // answer to the card the pane was asking. The unit test covers the rendering;
+  // this covers the wiring, which is where the knowledge has to come from.
+  it("goes quiet while a pane holds the deck", async () => {
+    const e = fresh();
+    seed(e);
+    const pane = new Pane([], e);
+    try {
+      await pane.until(() => fs.existsSync(path.join(e.home, "progress-es.lock")));
+      for (const extra of [[], ["--compact"]]) {
+        const { stdout } = await statusline(e, extra);
+        expect(stdout).toContain("pane");
+        // The drill — the thing that would give the answer away — is not running.
+        expect(stdout).not.toMatch(/«.+» = [^?]/);
+      }
+    } finally {
+      pane.kill();
+    }
   });
 
   it("returns quickly, because Claude Code cancels a slow one", async () => {

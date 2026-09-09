@@ -180,9 +180,19 @@ export function buildCard(pack, word, item, rng) {
 export function isCorrect(card, response) {
     if (card.kind === "teach")
         return true;
-    if (card.choices.length)
-        return response.choice === card.answerIndex;
     const typed = normalize(response.text ?? "");
+    if (card.choices.length) {
+        // Someone who types the right answer instead of its number has got it right.
+        // This used to compare `undefined === answerIndex` and mark them wrong —
+        // demoting a box and breaking a streak for being correct — and the skill's
+        // catch-all sends typed input here for every card kind.
+        if (typed.length > 0) {
+            const right = card.choices[card.answerIndex];
+            return ((right !== undefined && normalize(right) === typed) ||
+                card.accepted.some((a) => normalize(a) === typed));
+        }
+        return response.choice === card.answerIndex;
+    }
     return typed.length > 0 && card.accepted.some((a) => normalize(a) === typed);
 }
 function freshItem(id, now) {

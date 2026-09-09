@@ -42,7 +42,7 @@ yourself. A plugin's `bin/` is on the PATH its *hooks* get, not your shell's, so
 the command needs its full path:
 
 ```bash
-"$HOME/.claude/plugins/*/claudelingo/bin/claudelingo" init --statusline-only
+cd "$HOME"/.claude/plugins/*/claudelingo && bin/claudelingo init --statusline-only
 ```
 
 That writes the plugin's own absolute path into the setting, since the status
@@ -293,9 +293,8 @@ The pack is generated through your Claude Code session, validated, and written t
 Entries are `[term, gloss, pos, note?]`, ordered most frequent first. Control
 characters are stripped on load, because a newline in a gloss would turn the status
 line into two lines inside Claude Code's UI and a raw escape would restyle
-everything after it. Two further rules the loader enforces: no duplicate terms, and — because a translate card shows only the
-gloss — no two words may share a term. Where two words genuinely collide, put the
-distinction in the gloss itself (`"to be (permanent)"` vs `"to be (state, place)"`).
+everything after it. One further rule the loader enforces: no duplicate terms. Where two words
+genuinely collide, put the distinction in the gloss itself (`"to be (permanent)"` vs `"to be (state, place)"`).
 
 ## Commands
 
@@ -414,7 +413,7 @@ npm run typecheck
 
 The end-to-end tests spawn the real binary and drive it over pipes, firing genuine
 hook events, appending to a genuine Codex transcript, revoking write permission on the
-the frames a user would see. `CLAUDELINGO_FORCE_RENDER=1` makes the pane paint without a
+home directory, and reading back the frames a user would see. `CLAUDELINGO_FORCE_RENDER=1` makes the pane paint without a
 TTY and `CLAUDELINGO_SEED` fixes the shuffle, which is what makes those assertions
 stable.
 

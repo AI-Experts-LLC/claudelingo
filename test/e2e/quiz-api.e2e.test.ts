@@ -298,6 +298,88 @@ describe("the quiz the /lingo skill drives", () => {
     expect(id).toBeTruthy();
   });
 
+  // The mirror of the range check, and the half that was missed: `isCorrect`
+  // ignored `text` whenever a card had choices, so typing the right word was
+  // graded a miss — and the skill's catch-all sends typed input here for every
+  // card kind. Being right cost a box level, a lapse and the streak.
+  it("accepts the right answer typed out on a multiple-choice card", async () => {
+    const e = fresh();
+    await reviewCard(e, 3);
+    const card = (await next(e)).card as { choices: string[]; question: string };
+    expect(card.choices.length).toBeGreaterThan(0);
+
+    const before = JSON.parse(fs.readFileSync(progressFile(e, "es"), "utf8")) as {
+      items: Record<string, { box: number; lapses: number }>;
+      streak: number;
+    };
+    const id = Object.keys(before.items)[0]!;
+
+    // The right one, typed instead of numbered. The test reads `answerIndex`
+    // from the pending file rather than guessing — an assertion guarded by
+    // `if (correct)` would pass happily while the bug was back.
+    const pending = JSON.parse(
+      fs.readFileSync(path.join(e.home, "pending-es.json"), "utf8"),
+    ) as { answerIndex: number; choices: string[] };
+    const right = pending.choices[pending.answerIndex]!;
+
+    const graded = await answer(e, ["--json", "--text", right]);
+    expect(graded.correct, `typed "${right}", the card's own answer`).toBe(true);
+
+    const after = JSON.parse(fs.readFileSync(progressFile(e, "es"), "utf8")) as typeof before;
+    expect(after.items[id]!.box).toBeGreaterThan(before.items[id]!.box);
+    expect(after.items[id]!.lapses).toBe(before.items[id]!.lapses);
+    expect(after.streak).toBeGreaterThan(before.streak);
+    // …and a typed answer is genuinely graded, not waved through: put the same
+    // card back up (a teach card would return `correct` for anything) and miss.
+    await reviewCard(e, 3);
+    const dealt = (await next(e)).card as { choices: string[]; kind: string };
+    expect(dealt.choices.length).toBeGreaterThan(0);
+    const wrong = await answer(e, ["--json", "--text", "definitelynotaword"]);
+    expect(wrong.correct).toBe(false);
+  });
+
+  it.each([["   "], ["\t"], ["  \n "]])("refuses a typed answer of only whitespace (%j)", async (blank) => {
+    const e = fresh();
+    await reviewCard(e, 5);
+    await next(e);
+    const before = fs.readFileSync(progressFile(e, "es"), "utf8");
+    const { stdout } = await cli(["answer", "--json", "--text", blank], e);
+    const result = JSON.parse(stdout.trim()) as { error?: string; correct?: boolean };
+    // Saying nothing is not saying the wrong thing.
+    expect(result.error).toBeTruthy();
+    expect(result.correct).toBeUndefined();
+    expect(fs.readFileSync(progressFile(e, "es"), "utf8")).toBe(before);
+  });
+
+  it("does not swallow the next flag as an answer", async () => {
+    const e = fresh();
+    await reviewCard(e, 5);
+    await next(e);
+    const before = fs.readFileSync(progressFile(e, "es"), "utf8");
+
+    // `--text --json` used to grade the literal string "--json" as the answer,
+    // and silently drop the caller out of JSON mode while doing it.
+    for (const args of [["--text", "--json"], ["--choice", "--json"], ["--text", "--choice", "2"]]) {
+      const { stderr, code } = await cli(["answer", ...args], e);
+      expect(code).toBe(1);
+      expect(stderr).toContain("needs a value");
+      expect(fs.readFileSync(progressFile(e, "es"), "utf8")).toBe(before);
+    }
+  });
+
+  it("does not print the note beside a question it has not answered", async () => {
+    const e = fresh();
+    // "favor" carries the note "masculine, as in: por favor" — the answer.
+    await reviewCard(e, 5);
+    const { stdout } = await cli(["next"], e);
+    const noteBearing = JSON.parse(
+      fs.readFileSync(path.join(e.home, "pending-es.json"), "utf8"),
+    ) as { kind: string };
+    if (noteBearing.kind !== "teach") {
+      expect(stdout).not.toMatch(/^\s+\(.*\)$/m);
+    }
+  });
+
   it("refuses a number on a card that wants typing", async () => {
     const e = fresh();
     // Box 5 is the recall stage: no choices at all.

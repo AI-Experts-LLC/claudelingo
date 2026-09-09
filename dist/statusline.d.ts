@@ -37,6 +37,15 @@ export interface StatusLineOptions {
     outstanding?: boolean;
     /** The outstanding question, when it could be read. */
     pending?: PendingCard | null;
+    /**
+     * A pane is open and holds the deck.
+     *
+     * It keeps its card in memory and writes no pending file, so this is the only
+     * way the line knows a question is on screen — and the drill must not answer
+     * it. The `/lingo` commands would be refused by that pane anyway, so this
+     * state points at the pane instead of naming one.
+     */
+    paneOpen?: boolean;
 }
 export interface StatusLineState {
     word: Word | null;

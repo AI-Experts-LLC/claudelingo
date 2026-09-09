@@ -50,6 +50,15 @@ export interface StatusLineOptions {
   outstanding?: boolean;
   /** The outstanding question, when it could be read. */
   pending?: PendingCard | null;
+  /**
+   * A pane is open and holds the deck.
+   *
+   * It keeps its card in memory and writes no pending file, so this is the only
+   * way the line knows a question is on screen — and the drill must not answer
+   * it. The `/lingo` commands would be refused by that pane anyway, so this
+   * state points at the pane instead of naming one.
+   */
+  paneOpen?: boolean;
 }
 
 interface Candidate {
@@ -155,6 +164,9 @@ export function renderStatusLine(
   const stats = dim(`${state.learned}/${state.total}`);
   const streak = state.streak > 0 ? dim(` · streak ${state.streak}`) : "";
 
+  if (options.paneOpen) {
+    return trim(`${dim("answer it in the pane")}  ${stats}${streak}`, options.width);
+  }
   if (options.outstanding || options.pending) {
     return trim(`${dim("a question is waiting")} ${dim("· /lingo")}  ${stats}${streak}`, options.width);
   }
@@ -247,7 +259,11 @@ export function renderPanel(
   let middle: string;
   let hint: string;
 
-  if (!pending && options.outstanding) {
+  if (options.paneOpen && !pending) {
+    head = bold("a question is on the pane");
+    middle = dim("answer it there — this line cannot take keys");
+    hint = `${key("/lingo stats")}`;
+  } else if (!pending && options.outstanding) {
     // Something is outstanding that we could not read. Saying so beats both
     // silence and the drill, which would reveal the answer to it.
     head = bold("a question is waiting");
@@ -290,7 +306,12 @@ export function renderPanel(
   const gutter = width === undefined || width >= OWL_MIN_WIDTH;
   if (!gutter) return body.map((line) => trim(line, width));
 
-  const mood = pending || options.outstanding ? "watching" : state.word ? "asking" : "asleep";
+  const mood =
+    pending || options.outstanding || options.paneOpen
+      ? "watching"
+      : state.word
+        ? "asking"
+        : "asleep";
   const face = owl(mood);
   return body.map((line, i) => trim(`${dim(face[i] ?? "")}  ${line}`, width));
 }
