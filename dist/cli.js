@@ -45,6 +45,7 @@ Options
   --model <id>       model for hooks and pack generation (default: ${DEFAULT_MODEL})
   --code <xx>        code for a generated pack (default: first two letters)
   --overwrite        replace an existing generated pack
+  --resume           continue a pack already on disk instead of restarting
   --no-statusline    do not touch Claude Code's status line (for: init)
   --statusline-only  install just the status line, nothing else (for: init)
   --no-auto-pane     do not open the pane automatically (for: init)
@@ -1051,11 +1052,31 @@ async function cmdPack(args) {
     process.stdout.write(`Generating the top ${count} words in ${language} with ${model}, ` +
         "through your Claude Code session…\n");
     try {
+        // `--resume` continues a pack that is already on disk. A run that dies at
+        // word 800 should cost the next attempt 200 words, not a thousand.
+        let existing;
+        if (args.flags.resume === true) {
+            try {
+                existing = loadPack(code).words.map((word) => {
+                    const row = [word.term, word.gloss, word.pos];
+                    if (word.example)
+                        row.push(word.note ?? "", `${word.example.text} | ${word.example.translation}`);
+                    else if (word.note)
+                        row.push(word.note);
+                    return row;
+                });
+                process.stdout.write(`Resuming from ${existing.length} words already in ${code}.\n`);
+            }
+            catch {
+                process.stdout.write(`Nothing to resume for ${code}; starting fresh.\n`);
+            }
+        }
         const raw = await generatePack(language, code, count, {
             model,
+            ...(existing ? { existing } : {}),
             // A thousand words is minutes of work, in chunks. Silence for that long
             // reads as a hang.
-            onProgress: (done, total) => process.stdout.write(`  ${done}/${total} words\n`),
+            onProgress: (done, total, note) => process.stdout.write(`  ${done}/${total} words${note ? ` — ${note}` : ""}\n`),
         });
         const file = savePack(raw, { overwrite: args.flags.overwrite === true });
         process.stdout.write(`Wrote ${raw.words.length} words to ${file}\n`);

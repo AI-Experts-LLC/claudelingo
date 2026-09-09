@@ -52,7 +52,9 @@ export declare function memoryHook(word: Word, pack: Pack, options?: AskOptions)
  * produced, or the boundaries overlap and the duplicates eat the count.
  */
 export declare function generatePack(language: string, code: string, count: number, options?: AskOptions & {
-    onProgress?: (done: number, total: number) => void;
+    onProgress?: (done: number, total: number, note?: string) => void;
+    /** Words already gathered, to continue from instead of regenerating. */
+    existing?: RawPack["words"];
 }): Promise<RawPack>;
 /**
  * Whether the `claude` command is available.

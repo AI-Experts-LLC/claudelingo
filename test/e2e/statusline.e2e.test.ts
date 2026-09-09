@@ -412,6 +412,11 @@ describe("claudelingo claude", () => {
     const session = `claudelingo-e2e-${process.pid}`;
     spawnSync("tmux", ["kill-session", "-t", session], { stdio: "ignore" });
     spawnSync("tmux", ["new-session", "-d", "-s", session, "-x", "200", "-y", "40"]);
+    // `-x/-y` is only a request: any *attached* client on the same tmux server
+    // — a claudelingo pane someone left open, say — sizes new windows to itself,
+    // and at 45 columns the pane's title truncates and this test fails for a
+    // reason that has nothing to do with the code.
+    spawnSync("tmux", ["resize-window", "-t", session, "-x", "200", "-y", "40"]);
 
     try {
       spawnSync("tmux", [
