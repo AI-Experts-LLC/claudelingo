@@ -588,6 +588,28 @@ describe("init reports what actually happened", () => {
   });
 });
 
+describe("what the hooks make of a subagent", () => {
+  // The hook is still installed — Claude Code fires it and we must not error —
+  // but it must leave the state alone. A session that farms work out to
+  // subagents used to go quiet the moment the first one came back.
+  it("leaves the state alone when a subagent stops mid-turn", async () => {
+    const e = fresh();
+    await cli(["hook", "UserPromptSubmit", "--source", "claude"], e);
+    const busy = JSON.parse(fs.readFileSync(statusFile(e), "utf8")) as { state: string; ts: number };
+    expect(busy.state).toBe("busy");
+
+    const result = await cli(["hook", "SubagentStop", "--source", "claude"], e);
+    expect(result.code).toBe(0);
+    const after = JSON.parse(fs.readFileSync(statusFile(e), "utf8")) as { state: string; ts: number };
+    expect(after.state).toBe("busy");
+    expect(after.ts).toBe(busy.ts);
+
+    // …and the turn really ending still does.
+    await cli(["hook", "Stop", "--source", "claude"], e);
+    expect(JSON.parse(fs.readFileSync(statusFile(e), "utf8")).state).toBe("idle");
+  });
+});
+
 describe("a mistyped command", () => {
   it("says so instead of opening the pane and waiting on stdin", async () => {
     const e = fresh();

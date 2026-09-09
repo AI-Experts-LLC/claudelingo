@@ -29,8 +29,14 @@ describe("event mapping", () => {
 
   it("treats stopping and session end as idle", () => {
     expect(stateForEvent("Stop")).toBe("idle");
-    expect(stateForEvent("SubagentStop")).toBe("idle");
     expect(stateForEvent("SessionEnd")).toBe("idle");
+  });
+
+  // A subagent finishing says nothing about the turn that spawned it: the parent
+  // is usually still working, often for a long time yet. Calling it idle stopped
+  // the drill during exactly the waits worth filling.
+  it("says nothing either way when a subagent stops", () => {
+    expect(stateForEvent("SubagentStop")).toBeNull();
   });
 
   it("treats a permission prompt as idle, because the human is needed", () => {
