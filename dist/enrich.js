@@ -243,14 +243,53 @@ async function packChunk(language, code, from, size, known, options) {
  * produced, or the boundaries overlap and the duplicates eat the count.
  */
 export async function generatePack(language, code, count, options = {}) {
-    const { onProgress, ...ask } = options;
+    const { onProgress, existing, ...ask } = options;
     const seen = new Set();
     const words = [];
-    for (let from = 1; from <= count; from += PACK_CHUNK) {
-        const size = Math.min(PACK_CHUNK, count - from + 1);
-        // Only the most recent terms: the whole list would grow the prompt without
-        // bound, and it is the boundary that overlaps, not the beginning.
-        const entries = await packChunk(language, code, from, size, [...seen].slice(-120), ask);
+    // Carry on from a pack already on disk rather than paying for it twice. A run
+    // that dies at word 800 should cost its next attempt 200 words, not 1000.
+    for (const row of existing ?? []) {
+        const term = (row[0] ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (!term || seen.has(term))
+            continue;
+        seen.add(term);
+        words.push(row);
+    }
+    // Deliberately no top-up past the requested ranks.
+    //
+    // Chunks overlap, so asking for `count` ranks yields fewer than `count` words
+    // — and the obvious fix, "keep asking until the target is met", is how a real
+    // run ended up with `padernete` and `achufladamente` in it. Past the point
+    // where the model actually knows the frequency order it starts reciting the
+    // dictionary alphabetically to fill the quota. A short pack of real words
+    // beats a full one padded with sludge, so it stops at the end of the range and
+    // says what it got.
+    const maxChunks = Math.ceil(count / PACK_CHUNK);
+    let from = Math.floor(words.length / PACK_CHUNK) * PACK_CHUNK + 1;
+    let barren = 0;
+    for (let chunk = 0; chunk < maxChunks && words.length < count && barren < 3; chunk++) {
+        const size = Math.min(PACK_CHUNK, Math.max(20, count - words.length));
+        const before = words.length;
+        let entries;
+        try {
+            // Only the most recent terms: the whole list would grow the prompt without
+            // bound, and it is the boundary that overlaps, not the beginning.
+            entries = await packChunk(language, code, from, size, [...seen].slice(-120), ask);
+        }
+        catch (error) {
+            // One bad chunk must not cost the run. A reply that does not parse is
+            // usually a truncation, so retry once at half the size; if that fails too,
+            // stop and keep what we have — throwing here discarded 693 words of
+            // French and 673 of Italian, about half an hour of somebody's quota.
+            onProgress?.(words.length, count, `chunk ${from}: ${error.message}; retrying smaller`);
+            try {
+                entries = await packChunk(language, code, from, Math.max(20, Math.floor(size / 2)), [...seen].slice(-120), ask);
+            }
+            catch (retryError) {
+                onProgress?.(words.length, count, `chunk ${from} failed twice: ${retryError.message}`);
+                break;
+            }
+        }
         for (const entry of entries) {
             if (!entry?.term || !entry.gloss || !entry.pos)
                 continue;
@@ -277,11 +316,16 @@ export async function generatePack(language, code, count, options = {}) {
                 break;
         }
         onProgress?.(words.length, count);
-        if (words.length >= count)
-            break;
+        // A chunk that adds nothing new means the model has run out of words it has
+        // not already given us; three in a row and there is no point asking again.
+        barren = words.length > before ? 0 : barren + 1;
+        from += PACK_CHUNK;
     }
     if (!words.length)
         throw new EnrichError("Claude returned no words");
+    if (words.length < count) {
+        onProgress?.(words.length, count, `stopped at ${words.length}: the ranks asked for are used up`);
+    }
     return { code, name: language, englishName: language, words };
 }
 /**

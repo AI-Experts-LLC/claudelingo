@@ -156,13 +156,67 @@ describe("pack generation", () => {
     expect(pack.englishName).toBe("Portuguese");
   });
 
-  it("fails loudly on unusable output", async () => {
+  it("continues from words already gathered instead of paying for them twice", async () => {
+    const fake = fakeClaude([ok('{"words":[{"term":"tres","gloss":"three","pos":"num"}]}')]);
+    const pack = await generatePack("X", "xx", 3, {
+      run: fake.run,
+      existing: [
+        ["uno", "one", "num"],
+        ["dos", "two", "num"],
+      ],
+    });
+    expect(pack.words.map((w) => w[0])).toEqual(["uno", "dos", "tres"]);
+    // …and it does not ask for the words it already has.
+    expect(fake.calls[0]!.at(-1)).toContain("uno, dos");
+  });
+
+  it("stops asking once a language has no more words to give", async () => {
+    // Every reply the same word: without a barren counter this asks for ever,
+    // burning quota on a language that has run dry.
+    const fake = fakeClaude([ok('{"words":[{"term":"uno","gloss":"one","pos":"num"}]}')]);
+    const pack = await generatePack("X", "xx", 500, { run: fake.run });
+    expect(pack.words).toHaveLength(1);
+    expect(fake.calls.length).toBeLessThanOrEqual(4);
+  });
+
+  it("returns a short pack rather than padding it past the ranks asked for", async () => {
+    // Asking past the end is how a real run ended up with "padernete" and
+    // "achufladamente": beyond what the model knows about frequency it recites
+    // the dictionary to fill the quota. Five chunks asked, five chunks' worth
+    // returned — and no sixth request to top the count up.
+    const fake = fakeClaude([ok('{"words":[{"term":"uno","gloss":"one","pos":"num"}]}')]);
+    const pack = await generatePack("X", "xx", 500, { run: fake.run });
+    expect(pack.words.length).toBeLessThan(500);
+    expect(fake.calls.length).toBeLessThanOrEqual(Math.ceil(500 / 100));
+  });
+
+  it("fails loudly when it never got a single word", async () => {
+    // A later chunk failing keeps what came before it — see the e2e test — but a
+    // run that gathered nothing has nothing to keep, and must say so.
     await expect(
-      generatePack("X", "xx", 1, { run: fakeClaude([ok("not json")]).run }),
-    ).rejects.toThrow(/valid JSON/);
+      generatePack("X", "xx", 1, { run: fakeClaude([ok("not json"), ok("still not json")]).run }),
+    ).rejects.toThrow(/no words/);
     await expect(
       generatePack("X", "xx", 1, { run: fakeClaude([ok('{"words":[]}')]).run }),
     ).rejects.toThrow(/no words/);
+  });
+
+  it("retries a chunk once, smaller, before giving up on it", async () => {
+    // A reply that will not parse is usually a truncation, so the retry asks for
+    // less. Without it, one flaky chunk ends the run where it stands.
+    const fake = fakeClaude([
+      ok("not json"),
+      ok('{"words":[{"term":"uno","gloss":"one","pos":"num"}]}'),
+    ]);
+    // 300 asked for, so the first attempt is a full 100 and the retry is 50 —
+    // sizes that tell a retry apart from simply moving on to the next chunk,
+    // which would ask for another 100.
+    const pack = await generatePack("X", "xx", 300, { run: fake.run });
+    expect(pack.words.map((w) => w[0])).toEqual(["uno"]);
+    expect(fake.calls[0]!.at(-1)).toContain("Exactly 100 entries");
+    expect(fake.calls[1]!.at(-1)).toContain("Exactly 50 entries");
+    // …and it retried the same band rather than skipping it.
+    expect(fake.calls[1]!.at(-1)).toContain("ranked 1 to 50");
   });
 });
 

@@ -385,6 +385,80 @@ describe("claudelingo pack generate", () => {
     expect(pack.words.map((w) => w[0])).toEqual(["casa", "perro"]);
   });
 
+  /** A stub whose Nth call returns junk, so a mid-run failure can be exercised. */
+  function stubFailingAt(e: Env, failOn: number): string {
+    const bin = path.join(e.home, "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    const counter = path.join(e.home, "fail-count");
+    const script = path.join(e.home, "fail-stub.mjs");
+    fs.writeFileSync(
+      script,
+      [
+        `import fs from "node:fs";`,
+        `const counter = ${JSON.stringify(counter)};`,
+        `const n = Number(fs.readFileSync(counter, "utf8").trim() || 0) + 1;`,
+        `fs.writeFileSync(counter, String(n));`,
+        `if (n === ${failOn}) {`,
+        `  process.stdout.write(JSON.stringify({ type: "result", subtype: "success",`,
+        `    is_error: false, result: "sorry, here is some prose instead of JSON" }));`,
+        `} else {`,
+        `  const words = [`,
+        `    { term: "w" + n + "a", gloss: "g" + n + "a", pos: "noun" },`,
+        `    { term: "w" + n + "b", gloss: "g" + n + "b", pos: "verb" },`,
+        `  ];`,
+        `  process.stdout.write(JSON.stringify({ type: "result", subtype: "success",`,
+        `    is_error: false, result: JSON.stringify({ words }) }));`,
+        `}`,
+      ].join("\n"),
+    );
+    fs.writeFileSync(counter, "0");
+    const file = path.join(bin, "claude");
+    fs.writeFileSync(file, `#!/bin/sh\nexec ${process.execPath} ${JSON.stringify(script)} "$@"\n`);
+    fs.chmodSync(file, 0o755);
+    return bin;
+  }
+
+  it("keeps what it has when a chunk comes back unusable", async () => {
+    // Throwing here cost a real run 693 words of French and 673 of Italian —
+    // about half an hour of quota — because one bad reply discarded the lot.
+    const e = fresh();
+    // The second request fails: with 150 asked for there are two chunks, and
+    // the retry is the third call.
+    const bin = stubFailingAt(e, 2);
+    const result = await cli(
+      ["pack", "generate", "--lang", "Testish", "--code", "tf", "--count", "150"],
+      e,
+      withStub(bin),
+    );
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("retrying smaller");
+
+    const pack = JSON.parse(fs.readFileSync(path.join(e.home, "packs", "tf.json"), "utf8")) as {
+      words: string[][];
+    };
+    // The words from before the failure survived.
+    expect(pack.words.length).toBeGreaterThan(0);
+    expect(pack.words.map((w) => w[0])).toContain("w1a");
+  });
+
+  it("gives up rather than asking for ever when a language runs dry", async () => {
+    const e = fresh();
+    // Always the same two words: nothing new after the first call.
+    const bin = stubClaude(e, {
+      words: [
+        { term: "uno", gloss: "one", pos: "num" },
+        { term: "dos", gloss: "two", pos: "num" },
+      ],
+    });
+    const result = await cli(
+      ["pack", "generate", "--lang", "Testish", "--code", "td", "--count", "500"],
+      e,
+      withStub(bin),
+    );
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Wrote 2 words");
+  });
+
   it("writes a pack that loads back and can be studied", async () => {
     const e = fresh();
     const bin = stubClaude(e, {
