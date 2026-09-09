@@ -1,4 +1,4 @@
-import type { Card, Pack, Progress, Word } from "./types.js";
+import type { Pack, Progress, Word } from "./types.js";
 /**
  * The status line Claude Code draws under your prompt.
  *
@@ -12,7 +12,7 @@ import type { Card, Pack, Progress, Word } from "./types.js";
  * wrote to it would fight that pane's lock and corrupt the schedule.
  */
 /** How long one word holds the line before the next takes over. */
-export declare const WORD_MS = 12000;
+export declare const WORD_MS = 8000;
 /** The card `next` handed out and is waiting to grade, if there is one. */
 export interface PendingCard {
     question: string;
@@ -46,21 +46,6 @@ export interface StatusLineOptions {
      * state points at the pane instead of naming one.
      */
     paneOpen?: boolean;
-    /**
-     * What the agent is doing, and since when.
-     *
-     * The whole premise is practice in the dead time, so the panel should know
-     * whether there *is* any: it drills while Claude works, and settles into
-     * teaching when the turn ends and your attention is wanted back. `since` is
-     * the moment that state began, which is how the panel can say how much of the
-     * wait you have already used.
-     */
-    agent?: {
-        state: "busy" | "idle";
-        since: number;
-    } | null;
-    /** Practise even when nothing is working — the pane's `alwaysOn`, shared. */
-    alwaysOn?: boolean;
     /** A memory hook already in the cache. Never fetched from here. */
     hook?: string | null;
 }
@@ -71,8 +56,18 @@ export interface StatusLineState {
     learned: number;
     total: number;
     streak: number;
+    /** Where this word sits in the frequency list: #1 is the commonest. */
+    rank: number;
 }
-/** The state behind the line, separated so it can be asserted without parsing text. */
+/**
+ * The word the clock says is up.
+ *
+ * It walks the pack itself, in frequency order, rather than the review queue:
+ * the panel is a ticker of the language's most common words, running whether or
+ * not anything is due, and it is the same list every time so you get a sense of
+ * where you are in it. What is *scheduled* is the pane's business, and the
+ * pane's alone — this is exposure, not a quiz.
+ */
 export declare function statusLineState(pack: Pack, progress: Progress, now: number): StatusLineState;
 /**
  * Columns available for the line.
@@ -83,21 +78,6 @@ export declare function statusLineState(pack: Pack, progress: Progress, now: num
  */
 export declare function defaultWidth(env?: NodeJS.ProcessEnv): number | undefined;
 export declare function renderStatusLine(pack: Pack, progress: Progress, now: number, options?: StatusLineOptions): string;
-export declare const DRILL_MS: number;
-export interface Drill {
-    card: Card;
-    /** True once the answer is showing. */
-    revealed: boolean;
-    /** Which frame of this card we are on, for the owl. */
-    tick: number;
-}
-/**
- * The card the clock says is up, or null when the deck has nothing to drill.
- *
- * `teach` and `recall` cards have no choices to show, so they fall back to the
- * plain word-and-meaning line rather than rendering an empty question.
- */
-export declare function drillAt(pack: Pack, progress: Progress, now: number): Drill | null;
 /** Rows the panel occupies. Fixed, so the terminal below it never jumps. */
 export declare const PANEL_ROWS = 3;
 export type PanelOptions = StatusLineOptions;

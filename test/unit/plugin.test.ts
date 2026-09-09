@@ -118,7 +118,7 @@ describe("the Claude Code plugin", () => {
     // that is the point — a new control must be taught to the skill, or it falls
     // through its catch-all and grades the outstanding card.
     const required: Record<string, string> = {
-      "/lingo quiz me": "`/lingo quiz me`",
+      "/lingo quiz": "`/lingo quiz me`",
       "/lingo stats": "`/lingo stats`",
       "/lingo lang": "`/lingo lang`",
       "/lingo skip": "`/lingo skip`",

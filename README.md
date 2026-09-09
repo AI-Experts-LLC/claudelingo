@@ -156,35 +156,26 @@ widget fits under your prompt, even though it can never take a keypress.
  /)_)   /lingo 1-4 answer   /lingo skip
 ```
 
-With nothing outstanding it runs a drill of its own, on the clock:
+With nothing outstanding it tickers: every eight seconds a word appears alone,
+you get four seconds to reach for it, then the meaning arrives.
 
 ```
- ,___,  What does "tiempo" mean?
- (o.o)  1 time   2 weather   3 house   4 always
- /)_)   thinking…   /lingo to answer for real
+ ,___,  «primero» = ?
+ (o.o)  ░░░░░░░░░░ 0/312 · #60
+ /)_)   /lingo quiz   /lingo stats   /lingo lang
 ```
 
-six seconds later, whether you got there or not:
-
 ```
- ,___,  What does "tiempo" mean?
- (^.^)  1 time   ✓ 2 weather   3 house   4 always
- /)_)   42/312 · streak 7   /lingo to answer for real
+ ,___,  «primero» = first
+ (^.^)  ░░░░░░░░░░ 0/312 · #60
+ /)_)   /lingo quiz   /lingo stats   /lingo lang
 ```
 
-Then the next card, counting as it goes — `3 while you wait`. It cannot take your
-answer — nothing rendered by Claude Code can — but reaching for one and then
-being told is most of what makes a word stick, and it is the whole quiz loop
-minus the keystroke.
-
-It only drills while Claude is actually working. The moment the turn comes back
-to you the panel settles into a word and its meaning and the owl dozes off,
-because that is when you are wanted in the conversation rather than in a
-flashcard. `--always-on` keeps it drilling regardless. If a memory hook for the
-word is already in the cache it appears on the reveal; the panel never fetches
-one, because it runs every two seconds. Nothing is graded from
-here: the drill is derived from the clock, writes nothing, and stands down the
-moment a real question is outstanding or the pane picks up the deck.
+It walks the language's most common words in order — `#60` is where that word
+sits in the list — and it never ends: mastering the deck does not empty it,
+because this is exposure rather than a queue. Nothing here is graded, and nothing
+is written. The quiz lives where answers can actually be taken: the pane, and
+`/lingo quiz` in the chat.
 
 It is always exactly three rows, so the conversation above it never jumps; it
 drops the owl below 46 columns and falls back to a single line below 30. Because it
