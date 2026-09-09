@@ -163,6 +163,30 @@ describe("the commands the panel tells you to type", () => {
     expect(JSON.parse(json.stdout)).toHaveProperty("correct");
   });
 
+  it("reports where you stand, in both forms", async () => {
+    const e = fresh();
+    for (let i = 0; i < 3; i++) {
+      await json(["next", "--json"], e);
+      await json(["answer", "--choice", "1"], e);
+    }
+
+    const human = await cli(["stats"], e);
+    expect(human.code).toBe(0);
+    expect(human.stdout).toContain("standing");
+    expect(human.stdout).toContain("more for");
+    expect(() => JSON.parse(human.stdout)).toThrow();
+
+    // `--json` used to be ignored here, so a skill asking for it parsed a table.
+    const asJson = await cli(["stats", "--json"], e);
+    const parsed = JSON.parse(asJson.stdout.trim()) as {
+      standing: { tier: string; next: string | null; toGo: number };
+      learned: number;
+    };
+    expect(parsed.learned).toBe(3);
+    expect(parsed.standing.tier).toBeTruthy();
+    expect(parsed.standing.toGo).toBeGreaterThan(0);
+  });
+
   it("sends errors to stderr with a failing status, the way a shell expects", async () => {
     const e = fresh();
     const human = await cli(["skip"], e);

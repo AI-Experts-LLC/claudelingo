@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { canCloze } from "./cloze.js";
 import { paths } from "./config.js";
 /**
  * Everything that needs a model goes through the `claude` CLI in print mode.
@@ -253,17 +254,19 @@ export async function generatePack(language, code, count, options = {}) {
         for (const entry of entries) {
             if (!entry?.term || !entry.gloss || !entry.pos)
                 continue;
-            if (seen.has(entry.term))
+            // Deduped on the *cleaned* term, which is what the loader compares. On the
+            // raw string "casa" and "  casa  " both survive generation, and `savePack`
+            // then throws `duplicate term`, losing a run that can take ten minutes.
+            const key = entry.term.replace(/\s+/g, " ").trim().toLowerCase();
+            if (!key || seen.has(key))
                 continue;
-            seen.add(entry.term);
+            seen.add(key);
             // A sentence that does not contain its own word cannot be clozed, and one
             // without a translation cannot be shown. The loader drops both anyway;
             // writing them to disk would just be junk in a file people read.
             const example = (entry.example ?? "").trim();
             const [text, translation] = example.split("|");
-            const usable = !!text &&
-                !!translation?.trim() &&
-                text.toLowerCase().includes(entry.term.toLowerCase());
+            const usable = !!text && !!translation?.trim() && canCloze(text, entry.term);
             const row = [entry.term, entry.gloss, entry.pos];
             if (usable)
                 row.push(entry.note ?? "", example);

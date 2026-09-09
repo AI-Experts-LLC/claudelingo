@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { PackError, listPacks, loadPack, materialize, savePack } from "../../src/packs/index.js";
+import { canCloze } from "../../src/cloze.js";
 import { buildCard, isCorrect, makeRng } from "../../src/srs.js";
 import type { ItemProgress } from "../../src/types.js";
 
@@ -222,5 +223,64 @@ describe("untrusted pack text", () => {
     expect(pack.words[0]?.term).toBe("qué");
     expect(pack.words[1]?.term).toBe("日本語");
     expect(pack.name).toBe("Español");
+  });
+});
+
+describe("example sentences at load time", () => {
+  function pack(example: string) {
+    return materialize({
+      code: "xx",
+      name: "T",
+      englishName: "T",
+      words: [
+        ["casa", "house", "noun", "", example],
+        ["perro", "dog", "noun"],
+        ["gato", "cat", "noun"],
+        ["libro", "book", "noun"],
+      ],
+    });
+  }
+
+  it("keeps a sentence that uses the word as a word", () => {
+    const word = pack("La casa es grande | The house is big").words[0]!;
+    expect(word.example).toEqual({ text: "La casa es grande", translation: "The house is big" });
+  });
+
+  it.each([
+    // The word never appears — nothing to blank, and it teaches a different word.
+    ["Un perro corre | A dog runs"],
+    // It appears only inside a longer word: "casaca" is not "casa".
+    ["Lleva una casaca azul | He wears a jacket"],
+    // No translation to show afterwards.
+    ["La casa es grande |"],
+    ["| The house is big"],
+    [""],
+  ])("drops a sentence that cannot be asked: %j", (example) => {
+    // This guard had no test that could fail: deleting it left the whole suite
+    // green while cloze cards printed the word they were asking for.
+    expect(pack(example).words[0]!.example).toBeUndefined();
+  });
+
+  it("never builds a cloze whose prompt still contains the answer", () => {
+    // The pathological shapes the loader is there to catch.
+    for (const example of [
+      "La casa grande y la casa pequeña | The big house and the small house",
+      "Casa mía, casa tuya | My house, your house",
+      "La casaca de la casa | The jacket of the house",
+    ]) {
+      const loaded = pack(example);
+      const word = loaded.words[0]!;
+      if (!word.example) continue;
+      const item: ItemProgress = {
+        id: word.id, stage: "review", box: 4, step: 0,
+        due: 0, lastSeen: 0, seen: 5, correct: 4, lapses: 0,
+      };
+      const card = buildCard(loaded, word, item, makeRng(5));
+      expect(card.kind).toBe("cloze");
+      // As a *word*: "casaca" contains the letters but is a different word, and
+      // leaving it in the sentence is correct.
+      expect(canCloze(card.prompt, "casa"), `answer left in: ${card.prompt}`).toBe(false);
+      expect(card.choices[card.answerIndex]).toBe("casa");
+    }
   });
 });

@@ -200,8 +200,12 @@ export function renderPanel(pack, progress, now, options = {}) {
         // `/lingo quiz` in the chat.
         head = `${cyan(`«${state.word.term}»`)} ${dim("=")} ${state.revealed ? bold(state.word.gloss) : dim("?")}`;
         const rank = state.rank ? dim(` · #${state.rank}`) : "";
+        // A hook we already have, shown with the meaning: the word arrives with
+        // something to hang it on. Never fetched — see `hook` in StatusLineOptions.
+        const hookLine = state.revealed && options.hook ? dim(options.hook) : "";
         middle = `${dim(bar(state.total ? state.learned / state.total : 0, 10))} ${dim(learned + streak + box)}${rank}`;
-        hint = `${key("/lingo quiz")}   ${key("/lingo stats")}   ${key("/lingo lang")}`;
+        hint =
+            hookLine || `${key("/lingo quiz")}   ${key("/lingo stats")}   ${key("/lingo lang")}`;
     }
     const body = [head, middle, hint];
     const gutter = width === undefined || width >= OWL_MIN_WIDTH;

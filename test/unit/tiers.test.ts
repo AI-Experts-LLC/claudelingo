@@ -2,6 +2,24 @@ import { describe, expect, it } from "vitest";
 import { TIERS, standing } from "../../src/ui/tiers.js";
 
 describe("where you stand", () => {
+  it("has the thresholds it says it has", () => {
+    // Named outright: half of these were unpinned, so a threshold could move
+    // without a single test noticing.
+    expect(TIERS.map((t) => [t.name, t.at])).toEqual([
+      ["just arrived", 0],
+      ["first words", 10],
+      ["finding your feet", 50],
+      ["getting by", 100],
+      ["holding a conversation", 250],
+      ["comfortable", 500],
+      ["most of a day's speech", 1000],
+    ]);
+    // …and they only ever go up.
+    for (let i = 1; i < TIERS.length; i++) {
+      expect(TIERS[i]!.at).toBeGreaterThan(TIERS[i - 1]!.at);
+    }
+  });
+
   it("names the tier you have actually reached, not the next one", () => {
     expect(standing(0).tier.name).toBe("just arrived");
     expect(standing(9).tier.name).toBe("just arrived");

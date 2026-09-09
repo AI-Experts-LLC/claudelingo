@@ -280,6 +280,10 @@ describe("claudelingo pack generate", () => {
       [
         `import fs from "node:fs";`,
         `const counter = ${JSON.stringify(counter)};`,
+        // Every prompt, one per line-marker, so a test can see what each chunk
+        // was told about the chunks before it.
+        `fs.appendFileSync(${JSON.stringify(path.join(e.home, "chunk-prompts"))},`,
+        `  process.argv.slice(2).join(" ") + "<<END>>");`,
         `const n = Number(fs.readFileSync(counter, "utf8").trim() || 0) + 1;`,
         `fs.writeFileSync(counter, String(n));`,
         `const a = n * 10;`,
@@ -298,7 +302,8 @@ describe("claudelingo pack generate", () => {
     );
     fs.writeFileSync(counter, "0");
     const file = path.join(bin, "claude");
-    fs.writeFileSync(file, `#!/bin/sh\nexec ${process.execPath} ${JSON.stringify(script)}\n`);
+    // `"$@"` matters: without it the stub cannot see the prompt it was given.
+    fs.writeFileSync(file, `#!/bin/sh\nexec ${process.execPath} ${JSON.stringify(script)} "$@"\n`);
     fs.chmodSync(file, 0o755);
     return bin;
   }
@@ -331,6 +336,53 @@ describe("claudelingo pack generate", () => {
     expect(withSentence?.[4]).toContain("w101");
     const omitted = pack.words.find((w) => w[0] === "w102");
     expect(omitted?.[4]).toBeUndefined();
+  });
+
+  it("tells each chunk what the earlier ones produced", async () => {
+    // Without the avoid-list the boundaries overlap so badly that a long ask
+    // comes back mostly duplicates — and only the post-hoc dedupe was covered,
+    // so the prompt that prevents it could be emptied unnoticed.
+    const e = fresh();
+    const bin = stubChunks(e);
+    await cli(
+      ["pack", "generate", "--lang", "Testish", "--code", "tp", "--count", "150"],
+      e,
+      withStub(bin),
+    );
+    const prompts = fs
+      .readFileSync(path.join(e.home, "chunk-prompts"), "utf8")
+      .split("<<END>>")
+      .filter(Boolean);
+    expect(prompts.length).toBeGreaterThan(1);
+    // The first ask has nothing to avoid; the second names what the first returned.
+    expect(prompts[0]).not.toContain("already in the pack");
+    expect(prompts[1]).toContain("already in the pack");
+    expect(prompts[1]).toContain("w101");
+  });
+
+  it("does not let whitespace slip a duplicate past generation", async () => {
+    // The generator deduped the raw term while the loader compares the cleaned
+    // one, so "casa" and " casa " both survived and `savePack` then threw,
+    // discarding a run that can take ten minutes.
+    const e = fresh();
+    const bin = stubClaude(e, {
+      words: [
+        { term: "casa", gloss: "house", pos: "noun" },
+        { term: "  casa  ", gloss: "house again", pos: "noun" },
+        { term: "perro", gloss: "dog", pos: "noun" },
+      ],
+    });
+    const result = await cli(
+      ["pack", "generate", "--lang", "Testish", "--code", "tw", "--count", "3"],
+      e,
+      withStub(bin),
+    );
+    expect(result.code).toBe(0);
+    expect(result.stderr).not.toContain("duplicate term");
+    const pack = JSON.parse(fs.readFileSync(path.join(e.home, "packs", "tw.json"), "utf8")) as {
+      words: string[][];
+    };
+    expect(pack.words.map((w) => w[0])).toEqual(["casa", "perro"]);
   });
 
   it("writes a pack that loads back and can be studied", async () => {

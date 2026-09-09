@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { paths, writeJsonAtomic } from "../config.js";
+import { canCloze } from "../cloze.js";
 const here = path.dirname(fileURLToPath(import.meta.url));
 /**
  * User packs are searched first, so a hand-placed pack can deliberately replace a
@@ -57,11 +58,11 @@ export function materialize(raw) {
         const note = clean(rawNote ?? "");
         if (note)
             word.note = note;
-        // `sentence | translation`. A sentence that does not contain its own word is
-        // dropped rather than kept: a cloze card built from it would have nothing to
-        // blank out, and a sentence that teaches a different word is worse than none.
+        // `sentence | translation`. A sentence that cannot be blanked is dropped
+        // rather than kept — `canCloze` is the same question the card builder asks,
+        // so the two cannot disagree about whether a sentence is usable.
         const [text, translation] = clean(rawExample ?? "").split("|");
-        if (text && translation && text.toLowerCase().includes(term.toLowerCase())) {
+        if (text && translation && canCloze(text, term)) {
             word.example = { text: text.trim(), translation: translation.trim() };
         }
         return word;

@@ -1,3 +1,4 @@
+import { blankTerm } from "./cloze.js";
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
 /**
@@ -180,9 +181,7 @@ export function buildCard(pack, word, item, rng) {
     const distractors = pickDistractors(pack, word, rng, 3);
     const label = (w) => (kind === "recognize" ? w.gloss : w.term);
     if (kind === "cloze" && word.example) {
-        // The sentence with its word blanked out. Matched case-insensitively because
-        // the sentence may well start with it.
-        const blanked = word.example.text.replace(new RegExp(escapeForRegex(word.term), "iu"), "____");
+        const blanked = blankTerm(word.example.text, word.term);
         const options = shuffle([word, ...distractors], rng);
         return {
             kind,
@@ -209,10 +208,6 @@ export function buildCard(pack, word, item, rng) {
  * Shared by the CLI and the panel so the two cannot drift into asking the same
  * card two different ways.
  */
-/** Escape a term so it can be matched literally inside a sentence. */
-function escapeForRegex(text) {
-    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 export function questionFor(card, pack) {
     switch (card.kind) {
         case "recognize":
@@ -232,16 +227,18 @@ export function isCorrect(card, response) {
         return true;
     const typed = normalize(response.text ?? "");
     if (card.choices.length) {
+        // A picked option is the answer, whatever else came along with it. Letting
+        // the text win here threw away a correct `--choice` whenever both were
+        // passed — box demoted, lapse recorded, streak gone, for the right answer.
+        if (response.choice !== undefined)
+            return response.choice === card.answerIndex;
         // Someone who types the right answer instead of its number has got it right.
-        // This used to compare `undefined === answerIndex` and mark them wrong —
-        // demoting a box and breaking a streak for being correct — and the skill's
-        // catch-all sends typed input here for every card kind.
         if (typed.length > 0) {
             const right = card.choices[card.answerIndex];
             return ((right !== undefined && normalize(right) === typed) ||
                 card.accepted.some((a) => normalize(a) === typed));
         }
-        return response.choice === card.answerIndex;
+        return false;
     }
     return typed.length > 0 && card.accepted.some((a) => normalize(a) === typed);
 }

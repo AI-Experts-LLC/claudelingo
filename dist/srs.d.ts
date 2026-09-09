@@ -51,6 +51,12 @@ export declare function nextDueAt(progress: Progress): number | null;
 /** Strip case, accents, and surrounding punctuation so "Qué" matches "que". */
 export declare function normalize(text: string): string;
 export declare function buildCard(pack: Pack, word: Word, item: ItemProgress | null, rng: () => number): Card;
+/**
+ * How a card is asked, in words.
+ *
+ * Shared by the CLI and the panel so the two cannot drift into asking the same
+ * card two different ways.
+ */
 export declare function questionFor(card: Card, pack: Pack): string;
 export declare function isCorrect(card: Card, response: {
     choice?: number;
