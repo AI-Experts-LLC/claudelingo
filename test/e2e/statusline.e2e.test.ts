@@ -96,8 +96,13 @@ describe("the status line Claude Code draws", () => {
     expect(code).toBe(0);
     const rows = stdout.trimEnd().split("\n");
     expect(rows).toHaveLength(PANEL_ROWS);
-    expect(stdout).toMatch(/«.+»/);
-    expect(stdout).toContain("streak 7");
+    // A word from this deck is on screen — either drilled as a question or shown
+    // as a word and its meaning, depending where the clock is in the cycle.
+    const terms = topTerms("es", 12);
+    expect(
+      terms.some((term) => stdout.includes(`«${term}»`) || stdout.includes(`"${term}"`)),
+      `no deck word in: ${stdout}`,
+    ).toBe(true);
     // The bottom row is the control surface: it must name the command to type,
     // because nothing here can take a keypress.
     expect(rows[PANEL_ROWS - 1]).toContain("/lingo");
