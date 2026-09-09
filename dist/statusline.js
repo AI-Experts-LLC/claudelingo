@@ -229,6 +229,10 @@ export function renderPanel(pack, progress, now, options = {}) {
     // outstanding, and a pane holding the deck, both take their branch first.
     // Guarding for that here as well only added a line no test could fail on.
     const drill = drillAt(pack, progress, now);
+    // The dead time is the point. While Claude works the panel drills; when the
+    // turn ends it settles back to teaching, because that is the moment you are
+    // wanted back in the conversation rather than in a vocabulary card.
+    const working = options.alwaysOn === true || (options.agent ? options.agent.state === "busy" : true);
     const learned = `${state.learned}/${state.total}`;
     const streak = state.streak > 0 ? ` · streak ${state.streak}` : "";
     const item = state.word ? progress.items[state.word.id] : undefined;
@@ -273,7 +277,7 @@ export function renderPanel(pack, progress, now, options = {}) {
         middle = `${dim(bar(1, 10))} ${dim(learned + streak)}`;
         hint = `${key("/lingo stats")}   ${key("/lingo lang")}`;
     }
-    else if (drill) {
+    else if (drill && working) {
         // A real question, held long enough to reach for the answer, then marked.
         head = bold(questionFor(drill.card, pack));
         middle = drill.card.choices
@@ -285,12 +289,18 @@ export function renderPanel(pack, progress, now, options = {}) {
                 : `${dim(`${i + 1} ${choice}`)}`;
         })
             .join("   ");
+        // How much of this wait you have already spent, when we know when it began.
+        const waited = options.agent && options.agent.state === "busy" && Number.isFinite(options.agent.since)
+            ? Math.floor((now - options.agent.since) / DRILL_MS) + 1
+            : 0;
+        const nth = waited > 1 ? `${waited} while you wait` : "while you wait";
         hint = drill.revealed
-            ? `${dim(learned + streak)}   ${key("/lingo")} ${dim("to answer for real")}`
-            : `${dim("thinking…")}   ${key("/lingo")} ${dim("to answer for real")}`;
+            ? `${dim(options.hook ? options.hook : learned + streak)}   ${key("/lingo")} ${dim("to answer for real")}`
+            : `${dim(nth)}   ${key("/lingo")} ${dim("to answer for real")}`;
     }
     else {
-        // Nothing with choices to drill — the plain word and its meaning.
+        // Idle, or nothing with choices to drill: the plain word and its meaning,
+        // which is a gentler thing to have on screen when the turn is yours.
         head = `${cyan(`«${state.word.term}»`)} ${dim("=")} ${state.revealed ? bold(state.word.gloss) : dim("?")}`;
         middle = `${dim(bar(state.total ? state.learned / state.total : 0, 10))} ${dim(learned + streak + box)}`;
         hint = `${key("/lingo")} ${dim("quiz me")}   ${key("/lingo stats")}   ${key("/lingo lang")}`;
@@ -301,13 +311,15 @@ export function renderPanel(pack, progress, now, options = {}) {
         return body.map((line) => trim(line, width));
     const mood = pending || options.outstanding || options.paneOpen
         ? "watching"
-        : drill
+        : drill && working
             ? drill.revealed
                 ? "happy"
                 : "watching"
-            : state.word
-                ? "asking"
-                : "asleep";
+            : !working
+                ? "asleep"
+                : state.word
+                    ? "asking"
+                    : "asleep";
     const face = owl(mood, drill ? drill.tick : Math.floor(Math.abs(now) / 2000));
     return body.map((line, i) => trim(`${dim(face[i] ?? "")}  ${line}`, width));
 }

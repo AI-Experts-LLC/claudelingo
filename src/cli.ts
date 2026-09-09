@@ -29,9 +29,15 @@ import { listPacks, loadPack, savePack } from "./packs/index.js";
 import { readStatus, stateForEvent, writeStatus } from "./agentState.js";
 import * as claudeCode from "./integrations/claudeCode.js";
 import * as codex from "./integrations/codex.js";
-import { DEFAULT_MODEL, generatePack, hasClaude, memoryHook } from "./enrich.js";
+import {
+  DEFAULT_MODEL,
+  cachedHook,
+  generatePack,
+  hasClaude,
+  memoryHook,
+} from "./enrich.js";
 import { run } from "./ui/tui.js";
-import { defaultWidth, renderPanel, renderStatusLine } from "./statusline.js";
+import { defaultWidth, drillAt, renderPanel, renderStatusLine } from "./statusline.js";
 import { launch, openPaneBeside } from "./launcher.js";
 import type { ProblemKey } from "./ui/app.js";
 import type { Card, Pack, Progress, Settings, Word } from "./types.js";
@@ -871,6 +877,19 @@ function tally(s: Stats): string {
 }
 
 /**
+ * The cached memory hook for whatever the drill is showing, if we have one.
+ *
+ * Cache only — never a fetch. This runs every couple of seconds, and reaching
+ * the model from here would spend the user's quota on a decoration, per tick,
+ * for ever. The renderer decides when to show it; skipping the lookup until then
+ * only saved a small file read, and left a branch no test could fail on.
+ */
+function drillHook(pack: Pack, progress: Progress, lang: string, now: number): string | null {
+  const drill = drillAt(pack, progress, now);
+  return drill ? cachedHook(lang, drill.card.word.term) : null;
+}
+
+/**
  * `claudelingo statusline` — Claude Code renders whatever this prints.
  *
  * Claude Code pipes session JSON in and cancels the script if it is still running
@@ -925,7 +944,24 @@ async function cmdStatusline(args: Args): Promise<void> {
     // `outstanding` is presence on disk; `pending` is the readable form of it.
     // Both renderers need both: the panel shows the question, the one-line form
     // has no room for it and must say so rather than drilling the same word.
-    const full = { ...options, pending, outstanding, paneOpen };
+    // What the hooks last said, so the panel can drill through a wait and settle
+    // when the turn comes back. A missing or unreadable status file simply means
+    // the panel does not know, and it carries on as before.
+    const status = readStatus();
+    const agent =
+      status && (status.state === "busy" || status.state === "idle")
+        ? { state: status.state, since: status.ts }
+        : null;
+    const hook = drillHook(pack, progress, settings.lang, Date.now());
+    const full = {
+      ...options,
+      pending,
+      outstanding,
+      paneOpen,
+      agent,
+      alwaysOn: settings.alwaysOn,
+      hook,
+    };
     if (!wantPanel) {
       process.stdout.write(`${renderStatusLine(pack, progress, Date.now(), full)}\n`);
       return;

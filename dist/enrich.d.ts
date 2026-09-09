@@ -32,6 +32,13 @@ export interface AskOptions {
  */
 export declare function ask(prompt: string, options?: AskOptions): Promise<string>;
 /**
+ * A hook we already have, or null. Never fetches.
+ *
+ * The panel is read-only and runs every couple of seconds; reaching the model
+ * from there would spend the user's quota on a decoration, once per tick.
+ */
+export declare function cachedHook(lang: string, term: string): string | null;
+/**
  * A one- or two-line memory hook for a word. Cached on disk, because the hook for
  * "tiempo" never changes.
  */

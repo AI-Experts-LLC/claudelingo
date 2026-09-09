@@ -35,10 +35,20 @@ const SESSION_JSON = JSON.stringify({
 });
 
 /** Run `claudelingo statusline` the way Claude Code does: JSON in, one line out. */
-function statusline(e: Env, extra: string[] = []): Promise<{ stdout: string; code: number | null }> {
+function statusline(
+  e: Env,
+  extra: string[] = [],
+  extraEnv: Record<string, string> = {},
+): Promise<{ stdout: string; code: number | null }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI, "statusline", "--no-color", ...extra], {
-      env: { ...process.env, CLAUDELINGO_HOME: e.home, NO_COLOR: "1", ANTHROPIC_API_KEY: "" },
+      env: {
+        ...process.env,
+        CLAUDELINGO_HOME: e.home,
+        NO_COLOR: "1",
+        ANTHROPIC_API_KEY: "",
+        ...extraEnv,
+      },
     });
     let stdout = "";
     child.stdout.on("data", (d) => (stdout += d.toString()));
@@ -258,6 +268,50 @@ describe("the status line Claude Code draws", () => {
     } finally {
       pane.kill();
     }
+  });
+
+  // The hooks write the agent's state; the panel is the thing that reads it.
+  // Wiring it up in the renderer alone would leave the panel drilling forever.
+  it("reads the agent state the hooks wrote", async () => {
+    const e = fresh();
+    seed(e);
+    const status = (state: string, agoMs: number) =>
+      fs.writeFileSync(
+        path.join(e.home, "status.json"),
+        JSON.stringify({ state, source: "claude", event: "x", ts: Date.now() - agoMs }),
+      );
+
+    status("busy", 30_000);
+    const working = await statusline(e);
+    expect(working.stdout).toContain("while you wait");
+
+    status("idle", 0);
+    const settled = await statusline(e);
+    expect(settled.stdout).not.toContain("while you wait");
+  });
+
+  it("never reaches the model for a memory hook, however often it runs", async () => {
+    // This command runs every couple of seconds. A fetch from here would spend
+    // the user's quota on a decoration, once per tick, for ever.
+    const e = fresh();
+    seed(e);
+    fs.writeFileSync(
+      path.join(e.home, "status.json"),
+      JSON.stringify({ state: "busy", source: "claude", event: "x", ts: Date.now() }),
+    );
+    const bin = path.join(e.home, "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    const log = path.join(e.home, "claude-was-called");
+    fs.writeFileSync(
+      path.join(bin, "claude"),
+      `#!/bin/sh\necho called >> ${JSON.stringify(log)}\necho '{}'\n`,
+    );
+    fs.chmodSync(path.join(bin, "claude"), 0o755);
+
+    for (let i = 0; i < 4; i++) {
+      await statusline(e, [], { PATH: `${bin}:${process.env.PATH}` });
+    }
+    expect(fs.existsSync(log), "the status line called claude").toBe(false);
   });
 
   it("returns quickly, because Claude Code cancels a slow one", async () => {

@@ -164,6 +164,15 @@ function writeCache(file, text) {
         }
     }
 }
+/**
+ * A hook we already have, or null. Never fetches.
+ *
+ * The panel is read-only and runs every couple of seconds; reaching the model
+ * from there would spend the user's quota on a decoration, once per tick.
+ */
+export function cachedHook(lang, term) {
+    return readCache(cacheFile(lang, term));
+}
 function cacheFile(lang, term) {
     const safe = Buffer.from(term).toString("base64url");
     return path.join(paths.cache(), `hook-${lang}-${safe}.txt`);

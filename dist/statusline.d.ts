@@ -46,6 +46,23 @@ export interface StatusLineOptions {
      * state points at the pane instead of naming one.
      */
     paneOpen?: boolean;
+    /**
+     * What the agent is doing, and since when.
+     *
+     * The whole premise is practice in the dead time, so the panel should know
+     * whether there *is* any: it drills while Claude works, and settles into
+     * teaching when the turn ends and your attention is wanted back. `since` is
+     * the moment that state began, which is how the panel can say how much of the
+     * wait you have already used.
+     */
+    agent?: {
+        state: "busy" | "idle";
+        since: number;
+    } | null;
+    /** Practise even when nothing is working — the pane's `alwaysOn`, shared. */
+    alwaysOn?: boolean;
+    /** A memory hook already in the cache. Never fetched from here. */
+    hook?: string | null;
 }
 export interface StatusLineState {
     word: Word | null;

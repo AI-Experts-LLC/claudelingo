@@ -322,3 +322,81 @@ describe("the drill the panel runs while it waits", () => {
     }
   });
 });
+
+describe("the panel and the agent's state", () => {
+  function due(): Progress {
+    const progress = testProgress();
+    for (const word of pack.words) {
+      progress.items[word.id] = {
+        id: word.id, stage: "review", box: 2, step: 0,
+        due: T0 - 5000, lastSeen: T0, seen: 4, correct: 3, lapses: 0,
+      };
+    }
+    return progress;
+  }
+
+  const start = Math.ceil(T0 / DRILL_MS) * DRILL_MS;
+
+  it("drills while Claude works and settles when the turn comes back", () => {
+    const progress = due();
+    const busy = renderPanel(pack, progress, start, {
+      ...plain,
+      agent: { state: "busy", since: start - 20_000 },
+    }).join("\n");
+    expect(busy).toContain("while you wait");
+
+    const idle = renderPanel(pack, progress, start, {
+      ...plain,
+      agent: { state: "idle", since: start },
+    }).join("\n");
+    // The moment the turn is yours again, the panel stops asking things of you.
+    expect(idle).not.toContain("while you wait");
+    expect(idle).toMatch(/«.+»/);
+    expect(idle).toContain("/lingo");
+  });
+
+  it("keeps drilling when the user asked to practise regardless", () => {
+    const progress = due();
+    const rows = renderPanel(pack, progress, start, {
+      ...plain,
+      agent: { state: "idle", since: start },
+      alwaysOn: true,
+    }).join("\n");
+    expect(rows).toContain("while you wait");
+  });
+
+  it("counts the cards this wait has been long enough for", () => {
+    const progress = due();
+    const first = renderPanel(pack, progress, start, {
+      ...plain,
+      agent: { state: "busy", since: start },
+    }).join("\n");
+    // One card in, there is nothing to boast about yet.
+    expect(first).not.toMatch(/\d+ while you wait/);
+
+    const later = renderPanel(pack, progress, start + 4 * DRILL_MS, {
+      ...plain,
+      agent: { state: "busy", since: start },
+    }).join("\n");
+    expect(later).toContain("5 while you wait");
+  });
+
+  it("carries on as before when it cannot tell what the agent is doing", () => {
+    // No hooks fired yet, or an unreadable status file: not knowing must not
+    // silently stop the thing the product exists for.
+    const rows = renderPanel(pack, due(), start, { ...plain, agent: null }).join("\n");
+    expect(rows).toContain("while you wait");
+  });
+
+  it("shows a memory hook on the reveal, when one is already cached", () => {
+    const progress = due();
+    const hook = "«de» sounds like DEparting from somewhere";
+    const revealed = renderPanel(pack, progress, start + 7000, {
+      ...plain,
+      agent: { state: "busy", since: start },
+      hook,
+    }).join("\n");
+    expect(revealed).toContain("✓");
+    expect(revealed).toContain("sounds like DEparting");
+  });
+});

@@ -172,9 +172,17 @@ six seconds later, whether you got there or not:
  /)_)   42/312 · streak 7   /lingo to answer for real
 ```
 
-Then the next card. It cannot take your answer — nothing rendered by Claude Code
-can — but reaching for one and then being told is most of what makes a word
-stick, and it is the whole quiz loop minus the keystroke. Nothing is graded from
+Then the next card, counting as it goes — `3 while you wait`. It cannot take your
+answer — nothing rendered by Claude Code can — but reaching for one and then
+being told is most of what makes a word stick, and it is the whole quiz loop
+minus the keystroke.
+
+It only drills while Claude is actually working. The moment the turn comes back
+to you the panel settles into a word and its meaning and the owl dozes off,
+because that is when you are wanted in the conversation rather than in a
+flashcard. `--always-on` keeps it drilling regardless. If a memory hook for the
+word is already in the cache it appears on the reveal; the panel never fetches
+one, because it runs every two seconds. Nothing is graded from
 here: the drill is derived from the clock, writes nothing, and stands down the
 moment a real question is outstanding or the pane picks up the deck.
 
