@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { PANEL_ROWS, renderPanel, renderStatusLine, statusLineState } from "../../src/statusline.js";
+import {
+  DRILL_MS,
+  PANEL_ROWS,
+  drillAt,
+  renderPanel,
+  renderStatusLine,
+  statusLineState,
+} from "../../src/statusline.js";
 import { visibleWidth } from "../../src/ui/render.js";
 import { MASCOT_HEIGHT } from "../../src/ui/mascot.js";
 import { T0, testPack, testProgress } from "../helpers.js";
@@ -201,5 +208,81 @@ describe("the panel under the prompt", () => {
     expect(wide).toContain(",___,");
     expect(narrow).not.toContain(",___,");
     expect(narrow).toContain("/lingo");
+  });
+});
+
+describe("the drill the panel runs while it waits", () => {
+  function due(): Progress {
+    const progress = testProgress();
+    for (const word of pack.words) {
+      progress.items[word.id] = {
+        id: word.id, stage: "review", box: 2, step: 0,
+        due: T0 - 5000, lastSeen: T0, seen: 4, correct: 3, lapses: 0,
+      };
+    }
+    progress.streak = 6;
+    return progress;
+  }
+
+  it("asks a real question and marks it only after the pause", () => {
+    const progress = due();
+    const start = Math.ceil(T0 / DRILL_MS) * DRILL_MS;
+    const asking = drillAt(pack, progress, start);
+    expect(asking?.revealed).toBe(false);
+
+    // Through the whole asking phase the answer is not marked anywhere.
+    for (let at = 0; at < 6000; at += 250) {
+      const frame = drillAt(pack, progress, start + at);
+      expect(frame?.revealed, `revealed ${at}ms in`).toBe(false);
+      const rows = renderPanel(pack, progress, start + at, plain).join("\n");
+      expect(rows).not.toContain("✓");
+    }
+    // …and then it is.
+    const revealed = drillAt(pack, progress, start + 6000);
+    expect(revealed?.revealed).toBe(true);
+    expect(renderPanel(pack, progress, start + 6000, plain).join("\n")).toContain("✓");
+  });
+
+  it("shows the same card and the same options to every run inside one window", () => {
+    // The status line keeps no memory between runs. Two runs a second apart have
+    // to agree by computing the same thing, or the card flickers as you look.
+    const progress = due();
+    const start = Math.ceil(T0 / DRILL_MS) * DRILL_MS;
+    const first = drillAt(pack, progress, start);
+    for (let at = 0; at < 6000; at += 500) {
+      const again = drillAt(pack, progress, start + at);
+      expect(again?.card.word.id).toBe(first?.card.word.id);
+      expect(again?.card.choices).toEqual(first?.card.choices);
+      expect(again?.card.answerIndex).toBe(first?.card.answerIndex);
+    }
+    // …and it does move on afterwards.
+    const next = drillAt(pack, progress, start + DRILL_MS);
+    expect(next?.card.word.id).not.toBe(first?.card.word.id);
+  });
+
+  it("stands down for anything that is actually being answered", () => {
+    const progress = due();
+    const start = Math.ceil(T0 / DRILL_MS) * DRILL_MS;
+    for (const options of [
+      { pending: { question: "q", choices: ["a", "b"] } },
+      { outstanding: true },
+      { paneOpen: true },
+    ]) {
+      const rows = renderPanel(pack, progress, start, { ...plain, ...options }).join("\n");
+      expect(rows).not.toContain("✓");
+      expect(rows).not.toContain("thinking…");
+    }
+  });
+
+  it("keeps its three rows and its width while drilling", () => {
+    const progress = due();
+    const start = Math.ceil(T0 / DRILL_MS) * DRILL_MS;
+    for (const width of [30, 46, 60, 88, 120]) {
+      for (const at of [0, 3000, 6500, 9500]) {
+        const rows = renderPanel(pack, progress, start + at, { ...plain, width });
+        expect(rows).toHaveLength(PANEL_ROWS);
+        for (const line of rows) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+      }
+    }
   });
 });

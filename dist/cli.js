@@ -4,7 +4,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_SETTINGS, ensureHome, loadSettings, paths, quarantine, readJsonFile, saveSettings, writeJsonAtomic, } from "./config.js";
 import * as lock from "./lock.js";
-import { applyAnswer, buildCard, deferItem, emptyProgress, isCorrect, makeRng, normalize, selectNext, stats, } from "./srs.js";
+import { applyAnswer, buildCard, deferItem, emptyProgress, isCorrect, makeRng, normalize, questionFor, selectNext, stats, } from "./srs.js";
 import { listPacks, loadPack, savePack } from "./packs/index.js";
 import { readStatus, stateForEvent, writeStatus } from "./agentState.js";
 import * as claudeCode from "./integrations/claudeCode.js";
@@ -411,13 +411,7 @@ function cmdNext(args) {
         return;
     }
     const card = buildCard(pack, next.word, next.item, makeRng(now));
-    const question = card.kind === "recognize"
-        ? `What does "${card.prompt}" mean?`
-        : card.kind === "reverse"
-            ? `How do you say "${card.prompt}" in ${pack.englishName}?`
-            : card.kind === "teach"
-                ? `New word: "${card.word.term}" (${card.word.pos}) means "${card.word.gloss}".`
-                : `Spell the ${pack.englishName} word for "${card.prompt}".`;
+    const question = questionFor(card, pack);
     try {
         writeJsonAtomic(paths.pending(settings.lang), {
             id: card.word.id,

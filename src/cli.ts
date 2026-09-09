@@ -21,6 +21,7 @@ import {
   isCorrect,
   makeRng,
   normalize,
+  questionFor,
   selectNext,
   stats,
 } from "./srs.js";
@@ -460,14 +461,7 @@ function cmdNext(args: Args): void {
   }
 
   const card = buildCard(pack, next.word, next.item, makeRng(now));
-  const question =
-    card.kind === "recognize"
-      ? `What does "${card.prompt}" mean?`
-      : card.kind === "reverse"
-        ? `How do you say "${card.prompt}" in ${pack.englishName}?`
-        : card.kind === "teach"
-          ? `New word: "${card.word.term}" (${card.word.pos}) means "${card.word.gloss}".`
-          : `Spell the ${pack.englishName} word for "${card.prompt}".`;
+  const question = questionFor(card, pack);
 
   try {
     writeJsonAtomic(paths.pending(settings.lang), {

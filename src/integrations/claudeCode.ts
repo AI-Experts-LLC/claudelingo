@@ -56,9 +56,12 @@ interface Settings {
  *
  * Claude Code's own updates are event-driven and go quiet exactly when the agent
  * is thinking — which is when the line is supposed to be teaching. A timer keeps
- * the word rotating and the answer revealing through a long turn.
+ * the drill running through a long turn: a question appears, holds while you
+ * reach for the answer, and is marked. Two seconds is the coarsest tick that
+ * still lands those phase changes promptly; the documented minimum is one, and
+ * this command is a process spawn, so it is not free.
  */
-const STATUS_REFRESH_SECONDS = 3;
+const STATUS_REFRESH_SECONDS = 2;
 
 export class StatusLineTaken extends Error {}
 

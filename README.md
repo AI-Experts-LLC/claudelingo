@@ -156,13 +156,27 @@ widget fits under your prompt, even though it can never take a keypress.
  /)_)   /lingo 1-4 answer   /lingo skip
 ```
 
-With nothing outstanding it goes back to teaching:
+With nothing outstanding it runs a drill of its own, on the clock:
 
 ```
- ,___,  «tiempo» = ?
- (o.-)  ████░░░░░░ 42/312 · streak 7 · box 3/5
- /)_)   /lingo quiz me   /lingo stats   /lingo lang
+ ,___,  What does "tiempo" mean?
+ (o.o)  1 time   2 weather   3 house   4 always
+ /)_)   thinking…   /lingo to answer for real
 ```
+
+six seconds later, whether you got there or not:
+
+```
+ ,___,  What does "tiempo" mean?
+ (^.^)  1 time   ✓ 2 weather   3 house   4 always
+ /)_)   42/312 · streak 7   /lingo to answer for real
+```
+
+Then the next card. It cannot take your answer — nothing rendered by Claude Code
+can — but reaching for one and then being told is most of what makes a word
+stick, and it is the whole quiz loop minus the keystroke. Nothing is graded from
+here: the drill is derived from the clock, writes nothing, and stands down the
+moment a real question is outstanding or the pane picks up the deck.
 
 It is always exactly three rows, so the conversation above it never jumps; it
 drops the owl below 46 columns and falls back to a single line below 30. Because it

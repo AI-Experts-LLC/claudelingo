@@ -1,4 +1,4 @@
-import type { Pack, Progress, Word } from "./types.js";
+import type { Card, Pack, Progress, Word } from "./types.js";
 /**
  * The status line Claude Code draws under your prompt.
  *
@@ -66,6 +66,21 @@ export declare function statusLineState(pack: Pack, progress: Progress, now: num
  */
 export declare function defaultWidth(env?: NodeJS.ProcessEnv): number | undefined;
 export declare function renderStatusLine(pack: Pack, progress: Progress, now: number, options?: StatusLineOptions): string;
+export declare const DRILL_MS: number;
+export interface Drill {
+    card: Card;
+    /** True once the answer is showing. */
+    revealed: boolean;
+    /** Which frame of this card we are on, for the owl. */
+    tick: number;
+}
+/**
+ * The card the clock says is up, or null when the deck has nothing to drill.
+ *
+ * `teach` and `recall` cards have no choices to show, so they fall back to the
+ * plain word-and-meaning line rather than rendering an empty question.
+ */
+export declare function drillAt(pack: Pack, progress: Progress, now: number): Drill | null;
 /** Rows the panel occupies. Fixed, so the terminal below it never jumps. */
 export declare const PANEL_ROWS = 3;
 export type PanelOptions = StatusLineOptions;

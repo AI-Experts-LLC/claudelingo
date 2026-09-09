@@ -1,4 +1,5 @@
 import { MAX_BOX } from "./srs.js";
+import { buildCard, makeRng, questionFor } from "./srs.js";
 import { ansi } from "./ui/ansi.js";
 import { MASCOT_HEIGHT, owl } from "./ui/mascot.js";
 import { truncateStyled } from "./ui/width.js";
@@ -129,6 +130,48 @@ export function renderStatusLine(pack, progress, now, options = {}) {
  * running pane owns the deck, and a status line that wrote to it would fight that
  * pane's lock.
  */
+/* ── The drill ───────────────────────────────────────────────────────────────
+ *
+ * The panel cannot take a keypress, so it cannot quiz you. What it *can* do is
+ * the half of a quiz that actually builds memory: put a question in front of
+ * you, hold it long enough for you to reach for the answer, then show whether
+ * you had it. Retrieval then feedback — the same loop the pane runs, minus the
+ * keystroke, which is exactly the part a display can do on its own.
+ *
+ * It runs on the clock, not on state: the status line has no memory between runs
+ * and must not write anything, so which card is up and which phase it is in are
+ * both derived from `now`. Two runs a second apart agree because they compute the
+ * same thing, not because either remembered.
+ */
+/** One card: long enough to try, then long enough to see. */
+const ASK_MS = 6000;
+const REVEAL_MS = 4000;
+export const DRILL_MS = ASK_MS + REVEAL_MS;
+/**
+ * The card the clock says is up, or null when the deck has nothing to drill.
+ *
+ * `teach` and `recall` cards have no choices to show, so they fall back to the
+ * plain word-and-meaning line rather than rendering an empty question.
+ */
+export function drillAt(pack, progress, now) {
+    if (!Number.isFinite(now))
+        return null;
+    const pool = candidates(pack, progress, now);
+    if (!pool.length)
+        return null;
+    const slot = Math.abs(Math.floor(now / DRILL_MS));
+    const chosen = pool[slot % pool.length];
+    if (!chosen)
+        return null;
+    const item = progress.items[chosen.word.id] ?? null;
+    // Seeded by the slot: every run inside this window builds the same card, with
+    // the distractors in the same order.
+    const card = buildCard(pack, chosen.word, item, makeRng(slot));
+    if (!card.choices.length)
+        return null;
+    const into = Math.abs(now) % DRILL_MS;
+    return { card, revealed: into >= ASK_MS, tick: Math.floor(into / 2000) };
+}
 /** Rows the panel occupies. Fixed, so the terminal below it never jumps. */
 export const PANEL_ROWS = MASCOT_HEIGHT;
 /** Below this many columns the owl gutter costs more than it gives. */
@@ -168,8 +211,13 @@ export function renderPanel(pack, progress, now, options = {}) {
     const cyan = (s) => (color ? `${ansi.cyan}${s}${ansi.reset}` : s);
     const bold = (s) => (color ? `${ansi.bold}${s}${ansi.reset}` : s);
     const key = (s) => (color ? `${ansi.green}${s}${ansi.reset}` : s);
+    const green = (s) => (color ? `${ansi.green}${s}${ansi.reset}` : s);
     const state = statusLineState(pack, progress, now);
     const pending = options.pending ?? null;
+    // A practice card is the last thing the panel considers: a real question
+    // outstanding, and a pane holding the deck, both take their branch first.
+    // Guarding for that here as well only added a line no test could fail on.
+    const drill = drillAt(pack, progress, now);
     const learned = `${state.learned}/${state.total}`;
     const streak = state.streak > 0 ? ` · streak ${state.streak}` : "";
     const item = state.word ? progress.items[state.word.id] : undefined;
@@ -214,9 +262,24 @@ export function renderPanel(pack, progress, now, options = {}) {
         middle = `${dim(bar(1, 10))} ${dim(learned + streak)}`;
         hint = `${key("/lingo stats")}   ${key("/lingo lang")}`;
     }
+    else if (drill) {
+        // A real question, held long enough to reach for the answer, then marked.
+        head = bold(questionFor(drill.card, pack));
+        middle = drill.card.choices
+            .map((choice, i) => {
+            if (!drill.revealed)
+                return `${key(String(i + 1))} ${choice}`;
+            return i === drill.card.answerIndex
+                ? `${green("✓")} ${bold(choice)}`
+                : `${dim(`${i + 1} ${choice}`)}`;
+        })
+            .join("   ");
+        hint = drill.revealed
+            ? `${dim(learned + streak)}   ${key("/lingo")} ${dim("to answer for real")}`
+            : `${dim("thinking…")}   ${key("/lingo")} ${dim("to answer for real")}`;
+    }
     else {
-        // The same passive drill as the one-line form: the word alone first, so there
-        // is a moment to retrieve it, then the meaning.
+        // Nothing with choices to drill — the plain word and its meaning.
         head = `${cyan(`«${state.word.term}»`)} ${dim("=")} ${state.revealed ? bold(state.word.gloss) : dim("?")}`;
         middle = `${dim(bar(state.total ? state.learned / state.total : 0, 10))} ${dim(learned + streak + box)}`;
         hint = `${key("/lingo")} ${dim("quiz me")}   ${key("/lingo stats")}   ${key("/lingo lang")}`;
@@ -227,10 +290,14 @@ export function renderPanel(pack, progress, now, options = {}) {
         return body.map((line) => trim(line, width));
     const mood = pending || options.outstanding || options.paneOpen
         ? "watching"
-        : state.word
-            ? "asking"
-            : "asleep";
-    const face = owl(mood);
+        : drill
+            ? drill.revealed
+                ? "happy"
+                : "watching"
+            : state.word
+                ? "asking"
+                : "asleep";
+    const face = owl(mood, drill ? drill.tick : Math.floor(Math.abs(now) / 2000));
     return body.map((line, i) => trim(`${dim(face[i] ?? "")}  ${line}`, width));
 }
 //# sourceMappingURL=statusline.js.map

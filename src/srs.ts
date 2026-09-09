@@ -203,6 +203,25 @@ export function buildCard(pack: Pack, word: Word, item: ItemProgress | null, rng
   };
 }
 
+/**
+ * How a card is asked, in words.
+ *
+ * Shared by the CLI and the panel so the two cannot drift into asking the same
+ * card two different ways.
+ */
+export function questionFor(card: Card, pack: Pack): string {
+  switch (card.kind) {
+    case "recognize":
+      return `What does "${card.prompt}" mean?`;
+    case "reverse":
+      return `How do you say "${card.prompt}" in ${pack.englishName}?`;
+    case "teach":
+      return `New word: "${card.word.term}" (${card.word.pos}) means "${card.word.gloss}".`;
+    default:
+      return `Spell the ${pack.englishName} word for "${card.prompt}".`;
+  }
+}
+
 export function isCorrect(card: Card, response: { choice?: number; text?: string }): boolean {
   if (card.kind === "teach") return true;
   const typed = normalize(response.text ?? "");
