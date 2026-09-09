@@ -33,6 +33,7 @@ import { defaultWidth, renderPanel, renderStatusLine } from "./statusline.js";
 import { launch, openPaneBeside } from "./launcher.js";
 import type { ProblemKey } from "./ui/app.js";
 import type { Card, Pack, Progress, Settings, Word } from "./types.js";
+import type { Stats } from "./srs.js";
 
 const BIN = "claudelingo";
 
@@ -273,6 +274,7 @@ function cmdInit(args: Args): void {
   const failed: string[] = [];
 
   const settingsFile = claudeCode.settingsPath(scope as "user" | "project");
+  let statusLineProblem: string | null = null;
   // The plugin carries the hooks and the skill; what it cannot carry is the
   // status line, which Claude Code only accepts from the main config. This is
   // the one thing a plugin user has to run by hand.
@@ -291,6 +293,7 @@ function cmdInit(args: Args): void {
     if (wantStatusLine && !result.statusLineProblem) {
       process.stdout.write("Status line installed — words appear under your prompt.\n");
     } else if (result.statusLineProblem) {
+      statusLineProblem = result.statusLineProblem;
       // Not fatal: the hooks are what make the pane work at all.
       process.stderr.write(`Status line NOT installed: ${result.statusLineProblem}\n`);
     }
@@ -303,8 +306,12 @@ function cmdInit(args: Args): void {
   }
 
   if (onlyStatusLine) {
-    // Nothing else belongs to this mode: the plugin owns the rest.
-    if (failed.length) process.exit(1);
+    // Nothing else belongs to this mode: the plugin owns the rest. Which also
+    // means a status line that was not installed is a *total* failure here, not
+    // a partial one — a taken slot is caught inside `install` and returned as a
+    // problem rather than thrown, so it never reached `failed` and this exited 0
+    // having done nothing at all.
+    if (failed.length || statusLineProblem) process.exit(1);
     return;
   }
 
@@ -349,7 +356,11 @@ function cmdInit(args: Args): void {
   process.stdout.write(`\nStudying ${resolvePack(settings.lang).englishName}.\n`);
   if (!failed.length) {
     process.stdout.write("Just open Claude Code as usual:\n");
-    process.stdout.write("  · words appear on the status line under your prompt\n");
+    // Promising the panel right after saying it was not installed is how someone
+    // spends ten minutes wondering why their terminal looks unchanged.
+    if (!statusLineProblem && wantStatusLine) {
+      process.stdout.write("  · the panel appears under your prompt\n");
+    }
     process.stdout.write(
       settings.autoPane
         ? "  · the quiz pane opens itself beside you when you are in tmux\n"
@@ -432,7 +443,11 @@ function cmdNext(args: Args): void {
 
   const next = selectNext(pack, progress, settings, now);
   if (!next) {
-    emit({ done: true, message: "nothing due right now", stats: stats(pack, progress, now) });
+    const done = stats(pack, progress, now);
+    emit(
+      { done: true, message: "nothing due right now", stats: done },
+      `nothing due right now — ${tally(done)}`,
+    );
     return;
   }
 
@@ -463,16 +478,22 @@ function cmdNext(args: Args): void {
     return;
   }
 
-  emit({
-    card: {
-      id: card.word.id,
-      kind: card.kind,
-      question,
-      choices: card.choices,
-      note: card.word.note ?? null,
+  const numbered = card.choices.map((choice, i) => `  ${i + 1}) ${choice}`).join("\n");
+  emit(
+    {
+      card: {
+        id: card.word.id,
+        kind: card.kind,
+        question,
+        choices: card.choices,
+        note: card.word.note ?? null,
+      },
+      stats: stats(pack, progress, now),
     },
-    stats: stats(pack, progress, now),
-  });
+    [question, numbered, card.word.note ? `  (${card.word.note})` : ""]
+      .filter(Boolean)
+      .join("\n"),
+  );
 }
 
 /**
@@ -489,7 +510,7 @@ function cmdSkip(args: Args): void {
   const pending = readJsonFile<Record<string, unknown>>(pendingFile);
 
   if (!pending.ok && pending.reason === "missing") {
-    emit({ error: "no question is outstanding — run `claudelingo next --json` first" });
+    emit({ error: "no question is outstanding — deal one with `claudelingo next`" });
     return;
   }
   if (lock.isHeld(paths.lock(settings.lang))) {
@@ -509,7 +530,7 @@ function cmdSkip(args: Args): void {
       emit({ error: `could not drop the question: ${(error as Error).message}` });
       return;
     }
-    emit({ skipped: true, term: null, unreadable: true });
+    emit({ skipped: true, term: null, unreadable: true }, "dropped a question that could not be read");
     return;
   }
 
@@ -528,14 +549,18 @@ function cmdSkip(args: Args): void {
     if (!word) {
       // The card left the pack under us. Dropping the question is still right.
       fs.rmSync(pendingFile, { force: true });
-      emit({ skipped: true, term: null });
+      emit({ skipped: true, term: null }, "dropped it — that word is no longer in the pack");
       return;
     }
     const now = Date.now();
     const updated = { ...progress, items: { ...progress.items, [id]: deferItem(progress.items[id], id, now) } };
     writeJsonAtomic(paths.progress(settings.lang), updated);
     fs.rmSync(pendingFile, { force: true });
-    emit({ skipped: true, term: word.term, stats: stats(pack, updated, now) });
+    const after = stats(pack, updated, now);
+    emit(
+      { skipped: true, term: word.term, stats: after },
+      `skipped ${word.term} — back in 10 minutes · ${tally(after)}`,
+    );
   } finally {
     held.lock?.release();
   }
@@ -570,7 +595,11 @@ function cmdPanel(args: Args): void {
   const wanted = typeof args.rest[0] === "string" ? args.rest[0].toLowerCase() : null;
 
   if (wanted === null) {
-    emit({ panel: settings.panel !== false, ...(problem ? { problem } : {}) });
+    const on = settings.panel !== false;
+    emit(
+      { panel: on, ...(problem ? { problem } : {}) },
+      `panel ${on ? "on" : "off"}${problem ? `\n${problem}` : ""}`,
+    );
     return;
   }
   if (wanted !== "on" && wanted !== "off") {
@@ -590,7 +619,10 @@ function cmdPanel(args: Args): void {
     return;
   }
   saveSettings({ ...target.settings, panel });
-  emit({ panel, changed: (settings.panel !== false) !== panel });
+  emit(
+    { panel, changed: (settings.panel !== false) !== panel },
+    `panel ${panel ? "on — the full three rows under your prompt" : "off — one line under your prompt"}`,
+  );
 }
 
 /**
@@ -624,7 +656,14 @@ function cmdLang(args: Args): void {
       // Reporting a default as though it were their setting is how someone
       // concludes their configuration is fine when it cannot be read at all.
       ...(loaded.problem ? { problem: loaded.problem } : {}),
-    });
+    },
+    [
+      `studying ${describe(settings.lang).englishName} (${settings.lang})`,
+      `available: ${codes.join(", ")}`,
+      loaded.problem ?? "",
+    ]
+      .filter(Boolean)
+      .join("\n"));
     return;
   }
 
@@ -634,7 +673,10 @@ function cmdLang(args: Args): void {
   }
   const chosen = describe(wanted);
   if (wanted === settings.lang) {
-    emit({ lang: wanted, englishName: chosen.englishName, changed: false });
+    emit(
+      { lang: wanted, englishName: chosen.englishName, changed: false },
+      `already studying ${chosen.englishName} (${wanted})`,
+    );
     return;
   }
   if (lock.isHeld(paths.lock(settings.lang)) || lock.isHeld(paths.lock(wanted))) {
@@ -651,7 +693,10 @@ function cmdLang(args: Args): void {
   // The outstanding question belongs to the language being left behind; grading
   // it against the new deck would file the answer under the wrong word.
   fs.rmSync(paths.pending(settings.lang), { force: true });
-  emit({ lang: wanted, englishName: chosen.englishName, changed: true });
+  emit(
+    { lang: wanted, englishName: chosen.englishName, changed: true },
+    `now studying ${chosen.englishName} (${wanted})`,
+  );
 }
 
 /** `claudelingo answer --choice N | --text S` — grade the card `next` handed out. */
@@ -668,7 +713,7 @@ function cmdAnswer(args: Args): void {
   }>(pendingFile);
 
   if (!pending.ok) {
-    emit({ error: "no question is outstanding — run `claudelingo next --json` first" });
+    emit({ error: "no question is outstanding — deal one with `claudelingo next`" });
     return;
   }
   if (lock.isHeld(paths.lock(settings.lang))) {
@@ -686,7 +731,7 @@ function cmdAnswer(args: Args): void {
     !Array.isArray(outstanding.accepted) ||
     typeof outstanding.answerIndex !== "number"
   ) {
-    emit({ error: "the outstanding question is unreadable — run `claudelingo next --json` again" });
+    emit({ error: "the outstanding question is unreadable — deal another with `claudelingo next`" });
     return;
   }
 
@@ -726,6 +771,29 @@ function cmdAnswer(args: Args): void {
       emit({ error: "say which answer: --choice N, or --text \"...\"" });
       return;
     }
+    // The same principle, one step further: an answer that could not have been
+    // given is not a wrong answer either. A choice off the end of the list, or
+    // any choice at all on a card that has none, used to grade as a miss —
+    // demoting the box, recording a lapse and zeroing the streak, reported as an
+    // ordinary `{"correct":false}`. This command is driven by a model's output,
+    // and the skill offers `/lingo 1`…`/lingo 4`, so a stray index is a matter
+    // of when, not if.
+    // A `teach` card is an acknowledgement, not an answer: it has no choices and
+    // no right answer, and `--choice 1` is how the skill says "shown".
+    if (choice !== undefined && card.kind !== "teach") {
+      if (!card.choices.length) {
+        emit({
+          error: `"${word.term}" is not multiple choice — answer it with --text "..."`,
+        });
+        return;
+      }
+      if (!Number.isInteger(choice) || choice < 0 || choice >= card.choices.length) {
+        emit({
+          error: `there is no option ${args.flags.choice} — pick 1 to ${card.choices.length}`,
+        });
+        return;
+      }
+    }
     const correct = isCorrect(card, {
       ...(choice !== undefined ? { choice } : {}),
       ...(text !== undefined ? { text } : {}),
@@ -736,20 +804,60 @@ function cmdAnswer(args: Args): void {
     writeJsonAtomic(paths.progress(settings.lang), updated);
     fs.rmSync(pendingFile, { force: true });
 
-    emit({
-      correct,
-      term: word.term,
-      gloss: word.gloss,
-      note: word.note ?? null,
-      stats: stats(pack, updated, now),
-    });
+    const after = stats(pack, updated, now);
+    // A teach card has no right answer — reporting "correct" for being shown a
+    // word reads as a score for doing nothing.
+    const verdict = card.kind === "teach" ? "learned" : correct ? "correct" : "not quite";
+    emit(
+      {
+        correct,
+        term: word.term,
+        gloss: word.gloss,
+        note: word.note ?? null,
+        stats: after,
+      },
+      [
+        `${verdict} — ${word.term} = ${word.gloss}`,
+        word.note ? ` (${word.note})` : "",
+        `\n${tally(after)}`,
+      ].join(""),
+    );
   } finally {
     if (held.ok) held.lock.release();
   }
 }
 
-function emit(value: unknown): void {
-  process.stdout.write(`${JSON.stringify(value)}\n`);
+/**
+ * `--json` is for programs; everything else is for people.
+ *
+ * These commands always printed JSON, so the `/lingo` skill's own transcript was
+ * a wall of braces for the user to read past — and `--json` was documented but
+ * never actually consulted. A human line is the default now; the skill asks for
+ * JSON where it genuinely parses the reply.
+ *
+ * In human form an `error` goes to stderr and sets a failing exit code, because
+ * that is what a shell expects. In JSON form it stays on stdout with exit 0, so
+ * a caller reading one line of JSON still gets one line of JSON.
+ */
+let jsonOutput = false;
+
+function emit(value: Record<string, unknown>, human?: string): void {
+  if (jsonOutput) {
+    process.stdout.write(`${JSON.stringify(value)}\n`);
+    return;
+  }
+  if (typeof value.error === "string") {
+    process.stderr.write(`claudelingo: ${value.error}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  process.stdout.write(`${human ?? JSON.stringify(value)}\n`);
+}
+
+/** `3/312 learned · streak 2` — the tail of most human lines. */
+function tally(s: Stats): string {
+  const streak = s.streak > 0 ? ` · streak ${s.streak}` : "";
+  return `${s.learned}/${s.total} learned${streak}`;
 }
 
 /**
@@ -1218,6 +1326,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     );
   }
   const args = parseArgs(own);
+  jsonOutput = args.flags.json === true;
   if (args.flags.help || args.command === "help") {
     process.stdout.write(USAGE);
     return;

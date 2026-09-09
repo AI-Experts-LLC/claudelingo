@@ -36,10 +36,19 @@ skill, and Claude Code puts its `bin/` on the PATH the hooks run with, so there 
 nothing to build and nothing to edit.
 
 One line goes in `~/.claude/settings.json` if you want the panel under your
-prompt — `claudelingo init --statusline-only` writes it — because Claude Code
-takes a status line only from the main config, never from a plugin. That line
-holds the plugin's own absolute path, since the status line does not run with the
-plugin PATH the hooks get.
+prompt, because Claude Code takes a status line only from the main config, never
+from a plugin. Ask Claude for it — **"set up the claudelingo panel"** — or run it
+yourself. A plugin's `bin/` is on the PATH its *hooks* get, not your shell's, so
+the command needs its full path:
+
+```bash
+"$HOME/.claude/plugins/*/claudelingo/bin/claudelingo" init --statusline-only
+```
+
+That writes the plugin's own absolute path into the setting, since the status
+line does not run with the plugin PATH either. It exits non-zero if it could not
+install — a status line is the only thing this mode installs, so nothing else
+succeeding would be no comfort.
 
 Prefer not to use plugins? The standalone installer still works:
 
@@ -156,7 +165,7 @@ With nothing outstanding it goes back to teaching:
 ```
 
 It is always exactly three rows, so the conversation above it never jumps; it
-drops the owl at 46 columns and falls back to a single line under 30. Because it
+drops the owl below 46 columns and falls back to a single line below 30. Because it
 cannot take input, **the bottom row is always the controls** — it names the exact
 command to type, and the chat bar is directly above it:
 
@@ -285,7 +294,7 @@ Entries are `[term, gloss, pos, note?]`, ordered most frequent first. Control
 characters are stripped on load, because a newline in a gloss would turn the status
 line into two lines inside Claude Code's UI and a raw escape would restyle
 everything after it. Two further rules the loader enforces: no duplicate terms, and — because a translate card shows only the
-gloss — no two words may share a gloss. Where two words genuinely collide, put the
+gloss — no two words may share a term. Where two words genuinely collide, put the
 distinction in the gloss itself (`"to be (permanent)"` vs `"to be (state, place)"`).
 
 ## Commands
@@ -311,7 +320,8 @@ claudelingo reset --yes          erase progress for the current language
 ```
 
 Options: `--lang <code>`, `--always-on`, `--ask` / no `--ask`, `--no-enrich`,
-`--no-color`, `--width <n>` (20–1000; anything else is ignored with a warning),
+`--no-color`, `--width <n>` (below 20 is ignored with a warning; above 1000 is
+clamped),
 `--model <id>`, `--compact`. For `init`: `--no-statusline`, `--statusline-only`,
 `--no-auto-pane` / `--auto-pane`. For `pack generate`: `--code <xx>`,
 `--overwrite`. For `hook`: `--source <name>`.
@@ -349,6 +359,8 @@ settings.json        your language and preferences
 status.json          the current agent state, written by the hooks
 progress-<lang>.json your deck
 progress-<lang>.lock held by the running pane, so a second one cannot clobber it
+pending-<lang>.json  the question /lingo has asked and not yet graded
+                     (delete it, or run `claudelingo skip`, to clear a stuck one)
 packs/               generated word packs
 cache/               memory hooks already fetched
 ```
@@ -402,7 +414,6 @@ npm run typecheck
 
 The end-to-end tests spawn the real binary and drive it over pipes, firing genuine
 hook events, appending to a genuine Codex transcript, revoking write permission on the
-home directory, and serving memory hooks from a local stub HTTP server — then assert on
 the frames a user would see. `CLAUDELINGO_FORCE_RENDER=1` makes the pane paint without a
 TTY and `CLAUDELINGO_SEED` fixes the shuffle, which is what makes those assertions
 stable.

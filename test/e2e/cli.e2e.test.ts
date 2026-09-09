@@ -424,6 +424,38 @@ describe("init reports what actually happened", () => {
     expect(fs.existsSync(exec)).toBe(true);
   });
 
+  // The status line is the *only* thing this mode installs, so failing to
+  // install it is a total failure. A taken slot is returned as a problem rather
+  // than thrown, so it never reached the failure list and this exited 0 having
+  // done nothing — against a README that promises the opposite.
+  it("exits non-zero when --statusline-only installs nothing", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const file = path.join(home, ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const theirs = { type: "command", command: "ccstatusline" };
+    fs.writeFileSync(file, JSON.stringify({ statusLine: theirs }));
+
+    const result = await cli(["init", "--statusline-only"], e, vars);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("already configured");
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).statusLine).toEqual(theirs);
+  });
+
+  it("does not promise a panel it could not install", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const file = path.join(home, ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ statusLine: { type: "command", command: "ccstatusline" } }));
+
+    const result = await cli(["init"], e, vars);
+    // The hooks still install, so this is a success overall — but saying the
+    // panel will appear is how someone spends ten minutes wondering why it did not.
+    expect(result.stderr).toContain("Status line NOT installed");
+    expect(result.stdout).not.toContain("panel appears under your prompt");
+  });
+
   it("blames the right half when --statusline-only cannot be installed", async () => {
     const e = fresh();
     const { home, vars } = fakeEnvs(e);

@@ -196,7 +196,7 @@ describe("the status line Claude Code draws", () => {
       expect(stdout).not.toMatch(/«.+» = [^?]/);
     }
     // The panel offers `/lingo skip` as the way out; it must actually work.
-    const skipped = await cli(["skip"], e);
+    const skipped = await cli(["skip", "--json"], e);
     expect(JSON.parse(skipped.stdout.trim())).toMatchObject({ skipped: true });
     expect(fs.existsSync(pendingPath)).toBe(false);
   });
