@@ -867,6 +867,73 @@ describe("re-installing over our own status line", () => {
   });
 });
 
+describe("removing our own skill link", () => {
+  /**
+   * A relative link is anchored at the directory holding it, not at the process's
+   * working directory. This lived in an e2e test that tried to force the two
+   * apart by depth — `path.resolve` clamps at `/`, so they only differ when the
+   * link sits shallower than the cwd — which made it pass in a deep worktree and
+   * fail in a shallow checkout of the same commit. Here the cwd is set outright,
+   * so it holds wherever the repository happens to live.
+   */
+  it("removes a relative link of ours, whatever directory it is run from", () => {
+    const home = dir();
+    const root = path.join(home, "pkg");
+    fs.mkdirSync(path.join(root, "skills", "lingo"), { recursive: true });
+    fs.writeFileSync(path.join(root, "package.json"), "{}");
+    fs.writeFileSync(path.join(root, "skills", "lingo", "SKILL.md"), "name: lingo\n");
+    const skills = path.join(home, ".claude", "skills");
+    fs.mkdirSync(skills, { recursive: true });
+    const relative = path.relative(skills, path.join(root, "skills", "lingo"));
+    fs.symlinkSync(relative, path.join(skills, "lingo"));
+    expect(path.isAbsolute(relative)).toBe(false);
+
+    const spy = vi.spyOn(os, "homedir").mockReturnValue(home);
+    const cwd = process.cwd();
+    try {
+      // A directory the relative path does not resolve against: this is what
+      // separates "anchored at the link" from "anchored at the process".
+      process.chdir(os.tmpdir());
+      expect(claudeCode.uninstallSkill(path.join(root, "dist", "cli.js"))).toBe(true);
+      expect(fs.existsSync(path.join(skills, "lingo"))).toBe(false);
+      // The skill itself is untouched — only the link goes.
+      expect(fs.existsSync(path.join(root, "skills", "lingo", "SKILL.md"))).toBe(true);
+    } finally {
+      process.chdir(cwd);
+      spy.mockRestore();
+    }
+  });
+
+  it("leaves a relative link belonging to someone else, from any directory", () => {
+    const home = dir();
+    const root = path.join(home, "pkg");
+    fs.mkdirSync(path.join(root, "skills", "lingo"), { recursive: true });
+    fs.writeFileSync(path.join(root, "package.json"), "{}");
+    fs.writeFileSync(path.join(root, "skills", "lingo", "SKILL.md"), "name: lingo\n");
+    const theirs = path.join(home, "othertool", "lingo");
+    fs.mkdirSync(theirs, { recursive: true });
+    fs.writeFileSync(path.join(theirs, "SKILL.md"), "name: someone else\n");
+    const skills = path.join(home, ".claude", "skills");
+    fs.mkdirSync(skills, { recursive: true });
+    fs.symlinkSync(path.relative(skills, theirs), path.join(skills, "lingo"));
+
+    const spy = vi.spyOn(os, "homedir").mockReturnValue(home);
+    const cwd = process.cwd();
+    try {
+      process.chdir(os.tmpdir());
+      expect(claudeCode.uninstallSkill(path.join(root, "dist", "cli.js"))).toBe(false);
+      expect(fs.existsSync(path.join(skills, "lingo"))).toBe(true);
+      expect(fs.readFileSync(path.join(theirs, "SKILL.md"), "utf8")).toContain("someone else");
+      // And install must not take it either.
+      expect(claudeCode.installSkill(path.join(root, "dist", "cli.js")).state).toBe("taken");
+      expect(fs.readFileSync(path.join(theirs, "SKILL.md"), "utf8")).toContain("someone else");
+    } finally {
+      process.chdir(cwd);
+      spy.mockRestore();
+    }
+  });
+});
+
 describe("what statusLine gets pointed at", () => {
   /**
    * A plugin's `bin/` is on the PATH Claude Code gives its *hooks*. The status
