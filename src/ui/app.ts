@@ -102,6 +102,10 @@ export interface AppState {
   /** Set when a memory hook could not be fetched, so `e` can be pressed again. */
   enrichError: string | null;
   showHelp: boolean;
+  /** An overlay screen sitting over whatever the pane was doing. */
+  screen: "stats" | "words" | null;
+  /** First row shown on the words screen, so a long list can be walked. */
+  wordsFrom: number;
   now: number;
   /** Bumped on every card so the renderer can tell two identical frames apart. */
   seq: number;
@@ -162,6 +166,8 @@ export function createState(
     problems: {} as Record<ProblemKey, string>,
     enrichError: null,
     showHelp: false,
+    screen: null,
+    wordsFrom: 0,
     now,
     seq: 0,
     languages,
@@ -347,11 +353,34 @@ function reduceKey(state: AppState, key: Key, pack: Pack): Step {
     return { state: { ...state, showHelp: false }, effects: [] };
   }
 
+  if (state.screen) {
+    // The words list is long enough to need walking; everything else closes.
+    if (state.screen === "words") {
+      const step = 6;
+      if (key.name === "down" || key.ch === "j") {
+        return { state: { ...state, wordsFrom: state.wordsFrom + step }, effects: [] };
+      }
+      if (key.name === "up" || key.ch === "k") {
+        return { state: { ...state, wordsFrom: Math.max(0, state.wordsFrom - step) }, effects: [] };
+      }
+    }
+    return { state: { ...state, screen: null, wordsFrom: 0 }, effects: [] };
+  }
+
   // Global shortcuts, suppressed while the user is typing a recall answer so that
   // "q", "s" and "p" reach the input box instead of the command handler.
   if (!typing) {
     if (key.ch === "q") return { state: { ...state, mode: "quit" }, effects: [{ type: "quit" }] };
     if (key.ch === "?") return { state: { ...state, showHelp: true }, effects: [] };
+    // Two screens over the top of whatever is happening: where you stand, and
+    // every word you have met. Not during the walkthrough — those three screens
+    // own the pane until they are finished, or the user lands nowhere.
+    if (!isOnboarding(state)) {
+      if (key.ch === "t") return { state: { ...state, screen: "stats" }, effects: [] };
+      if (key.ch === "w") {
+        return { state: { ...state, screen: "words", wordsFrom: 0 }, effects: [] };
+      }
+    }
     if (key.ch === "l" && state.languages.length > 1 && state.mode !== "pickLanguage") {
       // Reachable from every screen: changing language is the thing people most
       // often want and least often find.

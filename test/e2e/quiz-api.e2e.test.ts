@@ -34,9 +34,27 @@ async function next(e: Env, extra: string[] = []) {
 }
 
 async function answer(e: Env, args: string[]) {
-  const { stdout, code } = await cli(["answer", ...args], e);
+  const { stdout, code } = await cli(["answer", "--json", ...args], e);
   expect(code).toBe(0);
   return JSON.parse(stdout.trim());
+}
+
+
+/** Drive the deck to a review card at `box`, so a wrong grade actually costs. */
+async function reviewCard(e: Env, box: number): Promise<{ id: string }> {
+  await next(e);
+  await answer(e, ["--choice", "1"]);
+  const file = progressFile(e, "es");
+  const stored = JSON.parse(fs.readFileSync(file, "utf8")) as {
+    items: Record<string, Record<string, unknown>>;
+    streak: number;
+  };
+  const id = Object.keys(stored.items)[0]!;
+  stored.items[id] = { ...stored.items[id], stage: "review", box, due: Date.now() - 1000, lapses: 0 };
+  stored.streak = 14;
+  fs.writeFileSync(file, JSON.stringify(stored));
+  await next(e);
+  return { id };
 }
 
 describe("the quiz the /lingo skill drives", () => {
@@ -197,7 +215,7 @@ describe("the quiz the /lingo skill drives", () => {
     const before = fs.readFileSync(progressFile(e, "es"), "utf8");
     fs.writeFileSync(path.join(e.home, "pending-es.json"), body);
 
-    const { stdout, stderr, code } = await cli(["answer", "--choice", "1"], e);
+    const { stdout, stderr, code } = await cli(["answer", "--json", "--choice", "1"], e);
     expect(code).toBe(0);
     expect(stderr).toBe("");
     expect(stdout.trimEnd().split("\n")).toHaveLength(1);
@@ -244,7 +262,7 @@ describe("the quiz the /lingo skill drives", () => {
     await next(e);
     const before = fs.readFileSync(progressFile(e, "es"), "utf8");
 
-    const { stdout, code } = await cli(["answer"], e);
+    const { stdout, code } = await cli(["answer", "--json"], e);
     expect(code).toBe(0);
     const result = JSON.parse(stdout.trim()) as { error?: string; correct?: boolean };
     expect(result.error).toBeTruthy();
@@ -255,6 +273,133 @@ describe("the quiz the /lingo skill drives", () => {
 
     const proper = await answer(e, ["--choice", "1"]);
     expect(typeof proper.correct).toBe("boolean");
+  });
+
+  // An answer that could not have been given is not a wrong answer. The skill
+  // offers `/lingo 1`…`/lingo 4`, so a stray index is a matter of when, not if —
+  // and it used to demote a box, record a lapse and zero the streak, reported as
+  // an ordinary miss.
+  it("refuses a choice that is off the end of the card", async () => {
+    const e = fresh();
+    const { id } = await reviewCard(e, 3);
+    const before = fs.readFileSync(progressFile(e, "es"), "utf8");
+
+    for (const bad of ["5", "9", "0", "-1", "1.5"]) {
+      const { stdout, code } = await cli(["answer", "--json", "--choice", bad], e);
+      expect(code).toBe(0);
+      const result = JSON.parse(stdout.trim()) as { error?: string; correct?: boolean };
+      expect(result.error, `--choice ${bad} was graded`).toBeTruthy();
+      expect(result.correct).toBeUndefined();
+      expect(fs.readFileSync(progressFile(e, "es"), "utf8")).toBe(before);
+    }
+    // The real answer still lands, and the card is still there to take it.
+    const graded = await answer(e, ["--choice", "1"]);
+    expect(typeof graded.correct).toBe("boolean");
+    expect(id).toBeTruthy();
+  });
+
+  // The mirror of the range check, and the half that was missed: `isCorrect`
+  // ignored `text` whenever a card had choices, so typing the right word was
+  // graded a miss — and the skill's catch-all sends typed input here for every
+  // card kind. Being right cost a box level, a lapse and the streak.
+  it("accepts the right answer typed out on a multiple-choice card", async () => {
+    const e = fresh();
+    await reviewCard(e, 3);
+    const card = (await next(e)).card as { choices: string[]; question: string };
+    expect(card.choices.length).toBeGreaterThan(0);
+
+    const before = JSON.parse(fs.readFileSync(progressFile(e, "es"), "utf8")) as {
+      items: Record<string, { box: number; lapses: number }>;
+      streak: number;
+    };
+    const id = Object.keys(before.items)[0]!;
+
+    // The right one, typed instead of numbered. The test reads `answerIndex`
+    // from the pending file rather than guessing — an assertion guarded by
+    // `if (correct)` would pass happily while the bug was back.
+    const pending = JSON.parse(
+      fs.readFileSync(path.join(e.home, "pending-es.json"), "utf8"),
+    ) as { answerIndex: number; choices: string[] };
+    const right = pending.choices[pending.answerIndex]!;
+
+    const graded = await answer(e, ["--json", "--text", right]);
+    expect(graded.correct, `typed "${right}", the card's own answer`).toBe(true);
+
+    const after = JSON.parse(fs.readFileSync(progressFile(e, "es"), "utf8")) as typeof before;
+    expect(after.items[id]!.box).toBeGreaterThan(before.items[id]!.box);
+    expect(after.items[id]!.lapses).toBe(before.items[id]!.lapses);
+    expect(after.streak).toBeGreaterThan(before.streak);
+    // …and a typed answer is genuinely graded, not waved through: put the same
+    // card back up (a teach card would return `correct` for anything) and miss.
+    await reviewCard(e, 3);
+    const dealt = (await next(e)).card as { choices: string[]; kind: string };
+    expect(dealt.choices.length).toBeGreaterThan(0);
+    const wrong = await answer(e, ["--json", "--text", "definitelynotaword"]);
+    expect(wrong.correct).toBe(false);
+  });
+
+  it.each([["   "], ["\t"], ["  \n "]])("refuses a typed answer of only whitespace (%j)", async (blank) => {
+    const e = fresh();
+    await reviewCard(e, 5);
+    await next(e);
+    const before = fs.readFileSync(progressFile(e, "es"), "utf8");
+    const { stdout } = await cli(["answer", "--json", "--text", blank], e);
+    const result = JSON.parse(stdout.trim()) as { error?: string; correct?: boolean };
+    // Saying nothing is not saying the wrong thing.
+    expect(result.error).toBeTruthy();
+    expect(result.correct).toBeUndefined();
+    expect(fs.readFileSync(progressFile(e, "es"), "utf8")).toBe(before);
+  });
+
+  it("does not swallow the next flag as an answer", async () => {
+    const e = fresh();
+    await reviewCard(e, 5);
+    await next(e);
+    const before = fs.readFileSync(progressFile(e, "es"), "utf8");
+
+    // `--text --json` used to grade the literal string "--json" as the answer,
+    // and silently drop the caller out of JSON mode while doing it.
+    for (const args of [["--text", "--json"], ["--choice", "--json"], ["--text", "--choice", "2"]]) {
+      const { stderr, code } = await cli(["answer", ...args], e);
+      expect(code).toBe(1);
+      expect(stderr).toContain("needs a value");
+      expect(fs.readFileSync(progressFile(e, "es"), "utf8")).toBe(before);
+    }
+  });
+
+  it("does not print the note beside a question it has not answered", async () => {
+    const e = fresh();
+    // "favor" carries the note "masculine, as in: por favor" — the answer.
+    await reviewCard(e, 5);
+    const { stdout } = await cli(["next"], e);
+    const noteBearing = JSON.parse(
+      fs.readFileSync(path.join(e.home, "pending-es.json"), "utf8"),
+    ) as { kind: string };
+    if (noteBearing.kind !== "teach") {
+      expect(stdout).not.toMatch(/^\s+\(.*\)$/m);
+    }
+  });
+
+  it("refuses a number on a card that wants typing", async () => {
+    const e = fresh();
+    // Box 5 is the recall stage: no choices at all.
+    await reviewCard(e, 5);
+    const card = await next(e);
+    expect((card.card as { choices: string[] }).choices).toHaveLength(0);
+    const before = fs.readFileSync(progressFile(e, "es"), "utf8");
+
+    const { stdout } = await cli(["answer", "--json", "--choice", "1"], e);
+    expect((JSON.parse(stdout.trim()) as { error?: string }).error).toContain("not multiple choice");
+    expect(fs.readFileSync(progressFile(e, "es"), "utf8")).toBe(before);
+  });
+
+  it("still takes --choice 1 as acknowledging a new word", async () => {
+    // A teach card has no choices either, and this is how the skill marks it seen.
+    const e = fresh();
+    const card = await next(e);
+    expect((card.card as { kind: string }).kind).toBe("teach");
+    const graded = await answer(e, ["--choice", "1"]);
+    expect(graded.correct).toBe(true);
   });
 
   it("emits one line of JSON, so a skill can parse it", async () => {

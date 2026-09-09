@@ -36,10 +36,19 @@ skill, and Claude Code puts its `bin/` on the PATH the hooks run with, so there 
 nothing to build and nothing to edit.
 
 One line goes in `~/.claude/settings.json` if you want the panel under your
-prompt — `claudelingo init --statusline-only` writes it — because Claude Code
-takes a status line only from the main config, never from a plugin. That line
-holds the plugin's own absolute path, since the status line does not run with the
-plugin PATH the hooks get.
+prompt, because Claude Code takes a status line only from the main config, never
+from a plugin. Ask Claude for it — **"set up the claudelingo panel"** — or run it
+yourself. A plugin's `bin/` is on the PATH its *hooks* get, not your shell's, so
+the command needs its full path:
+
+```bash
+cd "$HOME"/.claude/plugins/*/claudelingo && bin/claudelingo init --statusline-only
+```
+
+That writes the plugin's own absolute path into the setting, since the status
+line does not run with the plugin PATH either. It exits non-zero if it could not
+install — a status line is the only thing this mode installs, so nothing else
+succeeding would be no comfort.
 
 Prefer not to use plugins? The standalone installer still works:
 
@@ -147,16 +156,29 @@ widget fits under your prompt, even though it can never take a keypress.
  /)_)   /lingo 1-4 answer   /lingo skip
 ```
 
-With nothing outstanding it goes back to teaching:
+With nothing outstanding it tickers: every eight seconds a word appears alone,
+you get four seconds to reach for it, then the meaning arrives.
 
 ```
- ,___,  «tiempo» = ?
- (o.-)  ████░░░░░░ 42/312 · streak 7 · box 3/5
- /)_)   /lingo quiz me   /lingo stats   /lingo lang
+ ,___,  «primero» = ?
+ (o.o)  ░░░░░░░░░░ 0/312 · #60
+ /)_)   /lingo quiz   /lingo stats   /lingo lang
 ```
+
+```
+ ,___,  «primero» = first
+ (^.^)  ░░░░░░░░░░ 0/312 · #60
+ /)_)   /lingo quiz   /lingo stats   /lingo lang
+```
+
+It walks the language's most common words in order — `#60` is where that word
+sits in the list — and it never ends: mastering the deck does not empty it,
+because this is exposure rather than a queue. Nothing here is graded, and nothing
+is written. The quiz lives where answers can actually be taken: the pane, and
+`/lingo quiz` in the chat.
 
 It is always exactly three rows, so the conversation above it never jumps; it
-drops the owl at 46 columns and falls back to a single line under 30. Because it
+drops the owl below 46 columns and falls back to a single line below 30. Because it
 cannot take input, **the bottom row is always the controls** — it names the exact
 command to type, and the chat bar is directly above it:
 
@@ -173,6 +195,32 @@ command to type, and the chat bar is directly above it:
 Prefer the single line? `claudelingo panel off`, or `--compact`. It is strictly
 read-only either way — a running pane owns the deck, and a status line that wrote
 to it would fight that pane's lock.
+
+In the pane, `t` shows where you stand and `w` lists every word you have met:
+
+```
+┌─ claudelingo · Spanish ─────────────────────┐
+│   ,___,  getting by                         │
+│   (o.o)  38 more for "holding a conversation"│
+│  ██████████████░░░░░░░░░                    │
+│  words met      112 of 1000                 │
+│  mastered       27                          │
+│  accuracy       84%                         │
+└─ any key to close ──────────────────────────┘
+```
+
+```
+┌─ claudelingo · Spanish ─────────────────────┐
+│  words you have met  112                    │
+│  #1   el      the (m.)        5/5  96%      │
+│  #2   los     the (m. pl.)    4/5  88%      │
+│  #3   de      of, from        3/5  71%      │
+│  1–8 of 112                                 │
+└─ ↑↓ scroll · any key to close ──────────────┘
+```
+
+The list is in frequency order, so the words you are weakest on and the words
+that matter most are on the same screen.
 
 **The pane** is a full interactive box that takes keypresses directly — one key
 per answer, no slash commands. That needs a real terminal of its own, so it opens
@@ -284,9 +332,8 @@ The pack is generated through your Claude Code session, validated, and written t
 Entries are `[term, gloss, pos, note?]`, ordered most frequent first. Control
 characters are stripped on load, because a newline in a gloss would turn the status
 line into two lines inside Claude Code's UI and a raw escape would restyle
-everything after it. Two further rules the loader enforces: no duplicate terms, and — because a translate card shows only the
-gloss — no two words may share a gloss. Where two words genuinely collide, put the
-distinction in the gloss itself (`"to be (permanent)"` vs `"to be (state, place)"`).
+everything after it. One further rule the loader enforces: no duplicate terms. Where two words
+genuinely collide, put the distinction in the gloss itself (`"to be (permanent)"` vs `"to be (state, place)"`).
 
 ## Commands
 
@@ -311,7 +358,8 @@ claudelingo reset --yes          erase progress for the current language
 ```
 
 Options: `--lang <code>`, `--always-on`, `--ask` / no `--ask`, `--no-enrich`,
-`--no-color`, `--width <n>` (20–1000; anything else is ignored with a warning),
+`--no-color`, `--width <n>` (below 20 is ignored with a warning; above 1000 is
+clamped),
 `--model <id>`, `--compact`. For `init`: `--no-statusline`, `--statusline-only`,
 `--no-auto-pane` / `--auto-pane`. For `pack generate`: `--code <xx>`,
 `--overwrite`. For `hook`: `--source <name>`.
@@ -349,6 +397,8 @@ settings.json        your language and preferences
 status.json          the current agent state, written by the hooks
 progress-<lang>.json your deck
 progress-<lang>.lock held by the running pane, so a second one cannot clobber it
+pending-<lang>.json  the question /lingo has asked and not yet graded
+                     (delete it, or run `claudelingo skip`, to clear a stuck one)
 packs/               generated word packs
 cache/               memory hooks already fetched
 ```
@@ -402,8 +452,7 @@ npm run typecheck
 
 The end-to-end tests spawn the real binary and drive it over pipes, firing genuine
 hook events, appending to a genuine Codex transcript, revoking write permission on the
-home directory, and serving memory hooks from a local stub HTTP server — then assert on
-the frames a user would see. `CLAUDELINGO_FORCE_RENDER=1` makes the pane paint without a
+home directory, and reading back the frames a user would see. `CLAUDELINGO_FORCE_RENDER=1` makes the pane paint without a
 TTY and `CLAUDELINGO_SEED` fixes the shuffle, which is what makes those assertions
 stable.
 

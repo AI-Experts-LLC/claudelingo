@@ -12,7 +12,7 @@ import type { Pack, Progress, Word } from "./types.js";
  * wrote to it would fight that pane's lock and corrupt the schedule.
  */
 /** How long one word holds the line before the next takes over. */
-export declare const WORD_MS = 12000;
+export declare const WORD_MS = 8000;
 /** The card `next` handed out and is waiting to grade, if there is one. */
 export interface PendingCard {
     question: string;
@@ -37,6 +37,17 @@ export interface StatusLineOptions {
     outstanding?: boolean;
     /** The outstanding question, when it could be read. */
     pending?: PendingCard | null;
+    /**
+     * A pane is open and holds the deck.
+     *
+     * It keeps its card in memory and writes no pending file, so this is the only
+     * way the line knows a question is on screen — and the drill must not answer
+     * it. The `/lingo` commands would be refused by that pane anyway, so this
+     * state points at the pane instead of naming one.
+     */
+    paneOpen?: boolean;
+    /** A memory hook already in the cache. Never fetched from here. */
+    hook?: string | null;
 }
 export interface StatusLineState {
     word: Word | null;
@@ -45,8 +56,18 @@ export interface StatusLineState {
     learned: number;
     total: number;
     streak: number;
+    /** Where this word sits in the frequency list: #1 is the commonest. */
+    rank: number;
 }
-/** The state behind the line, separated so it can be asserted without parsing text. */
+/**
+ * The word the clock says is up.
+ *
+ * It walks the pack itself, in frequency order, rather than the review queue:
+ * the panel is a ticker of the language's most common words, running whether or
+ * not anything is due, and it is the same list every time so you get a sense of
+ * where you are in it. What is *scheduled* is the pane's business, and the
+ * pane's alone — this is exposure, not a quiz.
+ */
 export declare function statusLineState(pack: Pack, progress: Progress, now: number): StatusLineState;
 /**
  * Columns available for the line.

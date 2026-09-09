@@ -12,7 +12,15 @@ export declare const MAX_BOX = 5;
  * The teaching ramp: a word is shown before it is ever asked, recognised before it
  * has to be produced, and only typed out once it is genuinely familiar.
  */
-export declare function cardKindForBox(box: number): CardKind;
+/**
+ * What to ask at a given box, and whether the word can carry a sentence.
+ *
+ * A cloze sits between recognising a word and producing it cold: the sentence
+ * gives you the grammar and the company the word keeps, which is most of what
+ * "knowing" it means, and it is the first time the word is asked for in context
+ * rather than in isolation. Words without an example sentence skip straight on.
+ */
+export declare function cardKindForBox(box: number, hasExample?: boolean): CardKind;
 export declare function emptyProgress(lang: string): Progress;
 export declare function dayKey(now: number): string;
 /** Deterministic PRNG so a seeded run always produces the same quiz. */
@@ -43,6 +51,7 @@ export declare function nextDueAt(progress: Progress): number | null;
 /** Strip case, accents, and surrounding punctuation so "Qué" matches "que". */
 export declare function normalize(text: string): string;
 export declare function buildCard(pack: Pack, word: Word, item: ItemProgress | null, rng: () => number): Card;
+export declare function questionFor(card: Card, pack: Pack): string;
 export declare function isCorrect(card: Card, response: {
     choice?: number;
     text?: string;

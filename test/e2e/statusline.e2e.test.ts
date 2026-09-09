@@ -2,7 +2,16 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { CLI, type Env, REPO, cli, makeEnv, progressFile, requireBuild } from "./harness.js";
+import {
+  CLI,
+  type Env,
+  Pane,
+  REPO,
+  cli,
+  makeEnv,
+  progressFile,
+  requireBuild,
+} from "./harness.js";
 import { PANEL_ROWS } from "../../src/statusline.js";
 
 let env: Env;
@@ -26,10 +35,20 @@ const SESSION_JSON = JSON.stringify({
 });
 
 /** Run `claudelingo statusline` the way Claude Code does: JSON in, one line out. */
-function statusline(e: Env, extra: string[] = []): Promise<{ stdout: string; code: number | null }> {
+function statusline(
+  e: Env,
+  extra: string[] = [],
+  extraEnv: Record<string, string> = {},
+): Promise<{ stdout: string; code: number | null }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI, "statusline", "--no-color", ...extra], {
-      env: { ...process.env, CLAUDELINGO_HOME: e.home, NO_COLOR: "1", ANTHROPIC_API_KEY: "" },
+      env: {
+        ...process.env,
+        CLAUDELINGO_HOME: e.home,
+        NO_COLOR: "1",
+        ANTHROPIC_API_KEY: "",
+        ...extraEnv,
+      },
     });
     let stdout = "";
     child.stdout.on("data", (d) => (stdout += d.toString()));
@@ -87,8 +106,15 @@ describe("the status line Claude Code draws", () => {
     expect(code).toBe(0);
     const rows = stdout.trimEnd().split("\n");
     expect(rows).toHaveLength(PANEL_ROWS);
-    expect(stdout).toMatch(/«.+»/);
-    expect(stdout).toContain("streak 7");
+    // A word from this deck is on screen — either drilled as a question or shown
+    // as a word and its meaning, depending where the clock is in the cycle.
+    // Some word from this pack is on screen. Which one is the clock's business:
+    // the ticker walks the whole list, not just the top of it.
+    const terms = topTerms("es", 312);
+    expect(
+      terms.some((term) => stdout.includes(`«${term}»`)),
+      `no deck word in: ${stdout}`,
+    ).toBe(true);
     // The bottom row is the control surface: it must name the command to type,
     // because nothing here can take a keypress.
     expect(rows[PANEL_ROWS - 1]).toContain("/lingo");
@@ -121,11 +147,11 @@ describe("the status line Claude Code draws", () => {
   it("works on a completely fresh install", async () => {
     const { stdout, code } = await statusline(fresh());
     expect(code).toBe(0);
-    // Which word appears rotates with the clock, so assert on where it came from:
-    // the top of the Spanish deck, which is what a fresh install would teach.
+    // Which word appears rotates with the clock, so assert on where it came
+    // from: the Spanish deck, which is what a fresh install shows.
     const term = /«(.+?)»/.exec(stdout)?.[1];
     expect(term).toBeTruthy();
-    expect(topTerms("es", 12)).toContain(term);
+    expect(topTerms("es", 312)).toContain(term);
     expect(stdout).toContain("0/312");
   });
 
@@ -134,7 +160,7 @@ describe("the status line Claude Code draws", () => {
     fs.writeFileSync(path.join(e.home, "settings.json"), JSON.stringify({ lang: "it", onboarded: true }));
     const { stdout } = await statusline(e);
     const term = /«(.+?)»/.exec(stdout)?.[1];
-    expect(topTerms("it", 12)).toContain(term);
+    expect(topTerms("it", 310)).toContain(term);
     // Deck sizes differ, so this pins the language even for a word both share.
     expect(stdout).toContain("/310");
   });
@@ -196,7 +222,7 @@ describe("the status line Claude Code draws", () => {
       expect(stdout).not.toMatch(/«.+» = [^?]/);
     }
     // The panel offers `/lingo skip` as the way out; it must actually work.
-    const skipped = await cli(["skip"], e);
+    const skipped = await cli(["skip", "--json"], e);
     expect(JSON.parse(skipped.stdout.trim())).toMatchObject({ skipped: true });
     expect(fs.existsSync(pendingPath)).toBe(false);
   });
@@ -223,6 +249,51 @@ describe("the status line Claude Code draws", () => {
     const { stdout } = await statusline(e);
     // Rows on screen, not array entries: a newline inside one is two rows there.
     expect(stdout.trimEnd().split("\n")).toHaveLength(PANEL_ROWS);
+  });
+
+  // The pane keeps its card in memory and writes no pending file. Nothing told
+  // the status line a question was on screen, so it drilled on and printed the
+  // answer to the card the pane was asking. The unit test covers the rendering;
+  // this covers the wiring, which is where the knowledge has to come from.
+  it("goes quiet while a pane holds the deck", async () => {
+    const e = fresh();
+    seed(e);
+    const pane = new Pane([], e);
+    try {
+      await pane.until(() => fs.existsSync(path.join(e.home, "progress-es.lock")));
+      for (const extra of [[], ["--compact"]]) {
+        const { stdout } = await statusline(e, extra);
+        expect(stdout).toContain("pane");
+        // The drill — the thing that would give the answer away — is not running.
+        expect(stdout).not.toMatch(/«.+» = [^?]/);
+      }
+    } finally {
+      pane.kill();
+    }
+  });
+
+  it("never reaches the model for a memory hook, however often it runs", async () => {
+    // This command runs every couple of seconds. A fetch from here would spend
+    // the user's quota on a decoration, once per tick, for ever.
+    const e = fresh();
+    seed(e);
+    fs.writeFileSync(
+      path.join(e.home, "status.json"),
+      JSON.stringify({ state: "busy", source: "claude", event: "x", ts: Date.now() }),
+    );
+    const bin = path.join(e.home, "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    const log = path.join(e.home, "claude-was-called");
+    fs.writeFileSync(
+      path.join(bin, "claude"),
+      `#!/bin/sh\necho called >> ${JSON.stringify(log)}\necho '{}'\n`,
+    );
+    fs.chmodSync(path.join(bin, "claude"), 0o755);
+
+    for (let i = 0; i < 4; i++) {
+      await statusline(e, [], { PATH: `${bin}:${process.env.PATH}` });
+    }
+    expect(fs.existsSync(log), "the status line called claude").toBe(false);
   });
 
   it("returns quickly, because Claude Code cancels a slow one", async () => {

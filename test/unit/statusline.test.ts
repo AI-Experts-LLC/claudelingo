@@ -20,8 +20,17 @@ function withItems(entries: Array<Partial<ItemProgress> & { id: string }>): Prog
   return { ...testProgress(), items, streak: 5 };
 }
 
-/** A moment in the hidden half of a word's slot, and one in the revealed half. */
-const hidden = Math.floor(T0 / WORD_MS) * WORD_MS + 1;
+/**
+ * A moment in the hidden half of the *first* word's slot, and one in its
+ * revealed half.
+ *
+ * The ticker walks the pack in frequency order, so which word is up is
+ * `slot % words.length`. Landing the slot on a multiple of the pack size is what
+ * makes these assertions about "uno" rather than "whichever word the clock
+ * happened to reach".
+ */
+const slots = Math.ceil(T0 / WORD_MS / pack.words.length) * pack.words.length;
+const hidden = slots * WORD_MS + 1;
 const shown = hidden + WORD_MS * 0.75;
 
 describe("what the status line shows", () => {
@@ -57,17 +66,23 @@ describe("what the status line shows", () => {
     expect(line).toContain("streak 5");
   });
 
-  it("prefers what is overdue over what is not yet due", () => {
-    const progress = withItems([
-      { id: "xx:4", due: T0 + 60 * MINUTE },
-      { id: "xx:5", due: T0 - 30 * MINUTE },
-    ]);
-    // Only the overdue one is a candidate at this moment, so it must be shown.
-    const ids = new Set<string>();
-    for (let slot = 0; slot < 6; slot++) {
-      ids.add(statusLineState(pack, progress, hidden + slot * WORD_MS).word?.id ?? "");
-    }
-    expect(ids.has("xx:5")).toBe(true);
+  it("walks the pack in frequency order, whatever is scheduled", () => {
+    // The panel is a ticker of the language's most common words, not a review
+    // queue: it runs the same list every time, so you get a sense of where you
+    // are in it. What is *due* is the pane's business.
+    const progress = withItems([{ id: "xx:5", due: T0 - 30 * MINUTE }]);
+    const seen = [0, 1, 2, 3].map(
+      (step) => statusLineState(pack, progress, hidden + step * WORD_MS).word?.term,
+    );
+    expect(seen).toEqual(
+      pack.words.slice(0, 4).map((word) => word.term),
+    );
+  });
+
+  it("numbers each word by how common it is", () => {
+    const progress = withItems([{ id: "xx:1" }]);
+    expect(statusLineState(pack, progress, hidden).rank).toBe(1);
+    expect(statusLineState(pack, progress, hidden + WORD_MS).rank).toBe(2);
   });
 
   it("teaches from the top of the deck when nothing has been learned yet", () => {
@@ -76,8 +91,9 @@ describe("what the status line shows", () => {
     expect(line).toContain(`0/${pack.words.length}`);
   });
 
-  it("says so when the deck is genuinely finished", () => {
-    // Everything learned and nothing due: there is nothing to drill.
+  it("keeps going when everything is learned, because it never ends", () => {
+    // The ticker is exposure, not a queue: mastering the deck does not empty it.
+    // "Nothing due" is a thing `/lingo` says, where it means something.
     const items: Progress["items"] = {};
     for (const word of pack.words) {
       items[word.id] = {
@@ -85,8 +101,10 @@ describe("what the status line shows", () => {
         due: T0 + 40 * 24 * 60 * MINUTE, lastSeen: T0, seen: 9, correct: 9, lapses: 0,
       };
     }
-    const line = renderStatusLine(pack, { ...testProgress(), items }, hidden, { color: false });
-    expect(line).toContain("all caught up");
+    const mastered = { ...testProgress(), items };
+    const line = renderStatusLine(pack, mastered, hidden, { color: false });
+    expect(line).toContain(`«${pack.words[0]!.term}»`);
+    expect(statusLineState(pack, mastered, hidden + 5 * WORD_MS).word).toBeTruthy();
   });
 
   it("never exceeds the width it is given", () => {

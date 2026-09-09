@@ -164,6 +164,15 @@ function writeCache(file, text) {
         }
     }
 }
+/**
+ * A hook we already have, or null. Never fetches.
+ *
+ * The panel is read-only and runs every couple of seconds; reaching the model
+ * from there would spend the user's quota on a decoration, once per tick.
+ */
+export function cachedHook(lang, term) {
+    return readCache(cacheFile(lang, term));
+}
 function cacheFile(lang, term) {
     const safe = Buffer.from(term).toString("base64url");
     return path.join(paths.cache(), `hook-${lang}-${safe}.txt`);
@@ -190,44 +199,87 @@ const PACK_SYSTEM = "You are a corpus linguist building a beginner vocabulary pa
     "no duplicate terms and no two entries sharing an English gloss. " +
     "`pos` is one of: noun, verb, adj, adv, prep, conj, pron, art, num, interj. " +
     "`gloss` is a short English translation; `note` carries gender or an " +
-    "irregularity when it matters. Reply with JSON only — no prose, no code fence.";
-/** Build a frequency pack for a language claudelingo does not ship. */
-export async function generatePack(language, code, count, options = {}) {
-    const raw = await ask(`Produce the ${count} most common words in ${language} as JSON of the form ` +
-        `{"code":"${code}","name":"<the language's own name>","englishName":"${language}",` +
-        `"words":[{"term":"","gloss":"","pos":"","note":""}]}. Omit "note" when it does not apply.`, { ...options, system: PACK_SYSTEM, timeoutMs: options.timeoutMs ?? PACK_TIMEOUT_MS });
-    // Models wrap JSON in a fence even when asked not to.
-    const body = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+    "irregularity when it matters. `example` is a short natural sentence that " +
+    "*contains the entry's term verbatim*, then ` | `, then its English " +
+    "translation — six to twelve words, using only vocabulary at least as common " +
+    "as the entry itself. Reply with JSON only — no prose, no code fence.";
+/** How many words to ask for in one request. */
+const PACK_CHUNK = 100;
+/** One request: the words ranked `from`..`from + size - 1`. */
+async function packChunk(language, code, from, size, known, options) {
+    // The already-taken terms go in the prompt because the model cannot see the
+    // earlier chunks: without them the boundaries overlap heavily and a 1000-word
+    // pack comes back with 600 distinct words.
+    const avoid = known.length
+        ? ` Do not repeat any of these, which are already in the pack: ${known.join(", ")}.`
+        : "";
+    const raw = await ask(`Produce words ranked ${from} to ${from + size - 1} by frequency in ${language}, ` +
+        `as JSON of the form {"words":[{"term":"","gloss":"","pos":"","note":"","example":""}]}. ` +
+        `Exactly ${size} entries, continuing the frequency order — not the commonest words ` +
+        `again.${avoid} Omit "note" when it does not apply.`, { ...options, system: PACK_SYSTEM, timeoutMs: options.timeoutMs ?? PACK_TIMEOUT_MS });
+    const body = raw
+        .replace(/^```(?:json)?\s*/i, "")
+        .replace(/```\s*$/, "")
+        .trim();
     let parsed;
     try {
         parsed = JSON.parse(body);
     }
     catch {
-        throw new EnrichError("Claude did not return valid JSON");
+        throw new EnrichError(`Claude did not return valid JSON for words ${from}-${from + size - 1}`);
     }
-    if (!Array.isArray(parsed.words) || parsed.words.length === 0) {
-        throw new EnrichError("Claude returned no words");
+    if (!Array.isArray(parsed.words)) {
+        throw new EnrichError(`Claude returned no words for ${from}-${from + size - 1}`);
     }
-    // Collapse to the compact on-disk tuple form, dropping duplicates the model may
-    // have slipped in — `materialize` rejects the pack outright if any survive.
+    return parsed.words;
+}
+/**
+ * Build a frequency pack for a language claudelingo does not ship.
+ *
+ * Asked in chunks, because one request for a thousand entries with a sentence
+ * each is a very long reply: it truncates, and a truncated JSON body is a whole
+ * pack lost rather than one chunk. Each chunk is told what the earlier ones
+ * produced, or the boundaries overlap and the duplicates eat the count.
+ */
+export async function generatePack(language, code, count, options = {}) {
+    const { onProgress, ...ask } = options;
     const seen = new Set();
     const words = [];
-    for (const entry of parsed.words) {
-        if (!entry?.term || !entry.gloss || !entry.pos)
-            continue;
-        if (seen.has(entry.term))
-            continue;
-        seen.add(entry.term);
-        words.push(entry.note
-            ? [entry.term, entry.gloss, entry.pos, entry.note]
-            : [entry.term, entry.gloss, entry.pos]);
+    for (let from = 1; from <= count; from += PACK_CHUNK) {
+        const size = Math.min(PACK_CHUNK, count - from + 1);
+        // Only the most recent terms: the whole list would grow the prompt without
+        // bound, and it is the boundary that overlaps, not the beginning.
+        const entries = await packChunk(language, code, from, size, [...seen].slice(-120), ask);
+        for (const entry of entries) {
+            if (!entry?.term || !entry.gloss || !entry.pos)
+                continue;
+            if (seen.has(entry.term))
+                continue;
+            seen.add(entry.term);
+            // A sentence that does not contain its own word cannot be clozed, and one
+            // without a translation cannot be shown. The loader drops both anyway;
+            // writing them to disk would just be junk in a file people read.
+            const example = (entry.example ?? "").trim();
+            const [text, translation] = example.split("|");
+            const usable = !!text &&
+                !!translation?.trim() &&
+                text.toLowerCase().includes(entry.term.toLowerCase());
+            const row = [entry.term, entry.gloss, entry.pos];
+            if (usable)
+                row.push(entry.note ?? "", example);
+            else if (entry.note)
+                row.push(entry.note);
+            words.push(row);
+            if (words.length >= count)
+                break;
+        }
+        onProgress?.(words.length, count);
+        if (words.length >= count)
+            break;
     }
-    return {
-        code: parsed.code || code,
-        name: parsed.name || language,
-        englishName: parsed.englishName || language,
-        words,
-    };
+    if (!words.length)
+        throw new EnrichError("Claude returned no words");
+    return { code, name: language, englishName: language, words };
 }
 /**
  * Whether the `claude` command is available.

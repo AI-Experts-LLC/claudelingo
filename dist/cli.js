@@ -4,14 +4,14 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_SETTINGS, ensureHome, loadSettings, paths, quarantine, readJsonFile, saveSettings, writeJsonAtomic, } from "./config.js";
 import * as lock from "./lock.js";
-import { applyAnswer, buildCard, deferItem, emptyProgress, isCorrect, makeRng, selectNext, stats, } from "./srs.js";
+import { applyAnswer, buildCard, deferItem, emptyProgress, isCorrect, makeRng, normalize, questionFor, selectNext, stats, } from "./srs.js";
 import { listPacks, loadPack, savePack } from "./packs/index.js";
 import { readStatus, stateForEvent, writeStatus } from "./agentState.js";
 import * as claudeCode from "./integrations/claudeCode.js";
 import * as codex from "./integrations/codex.js";
-import { DEFAULT_MODEL, generatePack, hasClaude, memoryHook } from "./enrich.js";
+import { DEFAULT_MODEL, cachedHook, generatePack, hasClaude, memoryHook, } from "./enrich.js";
 import { run } from "./ui/tui.js";
-import { defaultWidth, renderPanel, renderStatusLine } from "./statusline.js";
+import { defaultWidth, renderPanel, renderStatusLine, statusLineState } from "./statusline.js";
 import { launch, openPaneBeside } from "./launcher.js";
 const BIN = "claudelingo";
 const USAGE = `claudelingo — learn a language while your coding agent works
@@ -66,8 +66,14 @@ export function parseArgs(argv) {
             const name = rawName;
             if (inline !== undefined)
                 flags[name] = inline;
-            else if (takesValue.has(name))
-                flags[name] = argv[++i] ?? "";
+            else if (takesValue.has(name)) {
+                // `--text --json` used to make the text literally "--json": the caller
+                // silently left JSON mode *and* graded an answer nobody gave. A flag is
+                // never the value of another flag; leaving it empty makes
+                // `requireFlagValues` reject it with the message it already has.
+                const next = argv[i + 1];
+                flags[name] = next === undefined || next.startsWith("--") ? "" : (i++, next);
+            }
             // A trailing `--lang` with nothing after it is a typo, not a request for
             // the configured default.
             else if (name.startsWith("no-"))
@@ -233,6 +239,7 @@ function cmdInit(args) {
     ensureHome();
     const failed = [];
     const settingsFile = claudeCode.settingsPath(scope);
+    let statusLineProblem = null;
     // The plugin carries the hooks and the skill; what it cannot carry is the
     // status line, which Claude Code only accepts from the main config. This is
     // the one thing a plugin user has to run by hand.
@@ -252,6 +259,7 @@ function cmdInit(args) {
             process.stdout.write("Status line installed — words appear under your prompt.\n");
         }
         else if (result.statusLineProblem) {
+            statusLineProblem = result.statusLineProblem;
             // Not fatal: the hooks are what make the pane work at all.
             process.stderr.write(`Status line NOT installed: ${result.statusLineProblem}\n`);
         }
@@ -262,8 +270,12 @@ function cmdInit(args) {
             `${error.message}\n`);
     }
     if (onlyStatusLine) {
-        // Nothing else belongs to this mode: the plugin owns the rest.
-        if (failed.length)
+        // Nothing else belongs to this mode: the plugin owns the rest. Which also
+        // means a status line that was not installed is a *total* failure here, not
+        // a partial one — a taken slot is caught inside `install` and returned as a
+        // problem rather than thrown, so it never reached `failed` and this exited 0
+        // having done nothing at all.
+        if (failed.length || statusLineProblem)
             process.exit(1);
         return;
     }
@@ -311,7 +323,11 @@ function cmdInit(args) {
     process.stdout.write(`\nStudying ${resolvePack(settings.lang).englishName}.\n`);
     if (!failed.length) {
         process.stdout.write("Just open Claude Code as usual:\n");
-        process.stdout.write("  · words appear on the status line under your prompt\n");
+        // Promising the panel right after saying it was not installed is how someone
+        // spends ten minutes wondering why their terminal looks unchanged.
+        if (!statusLineProblem && wantStatusLine) {
+            process.stdout.write("  · the panel appears under your prompt\n");
+        }
         process.stdout.write(settings.autoPane
             ? "  · the quiz pane opens itself beside you when you are in tmux\n"
             : "  · open the quiz pane yourself with: claudelingo\n");
@@ -390,17 +406,12 @@ function cmdNext(args) {
     }
     const next = selectNext(pack, progress, settings, now);
     if (!next) {
-        emit({ done: true, message: "nothing due right now", stats: stats(pack, progress, now) });
+        const done = stats(pack, progress, now);
+        emit({ done: true, message: "nothing due right now", stats: done }, `nothing due right now — ${tally(done)}`);
         return;
     }
     const card = buildCard(pack, next.word, next.item, makeRng(now));
-    const question = card.kind === "recognize"
-        ? `What does "${card.prompt}" mean?`
-        : card.kind === "reverse"
-            ? `How do you say "${card.prompt}" in ${pack.englishName}?`
-            : card.kind === "teach"
-                ? `New word: "${card.word.term}" (${card.word.pos}) means "${card.word.gloss}".`
-                : `Spell the ${pack.englishName} word for "${card.prompt}".`;
+    const question = questionFor(card, pack);
     try {
         writeJsonAtomic(paths.pending(settings.lang), {
             id: card.word.id,
@@ -418,6 +429,7 @@ function cmdNext(args) {
         emit({ error: `could not record the question: ${error.message}` });
         return;
     }
+    const numbered = card.choices.map((choice, i) => `  ${i + 1}) ${choice}`).join("\n");
     emit({
         card: {
             id: card.word.id,
@@ -427,7 +439,15 @@ function cmdNext(args) {
             note: card.word.note ?? null,
         },
         stats: stats(pack, progress, now),
-    });
+    }, 
+    // The note is shown on a `teach` card, where the word and its meaning are
+    // both on screen anyway. Beside a question it is a hint — sometimes the
+    // answer outright: "favor" carries "masculine, as in: por favor". The JSON
+    // form keeps it as its own field for the skill to withhold; printing it here
+    // put it under the question unconditionally.
+    [question, numbered, card.kind === "teach" && card.word.note ? `  (${card.word.note})` : ""]
+        .filter(Boolean)
+        .join("\n"));
 }
 /**
  * `claudelingo skip` — drop the outstanding question without grading it.
@@ -442,7 +462,7 @@ function cmdSkip(args) {
     const pendingFile = paths.pending(settings.lang);
     const pending = readJsonFile(pendingFile);
     if (!pending.ok && pending.reason === "missing") {
-        emit({ error: "no question is outstanding — run `claudelingo next --json` first" });
+        emit({ error: "no question is outstanding — deal one with `claudelingo next`" });
         return;
     }
     if (lock.isHeld(paths.lock(settings.lang))) {
@@ -463,7 +483,7 @@ function cmdSkip(args) {
             emit({ error: `could not drop the question: ${error.message}` });
             return;
         }
-        emit({ skipped: true, term: null, unreadable: true });
+        emit({ skipped: true, term: null, unreadable: true }, "dropped a question that could not be read");
         return;
     }
     const held = lock.acquire(paths.lock(settings.lang));
@@ -481,14 +501,15 @@ function cmdSkip(args) {
         if (!word) {
             // The card left the pack under us. Dropping the question is still right.
             fs.rmSync(pendingFile, { force: true });
-            emit({ skipped: true, term: null });
+            emit({ skipped: true, term: null }, "dropped it — that word is no longer in the pack");
             return;
         }
         const now = Date.now();
         const updated = { ...progress, items: { ...progress.items, [id]: deferItem(progress.items[id], id, now) } };
         writeJsonAtomic(paths.progress(settings.lang), updated);
         fs.rmSync(pendingFile, { force: true });
-        emit({ skipped: true, term: word.term, stats: stats(pack, updated, now) });
+        const after = stats(pack, updated, now);
+        emit({ skipped: true, term: word.term, stats: after }, `skipped ${word.term} — back in 10 minutes · ${tally(after)}`);
     }
     finally {
         held.lock?.release();
@@ -521,7 +542,8 @@ function cmdPanel(args) {
     const { settings, problem } = settingsFrom(args.flags);
     const wanted = typeof args.rest[0] === "string" ? args.rest[0].toLowerCase() : null;
     if (wanted === null) {
-        emit({ panel: settings.panel !== false, ...(problem ? { problem } : {}) });
+        const on = settings.panel !== false;
+        emit({ panel: on, ...(problem ? { problem } : {}) }, `panel ${on ? "on" : "off"}${problem ? `\n${problem}` : ""}`);
         return;
     }
     if (wanted !== "on" && wanted !== "off") {
@@ -541,7 +563,7 @@ function cmdPanel(args) {
         return;
     }
     saveSettings({ ...target.settings, panel });
-    emit({ panel, changed: (settings.panel !== false) !== panel });
+    emit({ panel, changed: (settings.panel !== false) !== panel }, `panel ${panel ? "on — the full three rows under your prompt" : "off — one line under your prompt"}`);
 }
 /**
  * `claudelingo lang [code]` — report or change the language being studied.
@@ -573,7 +595,13 @@ function cmdLang(args) {
             // Reporting a default as though it were their setting is how someone
             // concludes their configuration is fine when it cannot be read at all.
             ...(loaded.problem ? { problem: loaded.problem } : {}),
-        });
+        }, [
+            `studying ${describe(settings.lang).englishName} (${settings.lang})`,
+            `available: ${codes.join(", ")}`,
+            loaded.problem ?? "",
+        ]
+            .filter(Boolean)
+            .join("\n"));
         return;
     }
     if (!codes.includes(wanted)) {
@@ -582,7 +610,7 @@ function cmdLang(args) {
     }
     const chosen = describe(wanted);
     if (wanted === settings.lang) {
-        emit({ lang: wanted, englishName: chosen.englishName, changed: false });
+        emit({ lang: wanted, englishName: chosen.englishName, changed: false }, `already studying ${chosen.englishName} (${wanted})`);
         return;
     }
     if (lock.isHeld(paths.lock(settings.lang)) || lock.isHeld(paths.lock(wanted))) {
@@ -598,7 +626,7 @@ function cmdLang(args) {
     // The outstanding question belongs to the language being left behind; grading
     // it against the new deck would file the answer under the wrong word.
     fs.rmSync(paths.pending(settings.lang), { force: true });
-    emit({ lang: wanted, englishName: chosen.englishName, changed: true });
+    emit({ lang: wanted, englishName: chosen.englishName, changed: true }, `now studying ${chosen.englishName} (${wanted})`);
 }
 /** `claudelingo answer --choice N | --text S` — grade the card `next` handed out. */
 function cmdAnswer(args) {
@@ -607,7 +635,7 @@ function cmdAnswer(args) {
     const pendingFile = paths.pending(settings.lang);
     const pending = readJsonFile(pendingFile);
     if (!pending.ok) {
-        emit({ error: "no question is outstanding — run `claudelingo next --json` first" });
+        emit({ error: "no question is outstanding — deal one with `claudelingo next`" });
         return;
     }
     if (lock.isHeld(paths.lock(settings.lang))) {
@@ -622,7 +650,7 @@ function cmdAnswer(args) {
         !Array.isArray(outstanding.choices) ||
         !Array.isArray(outstanding.accepted) ||
         typeof outstanding.answerIndex !== "number") {
-        emit({ error: "the outstanding question is unreadable — run `claudelingo next --json` again" });
+        emit({ error: "the outstanding question is unreadable — deal another with `claudelingo next`" });
         return;
     }
     const held = lock.acquire(paths.lock(settings.lang));
@@ -655,9 +683,35 @@ function cmdAnswer(args) {
         // breaks a streak while reporting `{"correct":false}` — indistinguishable
         // from the user actually getting it wrong, and this command is driven by a
         // model's output, so one malformed call would cost them progress silently.
-        if (choice === undefined && text === undefined) {
+        // `--text "   "` is no answer at all, the same as no flag: `normalize` makes
+        // it empty, and grading empty as a miss costs a box for saying nothing.
+        const typed = text === undefined ? undefined : normalize(text);
+        if (choice === undefined && (typed === undefined || typed.length === 0)) {
             emit({ error: "say which answer: --choice N, or --text \"...\"" });
             return;
+        }
+        // The same principle, one step further: an answer that could not have been
+        // given is not a wrong answer either. A choice off the end of the list, or
+        // any choice at all on a card that has none, used to grade as a miss —
+        // demoting the box, recording a lapse and zeroing the streak, reported as an
+        // ordinary `{"correct":false}`. This command is driven by a model's output,
+        // and the skill offers `/lingo 1`…`/lingo 4`, so a stray index is a matter
+        // of when, not if.
+        // A `teach` card is an acknowledgement, not an answer: it has no choices and
+        // no right answer, and `--choice 1` is how the skill says "shown".
+        if (choice !== undefined && card.kind !== "teach") {
+            if (!card.choices.length) {
+                emit({
+                    error: `"${word.term}" is not multiple choice — answer it with --text "..."`,
+                });
+                return;
+            }
+            if (!Number.isInteger(choice) || choice < 0 || choice >= card.choices.length) {
+                emit({
+                    error: `there is no option ${args.flags.choice} — pick 1 to ${card.choices.length}`,
+                });
+                return;
+            }
         }
         const correct = isCorrect(card, {
             ...(choice !== undefined ? { choice } : {}),
@@ -667,21 +721,68 @@ function cmdAnswer(args) {
         const updated = applyAnswer(progress, word, card, correct, now);
         writeJsonAtomic(paths.progress(settings.lang), updated);
         fs.rmSync(pendingFile, { force: true });
+        const after = stats(pack, updated, now);
+        // A teach card has no right answer — reporting "correct" for being shown a
+        // word reads as a score for doing nothing.
+        const verdict = card.kind === "teach" ? "learned" : correct ? "correct" : "not quite";
         emit({
             correct,
             term: word.term,
             gloss: word.gloss,
             note: word.note ?? null,
-            stats: stats(pack, updated, now),
-        });
+            stats: after,
+        }, [
+            `${verdict} — ${word.term} = ${word.gloss}`,
+            word.note ? ` (${word.note})` : "",
+            `\n${tally(after)}`,
+        ].join(""));
     }
     finally {
         if (held.ok)
             held.lock.release();
     }
 }
-function emit(value) {
-    process.stdout.write(`${JSON.stringify(value)}\n`);
+/**
+ * `--json` is for programs; everything else is for people.
+ *
+ * These commands always printed JSON, so the `/lingo` skill's own transcript was
+ * a wall of braces for the user to read past — and `--json` was documented but
+ * never actually consulted. A human line is the default now; the skill asks for
+ * JSON where it genuinely parses the reply.
+ *
+ * In human form an `error` goes to stderr and sets a failing exit code, because
+ * that is what a shell expects. In JSON form it stays on stdout with exit 0, so
+ * a caller reading one line of JSON still gets one line of JSON.
+ */
+let jsonOutput = false;
+function emit(value, human) {
+    if (jsonOutput) {
+        process.stdout.write(`${JSON.stringify(value)}\n`);
+        return;
+    }
+    if (typeof value.error === "string") {
+        process.stderr.write(`claudelingo: ${value.error}\n`);
+        process.exitCode = 1;
+        return;
+    }
+    process.stdout.write(`${human ?? JSON.stringify(value)}\n`);
+}
+/** `3/312 learned · streak 2` — the tail of most human lines. */
+function tally(s) {
+    const streak = s.streak > 0 ? ` · streak ${s.streak}` : "";
+    return `${s.learned}/${s.total} learned${streak}`;
+}
+/**
+ * The cached memory hook for whatever the drill is showing, if we have one.
+ *
+ * Cache only — never a fetch. This runs every couple of seconds, and reaching
+ * the model from here would spend the user's quota on a decoration, per tick,
+ * for ever. The renderer decides when to show it; skipping the lookup until then
+ * only saved a small file read, and left a branch no test could fail on.
+ */
+function tickerHook(pack, progress, lang, now) {
+    const { word } = statusLineState(pack, progress, now);
+    return word ? cachedHook(lang, word.term) : null;
 }
 /**
  * `claudelingo statusline` — Claude Code renders whatever this prints.
@@ -711,6 +812,15 @@ async function cmdStatusline(args) {
         // question, and grading stays with `answer`, which holds the lock.
         const pendingFile = paths.pending(settings.lang);
         // Presence, not parseability — see `outstanding` in StatusLineOptions.
+        //
+        // A running pane counts too. It builds its card in memory and writes no
+        // pending file, so the status line had no idea a question was on screen and
+        // went on drilling the same overdue pool — within one rotation printing the
+        // answer to the very card the pane was asking.
+        // Two separate facts, and the renderers want both: a pending file on disk,
+        // and a pane holding the deck with its card in memory. Folding one into the
+        // other left a line nothing could prove was doing anything.
+        const paneOpen = lock.isHeld(paths.lock(settings.lang));
         const outstanding = fs.existsSync(pendingFile);
         const stored = readJsonFile(pendingFile);
         const value = stored.ok ? stored.value : null;
@@ -727,7 +837,11 @@ async function cmdStatusline(args) {
         // `outstanding` is presence on disk; `pending` is the readable form of it.
         // Both renderers need both: the panel shows the question, the one-line form
         // has no room for it and must say so rather than drilling the same word.
-        const full = { ...options, pending, outstanding };
+        // The ticker runs whatever the agent is doing — it is exposure, not a quiz,
+        // and stopping it when the turn ends would just make the panel flicker
+        // between two states while you read.
+        const hook = tickerHook(pack, progress, settings.lang, Date.now());
+        const full = { ...options, pending, outstanding, paneOpen, hook };
         if (!wantPanel) {
             process.stdout.write(`${renderStatusLine(pack, progress, Date.now(), full)}\n`);
             return;
@@ -893,13 +1007,20 @@ async function cmdPack(args) {
             `"${language}"). Re-run with an explicit --code.`);
     }
     const count = Number(args.flags.count ?? 300);
+    if (!Number.isInteger(count) || count < 1)
+        fail(`--count needs a whole number, not "${args.flags.count}"`);
     const model = args.flags.model || loadSettings().settings.model;
     if (!hasClaude())
         fail("the `claude` command is not on your PATH");
     process.stdout.write(`Generating the top ${count} words in ${language} with ${model}, ` +
         "through your Claude Code session…\n");
     try {
-        const raw = await generatePack(language, code, count, { model });
+        const raw = await generatePack(language, code, count, {
+            model,
+            // A thousand words is minutes of work, in chunks. Silence for that long
+            // reads as a hang.
+            onProgress: (done, total) => process.stdout.write(`  ${done}/${total} words\n`),
+        });
         const file = savePack(raw, { overwrite: args.flags.overwrite === true });
         process.stdout.write(`Wrote ${raw.words.length} words to ${file}\n`);
         process.stdout.write(`Study it with: ${BIN} --lang ${raw.code}\n`);
@@ -1128,6 +1249,7 @@ export async function main(argv = process.argv.slice(2)) {
             `  Put it first:  claudelingo ${ours}${ours === "--lang" ? " <code>" : ""} start`);
     }
     const args = parseArgs(own);
+    jsonOutput = args.flags.json === true;
     if (args.flags.help || args.command === "help") {
         process.stdout.write(USAGE);
         return;

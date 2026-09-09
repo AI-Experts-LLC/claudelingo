@@ -19,7 +19,7 @@ function fresh(): Env {
 }
 
 async function json(args: string[], e: Env): Promise<Record<string, unknown>> {
-  const { stdout, code } = await cli(args, e);
+  const { stdout, code } = await cli([...args, "--json"], e);
   expect(code).toBe(0);
   expect(stdout.trimEnd().split("\n")).toHaveLength(1);
   return JSON.parse(stdout.trim()) as Record<string, unknown>;
@@ -139,6 +139,42 @@ describe("the commands the panel tells you to type", () => {
     expect(after.lang).toBe("fr");
     // The only thing that should have changed is the language.
     expect(after.enrich).toBe(before.enrich);
+  });
+
+  // `--json` is for programs; the default is for people. The skill's transcript
+  // used to be a wall of braces because these always printed JSON, and `--json`
+  // was documented but never consulted.
+  it("prints a line a person can read, and JSON only when asked", async () => {
+    const e = fresh();
+    const dealt = await cli(["next"], e);
+    expect(dealt.code).toBe(0);
+    expect(() => JSON.parse(dealt.stdout)).toThrow();
+    expect(dealt.stdout).toContain("New word");
+
+    const graded = await cli(["answer", "--choice", "1"], e);
+    expect(() => JSON.parse(graded.stdout)).toThrow();
+    expect(graded.stdout).toMatch(/learned — \S+ = /);
+    expect(graded.stdout).toContain("1/312 learned");
+
+    // …and the machine-readable form is still exactly one line of JSON.
+    await cli(["next"], e);
+    const json = await cli(["answer", "--json", "--choice", "1"], e);
+    expect(json.stdout.trimEnd().split("\n")).toHaveLength(1);
+    expect(JSON.parse(json.stdout)).toHaveProperty("correct");
+  });
+
+  it("sends errors to stderr with a failing status, the way a shell expects", async () => {
+    const e = fresh();
+    const human = await cli(["skip"], e);
+    expect(human.code).toBe(1);
+    expect(human.stdout).toBe("");
+    expect(human.stderr).toContain("no question is outstanding");
+    expect(human.stderr).not.toContain("{");
+
+    // In JSON mode the contract is unchanged: one line of JSON, exit 0.
+    const json = await cli(["skip", "--json"], e);
+    expect(json.code).toBe(0);
+    expect(JSON.parse(json.stdout.trim())).toHaveProperty("error");
   });
 
   it("clears a pending file no other command can read", async () => {

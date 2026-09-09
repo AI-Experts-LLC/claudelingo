@@ -8,6 +8,12 @@ import type { AgentState, AgentStatus } from "./types.js";
  * `Notification` is deliberately on the idle side: Claude Code fires it when it needs
  * a permission decision, which is exactly when the human should be looking at Claude
  * rather than at a vocabulary card.
+ *
+ * `SubagentStop` is deliberately on *neither*. A subagent finishing says nothing
+ * about the turn that spawned it — the parent is usually still working, and often
+ * for a long time yet. Treating it as idle stopped the drill during exactly the
+ * waits worth filling: a session that farms work out to subagents would go quiet
+ * the moment the first one came back.
  */
 const BUSY_EVENTS = new Set([
   "UserPromptSubmit",
@@ -21,7 +27,6 @@ const BUSY_EVENTS = new Set([
 
 const IDLE_EVENTS = new Set([
   "Stop",
-  "SubagentStop",
   "SessionEnd",
   "Notification",
   "agent-turn-complete",

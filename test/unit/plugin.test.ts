@@ -118,7 +118,7 @@ describe("the Claude Code plugin", () => {
     // that is the point — a new control must be taught to the skill, or it falls
     // through its catch-all and grades the outstanding card.
     const required: Record<string, string> = {
-      "/lingo quiz me": "`/lingo quiz me`",
+      "/lingo quiz": "`/lingo quiz me`",
       "/lingo stats": "`/lingo stats`",
       "/lingo lang": "`/lingo lang`",
       "/lingo skip": "`/lingo skip`",
@@ -138,6 +138,23 @@ describe("the Claude Code plugin", () => {
         phrase as string,
       );
     }
+  });
+
+  // A card dealt and acknowledged in the same turn never appears on the panel,
+  // which is the whole point of the panel — and it answers on the user's behalf.
+  it("tells the skill to wait for the person between dealing and grading", () => {
+    const skill = fs.readFileSync(path.join(root, "skills", "lingo", "SKILL.md"), "utf8");
+    expect(skill).toContain("Do not deal a card and acknowledge it in the same breath");
+    expect(skill).toContain("Never `next` immediately followed by `answer`");
+    // Including the teach card, which is where it used to happen every time.
+    expect(skill).toMatch(/teach.*(?:\n.*){0,12}AskUserQuestion/);
+  });
+
+  it("does not offer the grader an index no card has", () => {
+    // Cards carry at most four choices; `/lingo 9` used to be graded as a miss.
+    const skill = fs.readFileSync(path.join(root, "skills", "lingo", "SKILL.md"), "utf8");
+    expect(skill).not.toContain("`/lingo 9`");
+    expect(skill).toContain("`/lingo 4`");
   });
 
   it("tells the skill not to reveal the answer", () => {

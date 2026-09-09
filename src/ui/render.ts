@@ -4,6 +4,7 @@ import { ANSI_PATTERN, ansi } from "./ansi.js";
 import { MASCOT_WIDTH, type Mood, owl, remark } from "./mascot.js";
 import { sliceToWidth, stringWidth } from "./width.js";
 import { type AppState, isActive, isOnboarding, summary } from "./app.js";
+import { standing } from "./tiers.js";
 
 export interface Theme {
   reset: string;
@@ -157,6 +158,8 @@ const HELP = [
   "space  next card",
   "s      skip this word, no penalty",
   "e      ask Claude for a hint about it",
+  "t      where you stand",
+  "w      every word you have met",
   "l      change language",
   "p      practise even when Claude is idle",
   "q      quit",
@@ -251,6 +254,59 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
     push();
     push(key("enter", "start", theme));
     push();
+  } else if (state.screen === "stats") {
+    const s = summary(pack, state);
+    const where = standing(s.learned);
+    push(`${theme.bold}${pack.englishName}${theme.reset}`);
+    push();
+    withOwl(s.mastered > 0 ? "proud" : "watching", [
+      `${theme.bold}${where.tier.name}${theme.reset}`,
+      where.next
+        ? `${theme.dim}${where.toGo} more for "${where.next.name}"${theme.reset}`
+        : `${theme.dim}the whole list${theme.reset}`,
+      "",
+    ]);
+    push(progressBar(where.progress, Math.min(24, body), theme));
+    push();
+    for (const [label, value] of [
+      ["words met", `${s.learned} of ${s.total}`],
+      ["still learning", String(s.learning)],
+      ["in review", String(s.review)],
+      ["mastered", String(s.mastered)],
+      ["best streak", String(state.progress.bestStreak)],
+      ["accuracy", s.accuracy ? `${Math.round(s.accuracy * 100)}%` : "—"],
+    ] as const) {
+      push(`${theme.dim}${label.padEnd(15)}${theme.reset}${value}`);
+    }
+  } else if (state.screen === "words") {
+    const met = pack.words
+      .map((word) => ({ word, item: state.progress.items[word.id] }))
+      .filter((row) => row.item !== undefined);
+    push(`${theme.bold}words you have met${theme.reset}  ${theme.dim}${met.length}${theme.reset}`);
+    push();
+    if (!met.length) {
+      push(`${theme.dim}None yet — answer a card and it appears here.${theme.reset}`);
+    } else {
+      // Walked rather than scrolled: the pane is short, and a page that moves
+      // under you as cards are answered is worse than one that holds still.
+      const perPage = 8;
+      const from = Math.min(state.wordsFrom, Math.max(0, met.length - 1));
+      for (const { word, item } of met.slice(from, from + perPage)) {
+        const seen = item?.seen ?? 0;
+        const right = item?.correct ?? 0;
+        const score = seen ? `${Math.round((right / seen) * 100)}%` : "—";
+        const box = item ? `${item.box}/${MAX_BOX}` : "";
+        push(
+          `${theme.dim}#${String(word.rank).padEnd(4)}${theme.reset}` +
+            `${truncate(word.term, 14).padEnd(15)}` +
+            `${theme.dim}${truncate(word.gloss, 18).padEnd(19)}${theme.reset}` +
+            `${theme.dim}${box.padEnd(5)}${score}${theme.reset}`,
+        );
+      }
+      push();
+      const shown = Math.min(from + perPage, met.length);
+      push(`${theme.dim}${from + 1}–${shown} of ${met.length}${theme.reset}`);
+    }
   } else if (state.showHelp) {
     push(`${theme.bold}keys${theme.reset}`);
     push();
@@ -442,14 +498,16 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
     footer = state.pickerReturn ? "1-9 choose · esc back" : "1-9 choose a language";
   else if (state.mode === "howItWorks") footer = "enter  start";
   else if (state.showHelp) footer = "any key to close";
+  else if (state.screen === "words") footer = "↑↓ scroll · any key to close";
+  else if (state.screen) footer = "any key to close";
   else if (state.mode === "offer") footer = "y yes · n not now · q quit";
-  else if (!isActive(state)) footer = "p practise · l language · ? help · q quit";
+  else if (!isActive(state)) footer = "p practise · t stats · w words · ? help · q quit";
   else if (state.mode === "teach") footer = "space next · s skip · e hint · ? help";
   else if (state.mode === "feedback") footer = "space next · e hint · ? help";
   else if (state.mode === "question" && state.card?.choices.length)
     footer = "1-4 answer · s skip · ? help";
   else if (state.mode === "question") footer = "type it, then enter · esc clear";
-  else footer = "l language · ? help · q quit";
+  else footer = "t stats · w words · l language · ? help · q quit";
 
   return box(content, { width, title, footer, theme });
 }

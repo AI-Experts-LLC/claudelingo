@@ -9,6 +9,14 @@ export type Mood = "asleep" | "watching" | "asking" | "happy" | "oops" | "proud"
 /** Widest line of any mood, so callers can reserve a fixed gutter. */
 export declare const MASCOT_WIDTH: number;
 export declare const MASCOT_HEIGHT = 3;
-export declare function owl(mood: Mood): string[];
+/**
+ * The face, at a moment in time.
+ *
+ * The status line re-runs on a timer, so consecutive runs are frames: passing a
+ * `tick` lets the owl blink instead of staring. Everything stays deterministic —
+ * the same tick always draws the same frame — because a status line has no memory
+ * between runs and each one has to be able to work out the whole picture alone.
+ */
+export declare function owl(mood: Mood, tick?: number): string[];
 /** A short line of encouragement, chosen by how things are going. */
 export declare function remark(mood: Mood, streak: number): string;

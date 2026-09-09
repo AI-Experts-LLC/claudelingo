@@ -266,6 +266,73 @@ function withStub(bin: string): Record<string, string> {
 }
 
 describe("claudelingo pack generate", () => {
+  /** A stand-in that answers each request differently, so chunks can be told apart. */
+  function stubChunks(e: Env): string {
+    const bin = path.join(e.home, "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    const counter = path.join(e.home, "chunk-count");
+    const script = path.join(e.home, "chunk-stub.mjs");
+    // Written as a Node script rather than shell: each call bumps a counter and
+    // answers with words numbered from it, plus one word repeated every time —
+    // which is what the real thing does at a chunk boundary.
+    fs.writeFileSync(
+      script,
+      [
+        `import fs from "node:fs";`,
+        `const counter = ${JSON.stringify(counter)};`,
+        `const n = Number(fs.readFileSync(counter, "utf8").trim() || 0) + 1;`,
+        `fs.writeFileSync(counter, String(n));`,
+        `const a = n * 10;`,
+        `const words = [`,
+        `  { term: "w" + a + "1", gloss: "g" + a + "1", pos: "noun",`,
+        `    example: "una w" + a + "1 aquí | a w" + a + "1 here" },`,
+        `  { term: "w" + a + "2", gloss: "g" + a + "2", pos: "verb",`,
+        `    example: "this sentence omits the word | nope" },`,
+        `  { term: "repeat", gloss: "same every time", pos: "adj" },`,
+        `];`,
+        `process.stdout.write(JSON.stringify({`,
+        `  type: "result", subtype: "success", is_error: false,`,
+        `  result: JSON.stringify({ words }),`,
+        `}));`,
+      ].join("\n"),
+    );
+    fs.writeFileSync(counter, "0");
+    const file = path.join(bin, "claude");
+    fs.writeFileSync(file, `#!/bin/sh\nexec ${process.execPath} ${JSON.stringify(script)}\n`);
+    fs.chmodSync(file, 0o755);
+    return bin;
+  }
+
+  it("asks for a long pack in chunks, and drops what repeats across them", async () => {
+    const e = fresh();
+    const bin = stubChunks(e);
+    const generated = await cli(
+      // More than one chunk's worth, so the boundary behaviour is exercised.
+      ["pack", "generate", "--lang", "Testish", "--code", "tt", "--count", "150"],
+      e,
+      withStub(bin),
+    );
+    expect(generated.code).toBe(0);
+    // Progress is reported, because a thousand words is minutes of silence.
+    expect(generated.stdout).toMatch(/\d+\/150 words/);
+
+    const pack = JSON.parse(
+      fs.readFileSync(path.join(e.home, "packs", "tt.json"), "utf8"),
+    ) as { words: string[][] };
+    const terms = pack.words.map((w) => w[0]);
+    // More than one chunk was asked for…
+    const calls = Number(fs.readFileSync(path.join(e.home, "chunk-count"), "utf8").trim());
+    expect(calls).toBeGreaterThan(1);
+    // …the boundary repeat appears once, not once per chunk…
+    expect(terms.filter((t) => t === "repeat")).toHaveLength(1);
+    expect(new Set(terms).size).toBe(terms.length);
+    // …and a sentence survives only where it contains its own word.
+    const withSentence = pack.words.find((w) => w[0] === "w101");
+    expect(withSentence?.[4]).toContain("w101");
+    const omitted = pack.words.find((w) => w[0] === "w102");
+    expect(omitted?.[4]).toBeUndefined();
+  });
+
   it("writes a pack that loads back and can be studied", async () => {
     const e = fresh();
     const bin = stubClaude(e, {
@@ -424,6 +491,48 @@ describe("init reports what actually happened", () => {
     expect(fs.existsSync(exec)).toBe(true);
   });
 
+  // The status line is the *only* thing this mode installs, so failing to
+  // install it is a total failure. A taken slot is returned as a problem rather
+  // than thrown, so it never reached the failure list and this exited 0 having
+  // done nothing — against a README that promises the opposite.
+  it("does not promise a panel when told not to install one", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const result = await cli(["init", "--no-statusline"], e, vars);
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain("panel appears under your prompt");
+    const settings = JSON.parse(fs.readFileSync(path.join(home, ".claude", "settings.json"), "utf8"));
+    expect(settings.statusLine).toBeUndefined();
+  });
+
+  it("exits non-zero when --statusline-only installs nothing", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const file = path.join(home, ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const theirs = { type: "command", command: "ccstatusline" };
+    fs.writeFileSync(file, JSON.stringify({ statusLine: theirs }));
+
+    const result = await cli(["init", "--statusline-only"], e, vars);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("already configured");
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).statusLine).toEqual(theirs);
+  });
+
+  it("does not promise a panel it could not install", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const file = path.join(home, ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ statusLine: { type: "command", command: "ccstatusline" } }));
+
+    const result = await cli(["init"], e, vars);
+    // The hooks still install, so this is a success overall — but saying the
+    // panel will appear is how someone spends ten minutes wondering why it did not.
+    expect(result.stderr).toContain("Status line NOT installed");
+    expect(result.stdout).not.toContain("panel appears under your prompt");
+  });
+
   it("blames the right half when --statusline-only cannot be installed", async () => {
     const e = fresh();
     const { home, vars } = fakeEnvs(e);
@@ -543,6 +652,28 @@ describe("init reports what actually happened", () => {
     expect(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")).not.toContain(
       "claudelingo",
     );
+  });
+});
+
+describe("what the hooks make of a subagent", () => {
+  // The hook is still installed — Claude Code fires it and we must not error —
+  // but it must leave the state alone. A session that farms work out to
+  // subagents used to go quiet the moment the first one came back.
+  it("leaves the state alone when a subagent stops mid-turn", async () => {
+    const e = fresh();
+    await cli(["hook", "UserPromptSubmit", "--source", "claude"], e);
+    const busy = JSON.parse(fs.readFileSync(statusFile(e), "utf8")) as { state: string; ts: number };
+    expect(busy.state).toBe("busy");
+
+    const result = await cli(["hook", "SubagentStop", "--source", "claude"], e);
+    expect(result.code).toBe(0);
+    const after = JSON.parse(fs.readFileSync(statusFile(e), "utf8")) as { state: string; ts: number };
+    expect(after.state).toBe("busy");
+    expect(after.ts).toBe(busy.ts);
+
+    // …and the turn really ending still does.
+    await cli(["hook", "Stop", "--source", "claude"], e);
+    expect(JSON.parse(fs.readFileSync(statusFile(e), "utf8")).state).toBe("idle");
   });
 });
 

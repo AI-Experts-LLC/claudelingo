@@ -32,12 +32,28 @@ export interface AskOptions {
  */
 export declare function ask(prompt: string, options?: AskOptions): Promise<string>;
 /**
+ * A hook we already have, or null. Never fetches.
+ *
+ * The panel is read-only and runs every couple of seconds; reaching the model
+ * from there would spend the user's quota on a decoration, once per tick.
+ */
+export declare function cachedHook(lang: string, term: string): string | null;
+/**
  * A one- or two-line memory hook for a word. Cached on disk, because the hook for
  * "tiempo" never changes.
  */
 export declare function memoryHook(word: Word, pack: Pack, options?: AskOptions): Promise<string>;
-/** Build a frequency pack for a language claudelingo does not ship. */
-export declare function generatePack(language: string, code: string, count: number, options?: AskOptions): Promise<RawPack>;
+/**
+ * Build a frequency pack for a language claudelingo does not ship.
+ *
+ * Asked in chunks, because one request for a thousand entries with a sentence
+ * each is a very long reply: it truncates, and a truncated JSON body is a whole
+ * pack lost rather than one chunk. Each chunk is told what the earlier ones
+ * produced, or the boundaries overlap and the duplicates eat the count.
+ */
+export declare function generatePack(language: string, code: string, count: number, options?: AskOptions & {
+    onProgress?: (done: number, total: number) => void;
+}): Promise<RawPack>;
 /**
  * Whether the `claude` command is available.
  *

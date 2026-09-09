@@ -49,7 +49,7 @@ export function materialize(raw: RawPack): Pack {
   }
   const seen = new Set<string>();
   const words: Word[] = raw.words.map((entry, index) => {
-    const [rawTerm, rawGloss, rawPos, rawNote] = entry;
+    const [rawTerm, rawGloss, rawPos, rawNote, rawExample] = entry;
     const term = clean(rawTerm ?? "");
     const gloss = clean(rawGloss ?? "");
     const pos = clean(rawPos ?? "");
@@ -61,6 +61,13 @@ export function materialize(raw: RawPack): Pack {
     const word: Word = { id: `${raw.code}:${index + 1}`, rank: index + 1, term, gloss, pos };
     const note = clean(rawNote ?? "");
     if (note) word.note = note;
+    // `sentence | translation`. A sentence that does not contain its own word is
+    // dropped rather than kept: a cloze card built from it would have nothing to
+    // blank out, and a sentence that teaches a different word is worse than none.
+    const [text, translation] = clean(rawExample ?? "").split("|");
+    if (text && translation && text.toLowerCase().includes(term.toLowerCase())) {
+      word.example = { text: text.trim(), translation: translation.trim() };
+    }
     return word;
   });
   return {

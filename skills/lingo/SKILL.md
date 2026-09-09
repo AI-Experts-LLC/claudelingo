@@ -24,7 +24,7 @@ through to a new card when there is none.
 |---|---|
 | `/lingo` | Deal a card — the round below |
 | `/lingo quiz me`, `quiz`, `card`, `go` | Deal a card. The panel prints `/lingo quiz me` as its own hint, so this arrives often |
-| `/lingo 1`…`/lingo 9` | `claudelingo answer --choice N` — grade the **outstanding** card, do not deal a new one first |
+| `/lingo 1`…`/lingo 4` | `claudelingo answer --choice N` — grade the **outstanding** card, do not deal a new one first. Only for a card that *has* numbered choices; the command refuses an index no card offers rather than marking it wrong |
 | `/lingo ok` (or `got it`, `next`) | `claudelingo answer --choice 1` — acknowledge a `teach` card |
 | `/lingo skip` | `claudelingo skip` |
 | `/lingo stats` | `claudelingo stats` |
@@ -37,6 +37,10 @@ through to a new card when there is none.
 
 A bare number always means "grade what is outstanding". Dealing a card first
 would throw away the question they are looking at and answer a different one.
+
+If the outstanding card wants a typed answer — `card.choices` is empty and it is
+not a `teach` card — a number is not an answer to it. Ask them for the word, or
+pass what they typed to `--text`.
 
 The catch-all is the dangerous row: everything above it must be matched first.
 Sending `quiz me` to the grader marks the outstanding card wrong, costing a box
@@ -68,8 +72,9 @@ something else, and the panel already shows what is next.
    them, do not add options, and do not hint. If `card.choices` is empty the card
    wants a typed answer: ask it as an open question in your own message instead.
 
-4. Send the result back. For a multiple-choice card, `--choice` is the 1-based
-   position of the option they picked:
+4. Send the result back — **without** `--json`, so the reply is one readable
+   line rather than a wall of braces in their transcript. For a multiple-choice
+   card, `--choice` is the 1-based position of the option they picked:
 
    ```bash
    claudelingo answer --choice 2
@@ -81,13 +86,30 @@ something else, and the panel already shows what is next.
    claudelingo answer --text "tiempo"
    ```
 
-5. Report the outcome from the reply in one short line: whether it was `correct`,
-   the `term` and its `gloss`, and the `note` if there is one. Then offer another
-   card unless they said to stop.
+5. Pass on the line it printed, and offer another card unless they said to stop.
+
+### A `teach` card still waits for them
 
 A `teach` card has no choices and no right answer — it is an introduction. Show
-the word and its meaning, then call `claudelingo answer --choice 1` to mark it
-seen and move on.
+the word and its meaning, then **ask with AskUserQuestion** before acknowledging
+it: "Got it" / "Another" / "Stop". Only once they have answered, run:
+
+```bash
+claudelingo answer --choice 1
+```
+
+Do not deal a card and acknowledge it in the same breath. Two reasons, and both
+matter more than the keystroke it saves:
+
+- It is their turn. A card that appears and is answered before they can read it
+  is not teaching them anything.
+- **The panel under their prompt shows whatever card is outstanding.** That is
+  the whole point of it. A card dealt and cleared within one turn never appears
+  there, so the panel sits on its idle word and the product looks broken —
+  which is exactly what it did look like.
+
+The same rule holds for every card: `next`, then wait for the person, then
+`answer`. Never `next` immediately followed by `answer`.
 
 ## Other things they might ask for
 

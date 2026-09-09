@@ -835,12 +835,21 @@ describe("re-installing over our own status line", () => {
     expect(after.command).toBe(`${exec} statusline --compact`);
   });
 
-  it("does not claim a different tool's command that merely mentions us", () => {
+  it.each([
+    // Mentions us in its arguments only.
+    ["my-statusline --data ~/.claudelingo/progress.json"],
+    // Mentions us in the *executable* — this is the one that separates
+    // "the program being run is claudelingo" from "the string contains it",
+    // and without it the substring check could come back unnoticed.
+    ["/opt/tools/claudelingo-wrapper statusline"],
+    ["claudelingo-fork statusline --compact"],
+    // Runs something else entirely, with our name as an argument.
+    ["echo claudelingo statusline"],
+  ])("does not claim another tool's command: %s", (theirs) => {
     const file = path.join(dir(), "settings.json");
-    const theirs = "my-statusline --data ~/.claudelingo/progress.json";
     fs.writeFileSync(file, JSON.stringify({ statusLine: { type: "command", command: theirs } }));
     const result = claudeCode.install(file, "claudelingo", {});
-    expect(result.statusLineProblem).toContain("already configured");
+    expect(result.statusLineProblem, `claimed "${theirs}"`).toContain("already configured");
     expect(JSON.parse(fs.readFileSync(file, "utf8")).statusLine.command).toBe(theirs);
     claudeCode.uninstall(file, "claudelingo");
     expect(JSON.parse(fs.readFileSync(file, "utf8")).statusLine.command).toBe(theirs);

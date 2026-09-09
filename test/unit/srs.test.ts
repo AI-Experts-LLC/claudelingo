@@ -14,6 +14,7 @@ import {
   selectNext,
   stats,
 } from "../../src/srs.js";
+import { materialize } from "../../src/packs/index.js";
 import type { ItemProgress, Progress } from "../../src/types.js";
 import { DAY, MINUTE, T0, testPack, testProgress, testSettings } from "../helpers.js";
 
@@ -345,5 +346,77 @@ describe("selection order is deterministic", () => {
     progress = withItem(progress, { id: "xx:1", due: T0, box: 1 });
     // Weakest box first; among equals, the lowest id.
     expect(selectNext(pack, progress, testSettings(), T0)?.word.id).toBe("xx:1");
+  });
+});
+
+describe("sentence cards", () => {
+  const withExample = materialize({
+    code: "xx",
+    name: "Testish",
+    englishName: "Testish",
+    words: [
+      ["casa", "house", "noun", "feminine", "La casa es grande | The house is big"],
+      ["perro", "dog", "noun", "", "El perro corre | The dog runs"],
+      ["gato", "cat", "noun", "", "Un gato duerme | A cat sleeps"],
+      ["libro", "book", "noun", "", "El libro es nuevo | The book is new"],
+      ["mesa", "table", "noun"],
+    ],
+  });
+
+  function at(box: number, word = withExample.words[0]!) {
+    const item: ItemProgress = {
+      id: word.id, stage: "review", box, step: 0,
+      due: T0, lastSeen: T0, seen: 5, correct: 4, lapses: 0,
+    };
+    return buildCard(withExample, word, item, makeRng(7));
+  }
+
+  it("asks the word inside its own sentence, with the word taken out", () => {
+    const card = at(4);
+    expect(card.kind).toBe("cloze");
+    expect(card.prompt).toContain("____");
+    // The answer must not be sitting in the prompt.
+    expect(card.prompt.toLowerCase()).not.toContain("casa");
+    expect(card.choices).toHaveLength(4);
+    expect(card.choices[card.answerIndex]).toBe("casa");
+  });
+
+  it("blanks the word even when the sentence starts with it", () => {
+    const pack = materialize({
+      code: "xx", name: "T", englishName: "T",
+      words: [
+        ["casa", "house", "noun", "", "Casa mía, casa tuya | My house, your house"],
+        ["perro", "dog", "noun"],
+        ["gato", "cat", "noun"],
+        ["libro", "book", "noun"],
+      ],
+    });
+    const word = pack.words[0]!;
+    const card = buildCard(pack, word, {
+      id: word.id, stage: "review", box: 4, step: 0,
+      due: T0, lastSeen: T0, seen: 5, correct: 4, lapses: 0,
+    }, makeRng(3));
+    expect(card.prompt.startsWith("____")).toBe(true);
+  });
+
+  it("falls back for a word that has no sentence", () => {
+    // Nothing to blank: asking would show an empty gap and no way to answer it.
+    const plain = withExample.words[4]!;
+    expect(plain.example).toBeUndefined();
+    expect(at(4, plain).kind).toBe("reverse");
+  });
+
+  it("keeps the rest of the progression where it was", () => {
+    expect(at(1).kind).toBe("recognize");
+    expect(at(3).kind).toBe("reverse");
+    expect(at(5).kind).toBe("recall");
+  });
+
+  it("grades a cloze like any other multiple choice", () => {
+    const card = at(4);
+    expect(isCorrect(card, { choice: card.answerIndex })).toBe(true);
+    expect(isCorrect(card, { choice: (card.answerIndex + 1) % 4 })).toBe(false);
+    // …and typing the word works too.
+    expect(isCorrect(card, { text: "casa" })).toBe(true);
   });
 });

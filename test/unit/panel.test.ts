@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { PANEL_ROWS, renderPanel, renderStatusLine, statusLineState } from "../../src/statusline.js";
+import {
+  PANEL_ROWS,
+  WORD_MS,
+  renderPanel,
+  renderStatusLine,
+  statusLineState,
+} from "../../src/statusline.js";
 import { visibleWidth } from "../../src/ui/render.js";
 import { MASCOT_HEIGHT } from "../../src/ui/mascot.js";
 import { T0, testPack, testProgress } from "../helpers.js";
@@ -136,6 +142,26 @@ describe("the panel under the prompt", () => {
     }
   });
 
+  // A running pane keeps its card in memory and writes no pending file, so the
+  // line had no idea a question was on screen and drilled on — within one
+  // rotation printing the answer to the card the pane was asking.
+  it("goes quiet, and points at the pane, while a pane holds the deck", () => {
+    const progress = seeded();
+    for (let step = 0; step < 40; step++) {
+      const now = T0 + step * 700;
+      const would = statusLineState(pack, progress, now).word!;
+      const options = { ...plain, paneOpen: true, outstanding: true };
+      const panel = renderPanel(pack, progress, now, options).join("\n");
+      const line = renderStatusLine(pack, progress, now, options);
+      for (const rendered of [panel, line]) expect(rendered).not.toContain(would.gloss);
+      expect(panel).toContain("on the pane");
+      expect(line).toContain("in the pane");
+      // …and it does not offer commands that pane would refuse.
+      expect(panel).not.toContain("/lingo skip");
+      expect(panel).not.toContain("/lingo show it");
+    }
+  });
+
   it("says there is nothing to answer on a teach card", () => {
     const rows = renderPanel(pack, seeded(), T0, {
       ...plain,
@@ -183,3 +209,5 @@ describe("the panel under the prompt", () => {
     expect(narrow).toContain("/lingo");
   });
 });
+
+

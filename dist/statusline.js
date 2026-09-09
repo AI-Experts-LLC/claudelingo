@@ -15,54 +15,32 @@ import { truncateStyled } from "./ui/width.js";
  * wrote to it would fight that pane's lock and corrupt the schedule.
  */
 /** How long one word holds the line before the next takes over. */
-export const WORD_MS = 12_000;
+export const WORD_MS = 8000;
 /** Fraction of that spent hidden, before the meaning is revealed. */
 const HIDDEN_FRACTION = 0.5;
-/** How many candidates to rotate through, so the line is not one word forever. */
-const ROTATION = 12;
 /**
- * Words worth putting in front of someone right now, most useful first: whatever
- * is overdue, then whatever is still being learned, then the next new word.
+ * The word the clock says is up.
+ *
+ * It walks the pack itself, in frequency order, rather than the review queue:
+ * the panel is a ticker of the language's most common words, running whether or
+ * not anything is due, and it is the same list every time so you get a sense of
+ * where you are in it. What is *scheduled* is the pane's business, and the
+ * pane's alone — this is exposure, not a quiz.
  */
-function candidates(pack, progress, now) {
-    const byId = new Map(pack.words.map((w) => [w.id, w]));
-    const out = [];
-    for (const item of Object.values(progress.items)) {
-        const word = byId.get(item.id);
-        if (!word)
-            continue;
-        if (item.due <= now)
-            out.push({ word, rank: item.due });
-        else if (item.stage === "learning")
-            out.push({ word, rank: now + item.due });
-    }
-    out.sort((a, b) => a.rank - b.rank);
-    if (out.length < ROTATION) {
-        // Top up with the next words the deck would teach, so a fresh install still
-        // has something to show.
-        for (const word of pack.words) {
-            if (out.length >= ROTATION)
-                break;
-            if (!progress.items[word.id])
-                out.push({ word, rank: Number.MAX_SAFE_INTEGER });
-        }
-    }
-    return out.slice(0, ROTATION);
-}
-/** The state behind the line, separated so it can be asserted without parsing text. */
 export function statusLineState(pack, progress, now) {
-    const pool = candidates(pack, progress, now);
+    const words = pack.words;
     // `now` is wall-clock in practice, but this is a public export: a negative or
-    // non-finite value must not index off the end of the pool.
+    // non-finite value must not index off the end of the list.
     const slot = Number.isFinite(now) ? Math.abs(Math.floor(now / WORD_MS)) : 0;
-    const chosen = pool.length ? pool[slot % pool.length] : undefined;
-    const word = chosen ? chosen.word : null;
+    const index = words.length ? slot % words.length : 0;
+    const word = words[index] ?? null;
     return {
         word,
         revealed: Number.isFinite(now) && (Math.abs(now) % WORD_MS) / WORD_MS >= HIDDEN_FRACTION,
         learned: Object.keys(progress.items).length,
-        total: pack.words.length,
+        total: words.length,
         streak: progress.streak,
+        rank: word ? index + 1 : 0,
     };
 }
 /**
@@ -102,6 +80,9 @@ export function renderStatusLine(pack, progress, now, options = {}) {
     const state = statusLineState(pack, progress, now);
     const stats = dim(`${state.learned}/${state.total}`);
     const streak = state.streak > 0 ? dim(` · streak ${state.streak}`) : "";
+    if (options.paneOpen) {
+        return trim(`${dim("answer it in the pane")}  ${stats}${streak}`, options.width);
+    }
     if (options.outstanding || options.pending) {
         return trim(`${dim("a question is waiting")} ${dim("· /lingo")}  ${stats}${streak}`, options.width);
     }
@@ -165,6 +146,7 @@ export function renderPanel(pack, progress, now, options = {}) {
     const cyan = (s) => (color ? `${ansi.cyan}${s}${ansi.reset}` : s);
     const bold = (s) => (color ? `${ansi.bold}${s}${ansi.reset}` : s);
     const key = (s) => (color ? `${ansi.green}${s}${ansi.reset}` : s);
+    const green = (s) => (color ? `${ansi.green}${s}${ansi.reset}` : s);
     const state = statusLineState(pack, progress, now);
     const pending = options.pending ?? null;
     const learned = `${state.learned}/${state.total}`;
@@ -174,7 +156,12 @@ export function renderPanel(pack, progress, now, options = {}) {
     let head;
     let middle;
     let hint;
-    if (!pending && options.outstanding) {
+    if (options.paneOpen && !pending) {
+        head = bold("a question is on the pane");
+        middle = dim("answer it there — this line cannot take keys");
+        hint = `${key("/lingo stats")}`;
+    }
+    else if (!pending && options.outstanding) {
         // Something is outstanding that we could not read. Saying so beats both
         // silence and the drill, which would reveal the answer to it.
         head = bold("a question is waiting");
@@ -207,18 +194,27 @@ export function renderPanel(pack, progress, now, options = {}) {
         hint = `${key("/lingo stats")}   ${key("/lingo lang")}`;
     }
     else {
-        // The same passive drill as the one-line form: the word alone first, so there
-        // is a moment to retrieve it, then the meaning.
+        // A ticker, not a quiz. The word appears alone, you get a moment to reach
+        // for it, then the meaning arrives — and on to the next one, for ever. The
+        // quiz proper lives where answers can actually be taken: the pane, and
+        // `/lingo quiz` in the chat.
         head = `${cyan(`«${state.word.term}»`)} ${dim("=")} ${state.revealed ? bold(state.word.gloss) : dim("?")}`;
-        middle = `${dim(bar(state.total ? state.learned / state.total : 0, 10))} ${dim(learned + streak + box)}`;
-        hint = `${key("/lingo")} ${dim("quiz me")}   ${key("/lingo stats")}   ${key("/lingo lang")}`;
+        const rank = state.rank ? dim(` · #${state.rank}`) : "";
+        middle = `${dim(bar(state.total ? state.learned / state.total : 0, 10))} ${dim(learned + streak + box)}${rank}`;
+        hint = `${key("/lingo quiz")}   ${key("/lingo stats")}   ${key("/lingo lang")}`;
     }
     const body = [head, middle, hint];
     const gutter = width === undefined || width >= OWL_MIN_WIDTH;
     if (!gutter)
         return body.map((line) => trim(line, width));
-    const mood = pending || options.outstanding ? "watching" : state.word ? "asking" : "asleep";
-    const face = owl(mood);
+    const mood = pending || options.outstanding || options.paneOpen
+        ? "watching"
+        : state.revealed
+            ? "happy"
+            : state.word
+                ? "watching"
+                : "asleep";
+    const face = owl(mood, Math.floor(Math.abs(now) / 2000));
     return body.map((line, i) => trim(`${dim(face[i] ?? "")}  ${line}`, width));
 }
 //# sourceMappingURL=statusline.js.map
