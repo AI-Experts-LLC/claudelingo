@@ -260,6 +260,42 @@ describe("the drill the panel runs while it waits", () => {
     expect(next?.card.word.id).not.toBe(first?.card.word.id);
   });
 
+  // On a young deck most of the pool is words never seen, which build `teach`
+  // cards with nothing to ask. Stopping at the first one meant the drill almost
+  // never ran for the people with the most to learn.
+  it("walks past a card with nothing to ask, to one that has something", () => {
+    const progress = testProgress();
+    const [first, second] = pack.words;
+    expect(first && second).toBeTruthy();
+    // Ranked first, and unaskable: a `new` item builds a teach card.
+    progress.items[first!.id] = {
+      id: first!.id, stage: "new", box: 0, step: 0,
+      due: T0 - 9000, lastSeen: 0, seen: 0, correct: 0, lapses: 0,
+    };
+    // Ranked second, and askable.
+    progress.items[second!.id] = {
+      id: second!.id, stage: "learning", box: 1, step: 0,
+      due: T0 - 1000, lastSeen: T0, seen: 2, correct: 2, lapses: 0,
+    };
+
+    // A window whose slot lands on the unaskable one.
+    const base = Math.ceil(T0 / DRILL_MS) * DRILL_MS;
+    let landed: number | null = null;
+    for (let window = 0; window < 8; window++) {
+      const at = base + window * DRILL_MS;
+      if (Math.abs(Math.floor(at / DRILL_MS)) % 2 === 0) {
+        landed = at;
+        break;
+      }
+    }
+    expect(landed).not.toBeNull();
+
+    const drill = drillAt(pack, progress, landed!);
+    expect(drill, "the drill gave up instead of looking past the teach card").not.toBeNull();
+    expect(drill!.card.word.id).toBe(second!.id);
+    expect(drill!.card.choices.length).toBeGreaterThan(1);
+  });
+
   it("stands down for anything that is actually being answered", () => {
     const progress = due();
     const start = Math.ceil(T0 / DRILL_MS) * DRILL_MS;

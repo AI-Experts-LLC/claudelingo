@@ -160,14 +160,25 @@ export function drillAt(pack, progress, now) {
     if (!pool.length)
         return null;
     const slot = Math.abs(Math.floor(now / DRILL_MS));
-    const chosen = pool[slot % pool.length];
-    if (!chosen)
-        return null;
-    const item = progress.items[chosen.word.id] ?? null;
-    // Seeded by the slot: every run inside this window builds the same card, with
-    // the distractors in the same order.
-    const card = buildCard(pack, chosen.word, item, makeRng(slot));
-    if (!card.choices.length)
+    // Walk on past anything with nothing to ask. A word being seen for the first
+    // time builds a `teach` card, which has no choices — and on a young deck most
+    // of the pool is exactly that, so stopping at the first one meant the drill
+    // almost never ran for the people who most needed it.
+    let card = null;
+    for (let step = 0; step < pool.length; step++) {
+        const chosen = pool[(slot + step) % pool.length];
+        if (!chosen)
+            continue;
+        const item = progress.items[chosen.word.id] ?? null;
+        // Seeded by the slot: every run inside this window builds the same card,
+        // with the distractors in the same order.
+        const built = buildCard(pack, chosen.word, item, makeRng(slot));
+        if (built.choices.length) {
+            card = built;
+            break;
+        }
+    }
+    if (!card)
         return null;
     const into = Math.abs(now) % DRILL_MS;
     return { card, revealed: into >= ASK_MS, tick: Math.floor(into / 2000) };
