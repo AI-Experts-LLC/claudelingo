@@ -4,6 +4,7 @@ import { COLOR } from "../../src/ui/render.js";
 import { createState, reduce } from "../../src/ui/app.js";
 import { MASCOT_HEIGHT, MASCOT_WIDTH, owl } from "../../src/ui/mascot.js";
 import type { AppState, Event } from "../../src/ui/app.js";
+import { materialize } from "../../src/packs/index.js";
 import type { Progress } from "../../src/types.js";
 import { MINUTE, T0, testPack, testProgress, testSettings } from "../helpers.js";
 
@@ -411,6 +412,67 @@ describe("the mascot's shape", () => {
         // eslint-disable-next-line no-control-regex
         expect(line, mood).toMatch(/^[\x20-\x7e]*$/);
       }
+    }
+  });
+});
+
+describe("a sentence card in the pane", () => {
+  const sentencePack = materialize({
+    code: "xx",
+    name: "Testish",
+    englishName: "Testish",
+    words: [
+      ["casa", "house", "noun", "feminine", "La casa blanca es muy grande hoy | The white house is very big today"],
+      ["perro", "dog", "noun"],
+      ["gato", "cat", "noun"],
+      ["libro", "book", "noun"],
+    ],
+  });
+
+  function clozeState(): AppState {
+    const word = sentencePack.words[0]!;
+    const progress = testProgress();
+    progress.items[word.id] = {
+      id: word.id, stage: "review", box: 4, step: 0,
+      due: T0 - 1000, lastSeen: T0, seen: 5, correct: 4, lapses: 0,
+    };
+    // Idle first, then busy: the card is dealt on the transition.
+    const base = createState(sentencePack, progress, testSettings({ alwaysOn: true }), "idle", T0);
+    return reduce(base, { type: "agent", state: "busy" }, sentencePack).state;
+  }
+
+  it("shows the sentence with the gap, not 'spell the word for'", () => {
+    const state = clozeState();
+    expect(state.card?.kind).toBe("cloze");
+    const text = renderFrame(state, sentencePack, 60, PLAIN).join("\n");
+    expect(text).toContain("which word fills the gap?");
+    expect(text).toContain("____");
+    expect(text).not.toContain("spell the word for");
+    // The gap is genuinely blank: the word is not sitting in its own sentence…
+    const sentence = text.split("\n").find((line) => line.includes("____"))!;
+    expect(sentence.toLowerCase()).not.toContain("casa");
+    // …the translation is not shown, because it says "house" and that is the answer…
+    expect(text).not.toContain("white house");
+    // …and the answer is among the options exactly once.
+    expect(text.match(/casa/g)).toHaveLength(1);
+  });
+
+  it("shows the sentence and what it means once the answer is in", () => {
+    const answered = drive(clozeState(), [{ type: "key", key: { ch: "2" } }]);
+    expect(answered.mode).toBe("feedback");
+    const text = renderFrame(answered, sentencePack, 60, PLAIN).join("\n");
+    expect(text).toContain("blanca es muy grande");
+    expect(text).toContain("white house");
+  });
+
+  it("wraps a long sentence instead of clipping it", () => {
+    const state = clozeState();
+    for (const width of [40, 50, 60, 80]) {
+      const lines = renderFrame(state, sentencePack, width, PLAIN);
+      for (const line of lines) expect(visibleWidth(line)).toBe(width);
+      // The whole sentence survives somewhere in the frame.
+      const flat = lines.join(" ").replace(/\s+/g, " ");
+      expect(flat).toContain("blanca es muy grande hoy");
     }
   });
 });

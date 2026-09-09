@@ -119,6 +119,7 @@ const KIND_LABEL: Record<string, string> = {
   recognize: "meaning",
   reverse: "translate",
   recall: "spell it",
+  cloze: "in a sentence",
   teach: "new word",
 };
 
@@ -404,6 +405,13 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
           push(`what does ${theme.bold}${theme.cyan}«${card.prompt}»${theme.reset} mean?`);
         } else if (card.kind === "reverse") {
           push(`how do you say ${theme.bold}"${card.prompt}"${theme.reset}?`);
+        } else if (card.kind === "cloze") {
+          // The sentence *is* the question, and it is long enough to need
+          // wrapping — a gap-fill squeezed onto one clipped line is unanswerable.
+          // The sentence only, never its translation: "the white house is very
+          // big today" hands over that the missing word is "house".
+          push(`${theme.dim}which word fills the gap?${theme.reset}`);
+          for (const line of wrap(card.prompt, body)) push(`${theme.bold}${line}${theme.reset}`);
         } else {
           push(`spell the word for ${theme.bold}"${card.prompt}"${theme.reset}`);
         }
@@ -442,9 +450,19 @@ export function renderFrame(state: AppState, pack: Pack, width: number, theme: T
           `${theme.bold}${theme.cyan}${card.word.term}${theme.reset}${DOT}${theme.bold}${card.word.gloss}${theme.reset}`,
           ...(card.word.note ? [`${theme.dim}${card.word.note}${theme.reset}`] : []),
         ]);
+        // Now it can be shown: the sentence in full, with what it means.
+        if (card.kind === "cloze" && card.word.example) {
+          push();
+          for (const line of wrap(card.word.example.text, body)) {
+            push(`${theme.dim}${line}${theme.reset}`);
+          }
+          for (const line of wrap(card.word.example.translation, body)) {
+            push(`${theme.dim}${line}${theme.reset}`);
+          }
+        }
         const item = state.progress.items[card.word.id];
         if (item) {
-          const nextKind = KIND_LABEL[cardKindForBox(item.box)];
+          const nextKind = KIND_LABEL[cardKindForBox(item.box, Boolean(card.word.example))];
           push(
             `${theme.dim}box ${item.box}/${MAX_BOX}${DOT}back as "${nextKind}" in ${relative(item.due - state.now)}${theme.reset}`,
           );
