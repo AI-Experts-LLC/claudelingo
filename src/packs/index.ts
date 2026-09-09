@@ -36,7 +36,7 @@ export class PackError extends Error {}
  * surface benefits rather than each one remembering.
  */
 /** Strip control characters and collapse whitespace — see `materialize`. */
-export function clean(value: string): string {
+function clean(value: string): string {
   return value
     .replace(/\p{Cc}/gu, " ")
     .replace(/\s+/g, " ")

@@ -102,8 +102,34 @@ export function removeHooks(settings) {
  * re-running `init` report our own line as "already configured by someone else",
  * and would leave it behind on uninstall.
  */
+/**
+ * Split `"/path/to/claudelingo" statusline --compact` into its parts.
+ *
+ * Scanning for the word "statusline" anywhere in the string was wrong twice
+ * over: it matched inside the install path (a plugin under a directory called
+ * `statusline-tools` produced a command that would not run), and it let any
+ * third-party command that merely mentioned us be claimed as ours.
+ */
+function splitCommand(command) {
+    const trimmed = (command ?? "").trim();
+    if (!trimmed)
+        return null;
+    if (trimmed.startsWith('"')) {
+        const end = trimmed.indexOf('"', 1);
+        if (end === -1)
+            return null;
+        return { exec: trimmed.slice(1, end), rest: trimmed.slice(end + 1).trim() };
+    }
+    const space = trimmed.search(/\s/);
+    if (space === -1)
+        return { exec: trimmed, rest: "" };
+    return { exec: trimmed.slice(0, space), rest: trimmed.slice(space).trim() };
+}
 function isOurStatusLine(command) {
-    return !!command && command.includes(MARKER) && /\bstatusline\b/.test(command);
+    const split = splitCommand(command);
+    // Ours means: the program being run *is* claudelingo, and it is being asked
+    // for a status line. Not "the string mentions claudelingo somewhere".
+    return !!split && path.basename(split.exec) === MARKER && /^statusline\b/.test(split.rest);
 }
 export function withStatusLine(settings, bin) {
     const existing = settings.statusLine;
@@ -119,14 +145,14 @@ export function withStatusLine(settings, bin) {
     // combination the README suggests, and overwriting the whole object dropped
     // both. Keep their arguments and any extra fields; update only the executable,
     // which is the part that goes stale when a plugin moves.
-    const kept = existing?.command;
-    const args = kept ? kept.slice(kept.indexOf("statusline") + "statusline".length) : "";
+    const kept = splitCommand(existing?.command);
+    const args = kept ? kept.rest.slice("statusline".length) : "";
     return {
         ...settings,
         statusLine: {
             ...existing,
             type: "command",
-            command: `${ours}${kept ? args : ""}`,
+            command: `${ours}${args}`,
             refreshInterval: existing?.refreshInterval ?? STATUS_REFRESH_SECONDS,
         },
     };

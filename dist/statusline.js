@@ -132,6 +132,18 @@ export const PANEL_ROWS = MASCOT_HEIGHT;
 const OWL_MIN_WIDTH = 46;
 /** Below this, a panel cannot say anything useful; fall back to the one-liner. */
 const PANEL_MIN_WIDTH = 30;
+/**
+ * Flatten anything that would become a second row.
+ *
+ * The panel's height is its promise — "always three rows, so the conversation
+ * above it never jumps" — and a newline in a question breaks that however
+ * carefully the caller sanitised. This is the only place that guarantees it: the
+ * CLI used to clean the pending file as well, which left a line no test could
+ * prove was doing anything.
+ */
+function oneLine(text) {
+    return text.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
+}
 function bar(fraction, cells) {
     const filled = Math.max(0, Math.min(cells, Math.round(fraction * cells)));
     return "█".repeat(filled) + "░".repeat(cells - filled);
@@ -170,14 +182,16 @@ export function renderPanel(pack, progress, now, options = {}) {
         hint = `${key("/lingo")} ${dim("show it")}   ${key("/lingo skip")}`;
     }
     else if (pending) {
-        head = bold(pending.question);
+        head = bold(oneLine(pending.question));
         if (pending.kind === "teach") {
             // Nothing to get right — it is being shown a word, not tested on one.
             middle = dim("a new word — nothing to answer");
             hint = `${key("/lingo ok")} ${dim("got it")}   ${key("/lingo skip")}`;
         }
         else if (pending.choices.length) {
-            middle = pending.choices.map((choice, i) => `${key(String(i + 1))} ${choice}`).join("   ");
+            middle = pending.choices
+                .map((choice, i) => `${key(String(i + 1))} ${oneLine(choice)}`)
+                .join("   ");
             hint =
                 `${key("/lingo 1")}-${key(String(pending.choices.length))} ${dim("answer")}   ` +
                     `${key("/lingo skip")}`;

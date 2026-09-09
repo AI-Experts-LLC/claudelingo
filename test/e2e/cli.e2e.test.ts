@@ -435,6 +435,31 @@ describe("init reports what actually happened", () => {
     expect(result.stdout).not.toContain("hooks installed");
   });
 
+  // `statusLineCommand` is tested in isolation, but the single line wiring it
+  // into `init` could be deleted with the whole suite green — reproducing exactly
+  // the failure it exists to prevent: a bare name the status line has no PATH
+  // for, and a blank panel with no error anywhere.
+  it("points a plugin's status line at the plugin's own binary", async () => {
+    const e = fresh();
+    const { home, vars } = fakeEnvs(e);
+    const result = await cli(["init", "--statusline-only"], e, {
+      ...vars,
+      // What Claude Code sets when it runs a plugin's own commands.
+      CLAUDE_PLUGIN_ROOT: path.join(home, ".claude", "plugins", "claudelingo"),
+    });
+    expect(result.code).toBe(0);
+
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(home, ".claude", "settings.json"), "utf8"),
+    ) as { statusLine: { command: string } };
+    const command = settings.statusLine.command;
+    expect(command).toContain("statusline");
+    // The executable, not the bare name.
+    const exec = command.startsWith('"') ? command.slice(1, command.indexOf('"', 1)) : command.split(" ")[0]!;
+    expect(path.isAbsolute(exec), `statusLine runs "${exec}", which needs a PATH it will not get`).toBe(true);
+    expect(fs.existsSync(exec)).toBe(true);
+  });
+
   it("blames the right half when --statusline-only cannot be installed", async () => {
     const e = fresh();
     const { home, vars } = fakeEnvs(e);

@@ -14,6 +14,43 @@ const here = path.dirname(fileURLToPath(import.meta.url));
  * were left pointing at an HTTP stub nothing reads any more, and passed anyway
  * because real Claude returned a plausible pack.
  */
+/**
+ * The end of the call starting at `from`, by matching parens.
+ *
+ * Looking for the next `");"` ran past calls that did not end that way — an
+ * unshielded `cli(["start"], e)` with no trailing semicolon was swallowed by the
+ * assertion on the following line, and passed.
+ */
+function endOfCall(source: string, from: number): number {
+  let depth = 0;
+  for (let i = source.indexOf("(", from); i < source.length; i++) {
+    const ch = source[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return source.length;
+}
+
+/**
+ * Call sites that could reach the real `claude` with nothing shadowing it.
+ *
+ * Separated from the file scan so it can be tested against fixtures: while every
+ * call in the tree is shielded, a broken scan looks exactly like a clean tree.
+ */
+export function unshieldedCalls(source: string): string[] {
+  const launches = /\bcli\(\s*\[\s*"(?:start|claude)"|"pack",\s*"generate"/g;
+  const found: string[] = [];
+  for (const match of source.matchAll(launches)) {
+    const from = match.index ?? 0;
+    const call = source.slice(from, endOfCall(source, from));
+    if (!/withStub|stubClaude|PATH/.test(call)) found.push(call);
+  }
+  return found;
+}
+
 describe("the suite never spends real quota", () => {
   // This file names the dead symbols in order to look for them, so it excludes
   // itself rather than matching its own text.
@@ -38,29 +75,43 @@ describe("the suite never spends real quota", () => {
   });
 
   it("shadows `claude` on PATH at every call site that could reach it", () => {
-    // Per call site, not per file: one stubbed invocation used to excuse every
-    // unstubbed one beside it, and `stubClaude` appearing in a comment was
-    // enough to satisfy the whole file.
-    const launches = /\bcli\(\s*\[\s*"(?:start|claude)"|"pack",\s*"generate"/g;
     for (const file of files) {
       const source = fs.readFileSync(file, "utf8");
-      for (const match of source.matchAll(launches)) {
-        // The call ends at the first `)` that closes it; a stub has to be named
-        // inside it, as the environment override.
-        const from = match.index ?? 0;
-        const call = source.slice(from, source.indexOf(");", from) + 2);
-        const where = `${path.basename(file)} near "${source.slice(from, from + 40).trim()}"`;
-        expect(call, `${where} can reach the real claude with nothing shadowing it`).toMatch(
-          /withStub|stubClaude|PATH/,
-        );
+      for (const call of unshieldedCalls(source)) {
+        expect(
+          call,
+          `${path.basename(file)} can reach the real claude with nothing shadowing it: ${call}`,
+        ).toBe("");
       }
     }
   });
 
-  it("would notice an unshielded call — this check can fail", () => {
-    // A guard nobody has seen fail is a guard nobody knows works.
-    const unshielded = 'const r = await cli(["start", "--model", "opus"], e);';
-    const call = unshielded.slice(unshielded.indexOf("cli("));
-    expect(call).not.toMatch(/withStub|stubClaude|PATH/);
+  // A guard nobody has seen fail is a guard nobody knows works. These fixtures
+  // are what make the scan above provable: without them, breaking it could only
+  // be noticed by an unshielded call actually existing in the tree.
+  it("finds the unshielded shapes, including the ones that used to slip through", () => {
+    const bad = [
+      'const r = await cli(["start", "--model", "opus"], e);',
+      // No trailing semicolon: the old scan ran on and found "PATH" below.
+      'const r = await cli(["start"], e)\n    expect(r.stderr).toContain("PATH");',
+      'await cli(\n      ["pack", "generate", "--lang", "Xhosa"],\n      e,\n    );',
+      'await cli(["claude", "--help"], e);',
+    ];
+    for (const source of bad) {
+      expect(unshieldedCalls(source), `missed: ${source}`).toHaveLength(1);
+    }
+  });
+
+  it("passes the shielded shapes, so it is not simply always failing", () => {
+    const good = [
+      'const r = await cli(["start", "--model", "opus"], e, withStub(bin));',
+      'await cli(["pack", "generate", "--lang", "Xhosa"], e, withStub(stubClaude(e, {})));',
+      'await cli(\n      ["claude"],\n      e,\n      { PATH: `${bin}:${process.env.PATH}` },\n    );',
+      // Not a launch at all.
+      'await cli(["stats"], e);',
+    ];
+    for (const source of good) {
+      expect(unshieldedCalls(source), `false alarm: ${source}`).toHaveLength(0);
+    }
   });
 });

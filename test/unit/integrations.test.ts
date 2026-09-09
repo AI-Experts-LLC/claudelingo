@@ -821,6 +821,38 @@ describe("re-installing over our own status line", () => {
     expect(after.refreshInterval).toBe(10);
   });
 
+  it("survives an install path that contains the word statusline", () => {
+    // Scanning for the word anywhere in the command spliced the path into the
+    // arguments and produced a command that would not run.
+    const file = path.join(dir(), "settings.json");
+    const exec = "/home/me/.claude/plugins/marketplaces/statusline-tools/claudelingo/bin/claudelingo";
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ statusLine: { type: "command", command: `${exec} statusline --compact` } }),
+    );
+    claudeCode.install(file, "claudelingo", { statusLineBin: exec });
+    const after = JSON.parse(fs.readFileSync(file, "utf8")).statusLine;
+    expect(after.command).toBe(`${exec} statusline --compact`);
+  });
+
+  it("does not claim a different tool's command that merely mentions us", () => {
+    const file = path.join(dir(), "settings.json");
+    const theirs = "my-statusline --data ~/.claudelingo/progress.json";
+    fs.writeFileSync(file, JSON.stringify({ statusLine: { type: "command", command: theirs } }));
+    const result = claudeCode.install(file, "claudelingo", {});
+    expect(result.statusLineProblem).toContain("already configured");
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).statusLine.command).toBe(theirs);
+    claudeCode.uninstall(file, "claudelingo");
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).statusLine.command).toBe(theirs);
+  });
+
+  it("still recognises our own quoted absolute command", () => {
+    const file = path.join(dir(), "settings.json");
+    const command = '"/home/me/my plugins/claudelingo/bin/claudelingo" statusline';
+    fs.writeFileSync(file, JSON.stringify({ statusLine: { type: "command", command } }));
+    expect(claudeCode.hasOurStatusLine(file, "claudelingo")).toBe(true);
+  });
+
   it("still repairs the executable when it has gone stale", () => {
     const file = path.join(dir(), "settings.json");
     fs.writeFileSync(

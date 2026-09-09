@@ -23,7 +23,7 @@ import {
   selectNext,
   stats,
 } from "./srs.js";
-import { clean, listPacks, loadPack, savePack } from "./packs/index.js";
+import { listPacks, loadPack, savePack } from "./packs/index.js";
 import { readStatus, stateForEvent, writeStatus } from "./agentState.js";
 import * as claudeCode from "./integrations/claudeCode.js";
 import * as codex from "./integrations/codex.js";
@@ -787,14 +787,12 @@ async function cmdStatusline(args: Args): Promise<void> {
     const pending =
       value && typeof value.question === "string" && Array.isArray(value.choices)
         ? {
-            // The pack boundary strips control characters; this file is trusted
-            // the same way and must be, or a newline in a question becomes an
-            // extra terminal row and the fixed height is no longer fixed.
-            question: clean(value.question),
-            choices: value.choices
-              .filter((c): c is string => typeof c === "string")
-              .map((c) => clean(c)),
-            ...(typeof value.kind === "string" ? { kind: clean(value.kind) } : {}),
+            // Not cleaned here: `renderPanel` flattens control characters itself,
+            // because the fixed height is its promise to keep. Doing it in both
+            // places left a line no test could prove was needed.
+            question: value.question,
+            choices: value.choices.filter((c): c is string => typeof c === "string"),
+            ...(typeof value.kind === "string" ? { kind: value.kind } : {}),
           }
         : null;
     // `outstanding` is presence on disk; `pending` is the readable form of it.

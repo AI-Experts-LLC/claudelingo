@@ -210,6 +210,21 @@ describe("the status line Claude Code draws", () => {
     expect(stdout).not.toMatch(/«.+» = [^?]/);
   });
 
+  it("stays three rows when the pending file contains newlines", async () => {
+    const e = fresh();
+    seed(e);
+    await cli(["next", "--json"], e);
+    const file = path.join(e.home, "pending-es.json");
+    const stored = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    stored.question = "What does\n\n«el»\r\nmean?";
+    stored.choices = ["one\ntwo", "three", "four", "five"];
+    fs.writeFileSync(file, JSON.stringify(stored));
+
+    const { stdout } = await statusline(e);
+    // Rows on screen, not array entries: a newline inside one is two rows there.
+    expect(stdout.trimEnd().split("\n")).toHaveLength(PANEL_ROWS);
+  });
+
   it("returns quickly, because Claude Code cancels a slow one", async () => {
     const e = fresh();
     seed(e);

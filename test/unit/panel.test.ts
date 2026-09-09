@@ -26,6 +26,23 @@ describe("the panel under the prompt", () => {
     }
   });
 
+  // Counting array entries cannot see this: one row containing a newline is three
+  // rows on screen, and the promise is about what the user sees.
+  it("puts no newline inside a row, however the text arrived", () => {
+    const nasty = "What does\n\nthis\r\nmean?";
+    for (const options of [
+      { pending: { question: nasty, choices: ["one\ntwo", "three"] } },
+      { pending: { question: nasty, choices: [], kind: "teach" } },
+    ]) {
+      const rows = renderPanel(pack, seeded(), T0, { ...plain, ...options });
+      expect(rows).toHaveLength(PANEL_ROWS);
+      for (const row of rows) {
+        expect(row).not.toContain("\n");
+        expect(row).not.toContain("\r");
+      }
+    }
+  });
+
   it("always names a command, because it cannot take a keypress", () => {
     const states = [
       renderPanel(pack, seeded(), T0, plain),
