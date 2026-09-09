@@ -414,3 +414,75 @@ describe("the mascot's shape", () => {
     }
   });
 });
+
+describe("the screens you can put over the pane", () => {
+  function met(count: number): AppState {
+    const progress = testProgress();
+    for (const word of pack.words.slice(0, count)) {
+      progress.items[word.id] = {
+        id: word.id, stage: "review", box: 2, step: 0,
+        due: T0, lastSeen: T0, seen: 4, correct: 3, lapses: 0,
+      };
+    }
+    return { ...busy(), progress };
+  }
+
+  it("says where you stand, in words rather than a bare number", () => {
+    const state = drive(met(12), [{ type: "key", key: { ch: "t" } }]);
+    expect(state.screen).toBe("stats");
+    const text = frame(state, 72).join("\n");
+    expect(text).toContain("first words");
+    // The number that motivates is the one still to go.
+    expect(text).toContain('more for "finding your feet"');
+    expect(text).toContain("words met");
+  });
+
+  it("lists the words you have met, commonest first, with how you are doing", () => {
+    const state = drive(met(3), [{ type: "key", key: { ch: "w" } }]);
+    expect(state.screen).toBe("words");
+    const text = frame(state, 72).join("\n");
+    for (const word of pack.words.slice(0, 3)) {
+      expect(text).toContain(word.term);
+      expect(text).toContain(`#${word.rank}`);
+    }
+    // 3 of 4 right on each.
+    expect(text).toContain("75%");
+    expect(text).toContain("1–3 of 3");
+  });
+
+  it("shows nothing but an invitation before you have met any", () => {
+    const state = drive(busy(), [{ type: "key", key: { ch: "w" } }]);
+    expect(frame(state, 72).join("\n")).toContain("None yet");
+  });
+
+  it("walks a long list a page at a time, and stops at the top", () => {
+    const all = pack.words.length;
+    expect(all).toBeGreaterThan(8); // or there is nothing to walk
+    let state = drive(met(all), [{ type: "key", key: { ch: "w" } }]);
+    expect(frame(state, 72).join("\n")).toContain(`1–8 of ${all}`);
+    state = drive(state, [{ type: "key", key: { name: "down" } }]);
+    expect(frame(state, 72).join("\n")).toContain(`7–${Math.min(14, all)} of ${all}`);
+    state = drive(state, [{ type: "key", key: { name: "up" } }, { type: "key", key: { name: "up" } }]);
+    // Walking back past the beginning must not scroll off it.
+    expect(state.wordsFrom).toBe(0);
+    expect(frame(state, 72).join("\n")).toContain(`1–8 of ${all}`);
+  });
+
+  it("closes on any other key, and the walkthrough keeps them out entirely", () => {
+    const open = drive(met(3), [{ type: "key", key: { ch: "t" } }]);
+    expect(drive(open, [{ type: "key", key: { ch: "x" } }]).screen).toBeNull();
+
+    const firstRun = createState(pack, testProgress(), testSettings({ onboarded: false }), "idle", T0);
+    expect(drive(firstRun, [{ type: "key", key: { ch: "t" } }]).screen).toBeNull();
+    expect(drive(firstRun, [{ type: "key", key: { ch: "w" } }]).screen).toBeNull();
+  });
+
+  it("keeps the panel exactly as wide as it should be", () => {
+    for (const screen of ["t", "w"] as const) {
+      const state = drive(met(pack.words.length), [{ type: "key", key: { ch: screen } }]);
+      for (const width of [40, 56, 72, 100]) {
+        for (const line of frame(state, width)) expect(visibleWidth(line)).toBe(width);
+      }
+    }
+  });
+});

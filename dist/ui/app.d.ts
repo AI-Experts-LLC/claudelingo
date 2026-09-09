@@ -86,6 +86,10 @@ export interface AppState {
     /** Set when a memory hook could not be fetched, so `e` can be pressed again. */
     enrichError: string | null;
     showHelp: boolean;
+    /** An overlay screen sitting over whatever the pane was doing. */
+    screen: "stats" | "words" | null;
+    /** First row shown on the words screen, so a long list can be walked. */
+    wordsFrom: number;
     now: number;
     /** Bumped on every card so the renderer can tell two identical frames apart. */
     seq: number;

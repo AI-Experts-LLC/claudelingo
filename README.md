@@ -196,6 +196,32 @@ Prefer the single line? `claudelingo panel off`, or `--compact`. It is strictly
 read-only either way — a running pane owns the deck, and a status line that wrote
 to it would fight that pane's lock.
 
+In the pane, `t` shows where you stand and `w` lists every word you have met:
+
+```
+┌─ claudelingo · Spanish ─────────────────────┐
+│   ,___,  getting by                         │
+│   (o.o)  38 more for "holding a conversation"│
+│  ██████████████░░░░░░░░░                    │
+│  words met      112 of 1000                 │
+│  mastered       27                          │
+│  accuracy       84%                         │
+└─ any key to close ──────────────────────────┘
+```
+
+```
+┌─ claudelingo · Spanish ─────────────────────┐
+│  words you have met  112                    │
+│  #1   el      the (m.)        5/5  96%      │
+│  #2   los     the (m. pl.)    4/5  88%      │
+│  #3   de      of, from        3/5  71%      │
+│  1–8 of 112                                 │
+└─ ↑↓ scroll · any key to close ──────────────┘
+```
+
+The list is in frequency order, so the words you are weakest on and the words
+that matter most are on the same screen.
+
 **The pane** is a full interactive box that takes keypresses directly — one key
 per answer, no slash commands. That needs a real terminal of its own, so it opens
 beside you in tmux.
