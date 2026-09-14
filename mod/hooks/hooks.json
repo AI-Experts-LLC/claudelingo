@@ -1,0 +1,4 @@
+{
+  "description": "The vocabulary band above the prompt: a card drawn while a turn runs and answered with a digit, its deck in $.store, its memory hooks and generated packs through $.model, and /lingo for what the band cannot say in three rows",
+  "modules": ["./register.ts"]
+}

@@ -1,4 +1,5 @@
 import type { Pack, RawPack, Word } from "./types.js";
+export { EnrichError } from "./packgen.js";
 /**
  * Everything that needs a model goes through the `claude` CLI in print mode.
  *
@@ -11,8 +12,6 @@ import type { Pack, RawPack, Word } from "./types.js";
  */
 /** Preferred model. Claude Code falls back to the session's own if it cannot use it. */
 export declare const DEFAULT_MODEL = "claude-fable-5-1";
-export declare class EnrichError extends Error {
-}
 export interface AskOptions {
     model?: string;
     timeoutMs?: number;
@@ -44,12 +43,11 @@ export declare function cachedHook(lang: string, term: string): string | null;
  */
 export declare function memoryHook(word: Word, pack: Pack, options?: AskOptions): Promise<string>;
 /**
- * Build a frequency pack for a language claudelingo does not ship.
+ * Build a frequency pack through the `claude` command.
  *
- * Asked in chunks, because one request for a thousand entries with a sentence
- * each is a very long reply: it truncates, and a truncated JSON body is a whole
- * pack lost rather than one chunk. Each chunk is told what the earlier ones
- * produced, or the boundaries overlap and the duplicates eat the count.
+ * The generator itself is in `packgen.ts`, shared with the mod, which reaches
+ * the model a completely different way. This is the CLI's half of that split:
+ * the subprocess, the pack timeout, and nothing else.
  */
 export declare function generatePack(language: string, code: string, count: number, options?: AskOptions & {
     onProgress?: (done: number, total: number, note?: string) => void;

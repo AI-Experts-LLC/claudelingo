@@ -148,6 +148,9 @@ there is no way to put an interactive box inside it. What it *does* give you is 
 status line that renders one row per line your command prints — so the whole
 widget fits under your prompt, even though it can never take a keypress.
 
+That ceiling is what the three surfaces below are shaped around. It is also
+lifted, where [function hooks](mod/README.md) are enabled — see **The mod**.
+
 **The panel** lives *inside* Claude Code, under your chat bar:
 
 ```
@@ -234,6 +237,33 @@ through a lot of cards.
 `--no-statusline`). The panel refreshes on a timer, because Claude Code's own
 updates go quiet exactly while it is thinking — which is when it is supposed to be
 teaching.
+
+## The mod
+
+Everything above is shaped by one fact: a status line can draw but cannot
+listen. [Function hooks](https://github.com/anthropics/claude-code/tree/main/mods)
+remove that, and `mod/` is claudelingo rebuilt on them — the quiz itself, in the
+band above your prompt, answered with a digit:
+
+```
+ ,___,  What does "tiempo" mean?
+ (o.o)  1: time   2: weather   3: house   4: always
+ /)_)   box 1/5   5: skip   6: explain
+```
+
+No slash command to answer with, no tmux pane, and nothing in the transcript.
+
+```bash
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir mod
+```
+
+It is a fourth surface rather than a replacement. The mod needs a Claude Code
+with function hooks turned on; the CLI works in Codex, in a plain terminal, and
+in the version of Claude Code you already have. They share the scheduler, the
+word packs and the pack generator rather than reimplementing them —
+`mod/README.md` has the whole story, including what the mod deletes: the status
+file and five hook events that reconstruct "is the agent working?", the deck
+lock, the atomic writes, and the `claude -p` subprocess.
 
 ## How it decides when to quiz you
 
@@ -444,11 +474,25 @@ startup problems go to stderr instead of vanishing.
 ```bash
 npm install
 npm run build
-npm test           # unit + end-to-end
+npm test           # unit + end-to-end + the mod's specs
 npm run test:unit
 npm run test:e2e
 npm run typecheck
 ```
+
+The mod has its own toolchain, because a hooks module compiles against Claude
+Code's declarations rather than against Node:
+
+```bash
+npm run mod:typecheck   # tsc against mod/types/claude-code.d.ts
+npm run mod:validate    # claude plugin validate mod
+npm run mod:restate     # restate src/ under mod/hooks/ (see mod/README.md)
+```
+
+`npm test` runs `mod:restate --check` before anything else. The mod cannot
+import across the package boundary, so the scheduler and the word packs exist on
+both sides; a stale copy is not untidiness but two decks disagreeing about which
+word rank 7 is, and the suite refuses to be green while one stands.
 
 The end-to-end tests spawn the real binary and drive it over pipes, firing genuine
 hook events, appending to a genuine Codex transcript, revoking write permission on the

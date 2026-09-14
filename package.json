@@ -32,26 +32,30 @@
     }
   },
   "files": [
-    "dist",
-    "bin",
-    "hooks",
-    "skills",
     ".claude-plugin",
-    "scripts",
+    "LICENSE",
     "README.md",
-    "LICENSE"
+    "bin",
+    "dist",
+    "hooks",
+    "mod",
+    "scripts",
+    "skills"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/copy-packs.mjs",
     "dev": "tsx src/cli.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && vitest run",
+    "test": "npm run build && npm run mod:restate -- --check && vitest run",
     "test:unit": "vitest run test/unit",
     "test:e2e": "npm run build && vitest run test/e2e",
     "test:watch": "vitest",
     "prepare": "npm run build",
     "postinstall": "node scripts/welcome.mjs",
-    "check:dist": "node scripts/check-dist.mjs"
+    "check:dist": "node scripts/check-dist.mjs",
+    "mod:restate": "node mod/scripts/restate.mjs",
+    "mod:typecheck": "tsc -p mod/tsconfig.json --noEmit",
+    "mod:validate": "claude plugin validate mod"
   },
   "dependencies": {},
   "devDependencies": {
