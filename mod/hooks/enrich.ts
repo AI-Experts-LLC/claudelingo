@@ -46,12 +46,21 @@ export function oneLine(text: string, limit = 160): string {
   return flat.length > limit ? `${flat.slice(0, limit - 1).trimEnd()}…` : flat
 }
 
+/** A hook, or why there isn't one. */
+export type Hook = { text: string; reason?: undefined } | { text: null; reason: string }
+
 /**
  * A memory hook for a word: from the cache, or from the model and then cached.
  *
- * Returns null rather than throwing. The hook is a bonus on a card that is
- * already on screen and already answerable; a model that is slow, refusing or
- * unreachable should cost the hook and nothing else.
+ * Never throws. The hook is a bonus on a card that is already on screen and
+ * already answerable; a model that is slow, refusing or unreachable should cost
+ * the hook and nothing else.
+ *
+ * It carries the reason rather than a bare null, because the reasons are not
+ * interchangeable and the caller cannot guess between them. `settings.model`
+ * takes any non-empty string, so a typo'd or retired model id reads as "could
+ * not reach the model" on every word for ever, while the message that would fix
+ * it in one go — `no such model: haiku-3` — is the thing being discarded.
  */
 export async function memoryHook(
   store: Store,
@@ -59,13 +68,13 @@ export async function memoryHook(
   word: Word,
   modelId: string,
   englishName: string,
-): Promise<string | null> {
+): Promise<Hook> {
   const key = hookKey(word.id)
 
   try {
     const cached = await store.get(key)
 
-    if (typeof cached === 'string' && cached.length > 0) return cached
+    if (typeof cached === 'string' && cached.length > 0) return { text: cached }
   } catch {
     // An unreadable cache is a cache miss, not a failure.
   }
@@ -81,20 +90,25 @@ export async function memoryHook(
         'How do I remember it?',
       maxTokens: 120,
     })
-  } catch {
-    return null
+  } catch (error) {
+    return {
+      text: null,
+      reason: `could not reach ${modelId} for a hook: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    }
   }
 
-  const hook = oneLine(reply)
+  const hook = oneLine(typeof reply === 'string' ? reply : '')
 
-  if (!hook) return null
+  if (!hook) return { text: null, reason: `${modelId} had nothing to say about "${word.term}"` }
 
-  // A cache that cannot be written still leaves a usable hook on screen.
   try {
     await store.set(key, hook)
   } catch {
-    /* empty */
+    // A cache that cannot be written still leaves a usable hook on screen; the
+    // same broken store is already being reported by the deck's own save.
   }
 
-  return hook
+  return { text: hook }
 }

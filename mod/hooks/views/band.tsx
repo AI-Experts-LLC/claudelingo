@@ -20,12 +20,13 @@ import {
 } from '../names'
 import { MASCOT_WIDTH, owl, remark } from '../ui/mascot'
 import type { Mood } from '../ui/mascot'
-import { sliceToWidth, stringWidth } from '../ui/width'
 import { MAX_BOX } from '../srs'
 import { bar } from '../ticker'
 import type { Tick } from '../ticker'
 import type { Card, ItemProgress, Pack, Verdict } from '../types'
 import type { PackChoice } from '../pack'
+import { buttonOverhead, fit, fitRow } from './row'
+import type { Part } from './row'
 
 /**
  * The band above the prompt: three rows, and every one of them pressable.
@@ -45,12 +46,18 @@ import type { PackChoice } from '../pack'
  * Three rules hold the layout together:
  *
  * - **Exactly three rows**, always, so the conversation above never jumps as a
- *   card comes and goes. Every branch returns the same height.
+ *   card comes and goes — and measured in *rendered cells*, not in children.
+ *   `Text` wraps by default, so a row of parts that each fit the body width but
+ *   together exceed it is two rows on screen while still being one child in the
+ *   tree. Every composite row goes through `fitRow`, which budgets it as a row.
  * - **Never taller than `maxRows`.** A band that overflows scrolls in a window
- *   and — the part that would be fatal here — "a bare digit arms none of its
- *   Buttons' hotkeys". An overflowing band is a band you cannot answer.
- * - **Everything measured in columns, not code points**, so a generated CJK
- *   pack budgets its options correctly rather than overflowing the row.
+ *   and — the part that would be fatal — "a bare digit arms none of its
+ *   Buttons' hotkeys". An overflowing band is a band you cannot answer, which
+ *   is why the budgeting above is a correctness rule and not a cosmetic one.
+ * - **The controls row is never given up.** Whatever else is happening, the
+ *   keys that work stay on screen. Errors do not live here at all: they are
+ *   pinned under the prompt with `$.ui.status`, the engine's own affordance for
+ *   exactly that, which costs the band no rows and cannot be truncated away.
  */
 
 /**
@@ -96,8 +103,6 @@ export interface BandModel {
   practising: boolean
   /** The languages the picker offers, when nothing has been chosen yet. */
   choices: readonly PackChoice[] | null
-  /** Something is wrong and stays on screen until it is not. */
-  trouble: string | null
   /** Can the model be asked for a memory hook? */
   enrich: boolean
   /**
@@ -117,14 +122,12 @@ export interface BandKit {
   columns: number
 }
 
-/** Truncate to a column budget, in columns. */
-function fit(text: string, columns: number): string {
-  if (columns <= 0) return ''
-  if (stringWidth(text) <= columns) return text
-
-  const { text: head } = sliceToWidth(text, Math.max(0, columns - 1))
-
-  return `${head}…`
+/** One control in the third row: a Button, and what pressing it does. */
+interface Control {
+  key: string
+  hotkey: string
+  part: Part
+  onPress: () => void
 }
 
 /**
@@ -148,56 +151,103 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
   const { Text, Box, Button, Input } = kit.ui
   const { actions } = kit
 
-  const dim = (text: string) => <Text dimColor>{fit(text, columns)}</Text>
-
-  /** The third row, unless something has taken it. */
-  const controls = (...children: RenderElement[]) => (
-    <Box flexDirection="row" gap={2}>
-      {children}
-    </Box>
+  /** A row on its own: one Text, fitted to the width and never wrapped. */
+  const line = (text: string, props: Record<string, unknown> = {}) => (
+    <Text wrap="truncate-end" {...props}>
+      {fit(text, columns)}
+    </Text>
   )
 
-  const skipButton = (
-    <Button
-      key={KEYS.skip}
-      hotkey={CONTROL_HOTKEYS.skip}
-      plain
-      dimColor
-      label="skip"
-      onPress={actions.skip}
-    />
-  )
+  const dim = (text: string) => line(text, { dimColor: true })
 
-  const explainButton = model.enrich ? (
-    <Button
-      key={KEYS.explain}
-      hotkey={CONTROL_HOTKEYS.explain}
-      plain
-      dimColor
-      label={model.fetchingHook ? 'asking…' : 'explain'}
-      onPress={actions.explain}
-    />
-  ) : null
+  const named = (hotkey: string, label: string): Part => ({
+    label,
+    overhead: buttonOverhead(hotkey),
+  })
+
+  /**
+   * The controls row, budgeted as a row.
+   *
+   * `notes` are dim asides — a box level, the commands that do what the band
+   * cannot — and they shrink first. The buttons keep their names whole, because
+   * a control whose label has been eaten is a control nobody can find.
+   */
+  const controls = (buttons: Control[], notes: string[] = []) => {
+    const parts: Part[] = [
+      ...buttons.map((button) => ({ ...button.part, fixed: true })),
+      ...notes.map((label) => ({ label })),
+    ]
+
+    const labels = fitRow(parts, columns)
+
+    return (
+      <Box flexDirection="row" gap={2}>
+        {buttons.map((button, index) => (
+          <Button
+            key={button.key}
+            hotkey={button.hotkey}
+            plain
+            dimColor={button.key !== KEYS.next}
+            label={labels[index] ?? button.part.label}
+            onPress={button.onPress}
+          />
+        ))}
+        {notes.map((_note, index) => (
+          <Text dimColor wrap="truncate-end">
+            {labels[buttons.length + index] ?? ''}
+          </Text>
+        ))}
+      </Box>
+    )
+  }
+
+  const skipButton: Control = {
+    key: KEYS.skip,
+    hotkey: CONTROL_HOTKEYS.skip,
+    part: named(CONTROL_HOTKEYS.skip, 'skip'),
+    onPress: actions.skip,
+  }
+
+  const explainButton: Control = {
+    key: KEYS.explain,
+    hotkey: CONTROL_HOTKEYS.explain,
+    part: named(CONTROL_HOTKEYS.explain, model.fetchingHook ? 'asking…' : 'explain'),
+    onPress: actions.explain,
+  }
+
+  /** Explain is only offered where the model may actually be asked. */
+  const withExplain = (buttons: Control[]): Control[] =>
+    model.enrich ? [...buttons, explainButton] : buttons
 
   // ── Nothing chosen yet ───────────────────────────────────────────────────
   //
   // The CLI asks this in a pane, over three screens. Here it is one row of
   // buttons, and the answer is one digit.
   if (model.choices) {
+    const offered = model.choices.slice(0, 4)
+
+    const labels = fitRow(
+      offered.map((choice, index) => ({
+        label: choice.englishName,
+        overhead: buttonOverhead(String(index + 1)),
+      })),
+      columns,
+    )
+
     return [
-      <Text bold>{fit('Which language do you want to learn?', columns)}</Text>,
+      line('Which language do you want to learn?', { bold: true }),
       <Box flexDirection="row" gap={2}>
-        {model.choices.slice(0, 4).map((choice, index) => (
+        {offered.map((choice, index) => (
           <Button
             key={langKey(choice.code)}
             hotkey={String(index + 1)}
             plain
-            label={choice.englishName}
+            label={labels[index] ?? choice.englishName}
             onPress={() => actions.chooseLang(choice.code)}
           />
         ))}
       </Box>,
-      dim('press a digit · /lingo lang <code> for any other language'),
+      dim('press a digit · /lingo lang <code> for any other'),
     ]
   }
 
@@ -205,32 +255,25 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
   if (model.verdict) {
     const { correct, answer, word } = model.verdict
 
-    const verdictRow = correct ? (
-      <Text color="success" bold>
-        {fit(`correct — ${word.term} = ${word.gloss}`, columns)}
-      </Text>
-    ) : (
-      <Text color="error" bold>
-        {fit(`not quite — ${word.term} = ${answer}`, columns)}
-      </Text>
-    )
+    const said = correct
+      ? `correct — ${word.term} = ${word.gloss}`
+      : `not quite — ${word.term} = ${answer}`
 
-    const aside = model.hook
-      ? dim(model.hook)
-      : dim(remark(moodOf(model), model.streak) || word.note || word.example?.text || '')
+    const aside =
+      model.hook || remark(moodOf(model), model.streak) || word.note || word.example?.text || ''
 
     return [
-      verdictRow,
-      aside,
+      line(said, { bold: true, color: correct ? 'success' : 'error' }),
+      dim(aside),
       controls(
-        <Button
-          key={KEYS.next}
-          hotkey={CONTROL_HOTKEYS.next}
-          plain
-          label="next"
-          onPress={actions.next}
-        />,
-        ...(explainButton ? [explainButton] : []),
+        withExplain([
+          {
+            key: KEYS.next,
+            hotkey: CONTROL_HOTKEYS.next,
+            part: named(CONTROL_HOTKEYS.next, 'next'),
+            onPress: actions.next,
+          },
+        ]),
       ),
     ]
   }
@@ -242,33 +285,42 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
     const box = model.item ? `box ${model.item.box}/${MAX_BOX}` : 'new'
 
     if (card.kind === 'teach') {
+      // Term and rank share the first row, and both are budgeted: a generated
+      // pack can hold a term far longer than anything the bundled ones do.
+      const [term = '', rank = ''] = fitRow(
+        [{ label: card.word.term }, { label: `#${card.word.rank}`, fixed: true }],
+        columns,
+      )
+
       const note = card.word.note ? ` (${card.word.note})` : ''
 
       return [
-        <Text>
-          <Text bold color="suggestion">
-            {fit(card.word.term, Math.max(1, columns - 2))}
+        <Box flexDirection="row" gap={2}>
+          <Text bold color="suggestion" wrap="truncate-end">
+            {term}
           </Text>
-          <Text dimColor>{fit(`  #${card.word.rank}`, 12)}</Text>
-        </Text>,
-        <Text>{fit(`${card.word.gloss}  ${card.word.pos}${note}`, columns)}</Text>,
+          <Text dimColor wrap="truncate-end">
+            {rank}
+          </Text>
+        </Box>,
+        line(`${card.word.gloss}  ${card.word.pos}${note}`),
         controls(
-          <Button
-            key={KEYS.next}
-            hotkey={CONTROL_HOTKEYS.next}
-            plain
-            label="got it"
-            onPress={actions.next}
-          />,
-          skipButton,
-          ...(explainButton ? [explainButton] : []),
+          withExplain([
+            {
+              key: KEYS.next,
+              hotkey: CONTROL_HOTKEYS.next,
+              part: named(CONTROL_HOTKEYS.next, 'got it'),
+              onPress: actions.next,
+            },
+            skipButton,
+          ]),
         ),
       ]
     }
 
     if (card.kind === 'recall') {
       return [
-        <Text bold>{fit(`Spell the ${pack.englishName} for "${card.prompt}"`, columns)}</Text>,
+        line(`Spell the ${pack.englishName} for "${card.prompt}"`, { bold: true }),
         <Input
           key={KEYS.spell}
           placeholder="type it, then Enter"
@@ -277,30 +329,35 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
           onInput={actions.type}
           onSubmit={actions.spell}
         />,
-        controls(dim(box), skipButton, ...(explainButton ? [explainButton] : [])),
+        controls(withExplain([skipButton]), [box]),
       ]
     }
 
-    // recognize / reverse / cloze: four options, one digit each.
-    //
-    // The labels share what is left of the row after the gutter, so four long
-    // glosses shorten together rather than the fourth falling off the end.
-    const budget = Math.max(4, Math.floor((columns - 6) / Math.max(1, card.choices.length)) - 4)
+    // recognize / reverse / cloze: four options, one digit each, sharing the
+    // row — so four long glosses shorten together rather than the fourth
+    // falling off the end and taking the band's height with it.
+    const labels = fitRow(
+      card.choices.map((choice, index) => ({
+        label: choice,
+        overhead: buttonOverhead(String(index + 1)),
+      })),
+      columns,
+    )
 
     return [
-      <Text bold>{fit(questionRow(card, pack.englishName), columns)}</Text>,
+      line(questionRow(card, pack.englishName), { bold: true }),
       <Box flexDirection="row" gap={2}>
         {card.choices.map((choice, index) => (
           <Button
             key={answerKey(index)}
             hotkey={String(index + 1)}
             plain
-            label={fit(choice, budget)}
+            label={labels[index] ?? choice}
             onPress={() => actions.answer(index)}
           />
         ))}
       </Box>,
-      controls(dim(box), skipButton, ...(explainButton ? [explainButton] : [])),
+      controls(withExplain([skipButton]), [box]),
     ]
   }
 
@@ -308,50 +365,48 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
   //
   // The ticker, exactly as the CLI's panel runs it: a word alone, a moment to
   // reach for it, then the meaning. Nothing here is graded and nothing written.
+  const practiseButton: Control = {
+    key: KEYS.practise,
+    hotkey: CONTROL_HOTKEYS.practise,
+    part: named(CONTROL_HOTKEYS.practise, 'practise'),
+    onPress: actions.practise,
+  }
+
   const tick = model.tick
 
   if (!tick?.word) {
     return [
-      <Text>{fit(model.pack ? `${model.pack.englishName} · all caught up` : 'claudelingo', columns)}</Text>,
+      line(model.pack ? `${model.pack.englishName} · all caught up` : 'claudelingo'),
       dim(`${bar(1, 10)}  nothing due`),
-      controls(
-        <Button
-          key={KEYS.practise}
-          hotkey={CONTROL_HOTKEYS.practise}
-          plain
-          dimColor
-          label="practise"
-          onPress={actions.practise}
-        />,
-        dim('/lingo stats'),
-      ),
+      controls([practiseButton], ['/lingo stats']),
     ]
   }
 
   const counts = `${tick.learned}/${tick.total}${model.streak > 0 ? ` · streak ${model.streak}` : ''}`
 
+  // `«term» = gloss` is one row of three parts. The separator is fixed and
+  // carries its own cells, so the two words share exactly what is left.
+  const [term = '', , gloss = ''] = fitRow(
+    [
+      { label: `«${tick.word.term}»` },
+      { label: ' = ', fixed: true, overhead: -4 },
+      { label: tick.revealed ? tick.word.gloss : '?' },
+    ],
+    columns,
+  )
+
   return [
-    <Text>
-      <Text color="suggestion">{fit(`«${tick.word.term}»`, Math.max(1, columns - 20))}</Text>
+    <Box flexDirection="row">
+      <Text color="suggestion" wrap="truncate-end">
+        {term}
+      </Text>
       <Text dimColor>{' = '}</Text>
-      {tick.revealed ? (
-        <Text bold>{fit(tick.word.gloss, 40)}</Text>
-      ) : (
-        <Text dimColor>?</Text>
-      )}
-    </Text>,
+      <Text bold={tick.revealed} dimColor={!tick.revealed} wrap="truncate-end">
+        {gloss}
+      </Text>
+    </Box>,
     dim(`${bar(tick.total ? tick.learned / tick.total : 0, 10)}  ${counts} · #${tick.rank}`),
-    controls(
-      <Button
-        key={KEYS.practise}
-        hotkey={CONTROL_HOTKEYS.practise}
-        plain
-        dimColor
-        label="practise"
-        onPress={actions.practise}
-      />,
-      dim('/lingo stats   /lingo lang'),
-    ),
+    controls([practiseButton], ['/lingo stats', '/lingo lang']),
   ]
 }
 
@@ -373,27 +428,20 @@ function questionRow(card: Card, englishName: string): string {
  * The band, drawn.
  *
  * Below `BAND_MIN_COLUMNS` three rows cannot say anything useful, so it gives
- * up the layout and keeps the interaction: one row, still pressable.
+ * up the layout and keeps the interaction: the controls row, which is the one
+ * row that can still be pressed.
  */
 export function bandView(kit: BandKit, model: BandModel): RenderElement {
   const { Box, Text } = kit.ui
   const gutter = kit.columns >= OWL_MIN_COLUMNS
   const columns = Math.max(1, kit.columns - (gutter ? MASCOT_WIDTH + 2 : 0))
 
-  const rows = rowsOf(kit, model, columns)
-
-  // Trouble takes the third row rather than adding a fourth: the height is a
-  // promise, and an error that broke the layout would be its own second bug.
-  const body =
-    model.trouble === null
-      ? rows
-      : [
-          ...rows.slice(0, 2),
-          <Text color="error">{fit(model.trouble, columns)}</Text>,
-        ]
+  const body = rowsOf(kit, model, columns)
 
   if (kit.columns < BAND_MIN_COLUMNS) {
-    return <Box flexDirection="column">{body.slice(0, 1)}</Box>
+    // The last row, not the first: a question nobody can answer is worth less
+    // than the keys that answer it.
+    return <Box flexDirection="column">{body.slice(-1)}</Box>
   }
 
   if (!gutter) {
@@ -405,8 +453,8 @@ export function bandView(kit: BandKit, model: BandModel): RenderElement {
   return (
     <Box flexDirection="row" gap={2}>
       <Box flexDirection="column">
-        {face.map((line) => (
-          <Text dimColor>{line}</Text>
+        {face.map((row) => (
+          <Text dimColor>{row}</Text>
         ))}
       </Box>
       <Box flexDirection="column" flexGrow={1}>

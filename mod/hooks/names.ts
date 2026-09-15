@@ -69,6 +69,9 @@ export const CONTROL_HOTKEYS = {
   practise: '1',
 } as const
 
+/** Words a generated pack asks for. */
+export const PACK_WORDS = 300
+
 /** Rows the band draws. Fixed, so the conversation above it never jumps. */
 export const BAND_ROWS = 3
 

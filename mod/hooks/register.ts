@@ -16,6 +16,7 @@ import {
   BAND_ROWS,
   COMMAND_NAME,
   PACKS_KEY,
+  PACK_WORDS,
   PLUGIN_NAME,
   REDRAW_MS,
   TICK_MS,
@@ -79,6 +80,7 @@ interface Host extends Store {
   invalidate: () => void
   toast: (text: string) => void
   log: (text: string) => void
+  status: (text: string | undefined) => void
   registerCommand: (spec: CommandSpec) => Promise<unknown>
   ask: EngineInterface['ui']['ask']
 }
@@ -111,13 +113,38 @@ export function register(on: On) {
   /** Save is off because the deck could not be read. See `deck.ts`. */
   let readOnly = false
 
+  /** The same, for settings: a failed read must not authorise writing over them. */
+  let settingsReadOnly = false
+
   /**
-   * What is wrong, in the words the band shows.
+   * Which request a memory hook belongs to.
    *
-   * Kept per cause rather than as one slot, as the CLI's pane keeps it, so a
-   * save failure clearing does not hide a store that still cannot be read.
+   * Bumped whenever the card changes. A reply that arrives after the card has
+   * gone carries a stale token and is dropped — without it, the mnemonic for a
+   * word you skipped lands as the aside under the next word's verdict, which is
+   * confidently worded and wrong.
+   */
+  let hookToken = 0
+
+  /**
+   * What is wrong, in the words the person reads.
+   *
+   * Kept per cause, as the CLI's pane keeps it, so one clearing never hides
+   * another — and *shown* by severity rather than by arrival, which is the part
+   * a Map alone does not give you. A store that has stopped accepting answers
+   * matters more than a memory hook that could not be fetched, whichever
+   * happened first.
+   *
+   * It is pinned with `$.ui.status`, not drawn in the band. The band is three
+   * rows and the third is the controls; an error that took that row would
+   * delete the very keys needed to clear it, which is a trap rather than a
+   * message. `$.ui.status` is the engine's own affordance for a line that stays
+   * until it is replaced, and it costs the band nothing.
    */
   const troubles = new Map<string, string>()
+
+  /** Worst first. Anything unlisted sorts last, in insertion order. */
+  const SEVERITY = ['settings', 'deck', 'save', 'pack', 'lang', 'grade', 'hook']
 
   let state: BandState = {
     card: null,
@@ -133,15 +160,41 @@ export function register(on: On) {
 
   let ticker: Timer | null = null
 
+  /**
+   * Record or clear one cause, and put the worst of them under the prompt.
+   *
+   * Every caller that can fail records here, and every caller that can succeed
+   * clears the same cause on its way through — a stale error is worse than
+   * none, because it hides the next real one behind it.
+   */
   function note(cause: string, trouble: Trouble) {
+    const had = troubleText()
+
     if (trouble) troubles.set(cause, trouble.text)
     else troubles.delete(cause)
+
+    const now = troubleText()
+
+    if (now !== had) host?.status(now ?? undefined)
   }
 
-  const troubleText = (): string | null => {
-    const first = troubles.values().next()
+  function troubleText(): string | null {
+    if (troubles.size === 0) return null
 
-    return first.done === true ? null : first.value
+    const ranked = [...troubles.keys()].sort((a, b) => {
+      const rank = (cause: string) => {
+        const at = SEVERITY.indexOf(cause)
+
+        return at === -1 ? SEVERITY.length : at
+      }
+
+      return rank(a) - rank(b)
+    })
+
+    const worst = ranked[0] as string
+    const rest = troubles.size - 1
+
+    return `claudelingo: ${troubles.get(worst)}${rest > 0 ? ` (+${rest} more, /lingo stats)` : ''}`
   }
 
   /**
@@ -194,23 +247,35 @@ export function register(on: On) {
     })
   }
 
-  /** Reload the deck for `settings.lang`, or leave the band on its picker. */
-  async function openLanguage(engine: Host, code: string): Promise<void> {
+  /**
+   * Reload the deck for a language.
+   *
+   * Returns whether it opened, because the callers have already written
+   * `settings.lang` by the time they call: one that failed silently would leave
+   * the band quizzing the previous language while the settings named another,
+   * and the next session opening a language with no pack.
+   */
+  async function openLanguage(engine: Host, code: string): Promise<boolean> {
     const loaded = await loadPack(engine, code)
 
-    if (!loaded) {
-      note('pack', { text: `no word pack for "${code}" — /lingo lang to see what there is` })
+    if (loaded.pack === null) {
+      note('pack', { text: `${loaded.reason} — /lingo lang to see what there is` })
 
-      return
+      return false
     }
 
     const deck = await loadProgress(engine, code)
 
-    pack = loaded
+    pack = loaded.pack
     progress = deck.progress
     readOnly = deck.readOnly
+    hookToken += 1
+    note('pack', null)
+    note('lang', null)
     note('deck', deck.trouble)
     state = { ...state, card: null, verdict: null, hook: null, typed: '' }
+
+    return true
   }
 
   /** Whether the band should be asking questions at this moment. */
@@ -252,8 +317,32 @@ export function register(on: On) {
     note('save', await saveProgress(engine, progress))
   }
 
-  /** Fold an answer in, show how it went, and schedule what comes next. */
+  /**
+   * Write the settings, unless they were never successfully read.
+   *
+   * Saving defaults over settings we could not see would lose the language,
+   * the model and an `/lingo off` in one go.
+   */
+  async function saveSettingsIfAllowed(engine: Host): Promise<void> {
+    if (settingsReadOnly) return
+
+    note('settings', await saveSettings(engine, settings))
+  }
+
+  /**
+   * Fold an answer in, show how it went, and schedule what comes next.
+   *
+   * The card comes off the band *before* the first await. Held keys repeat and
+   * fingers double-tap, and two presses either side of `await engine.now()`
+   * would both capture the same card: `applyAnswer` twice, a doubled streak and
+   * a two-box promotion for one answer.
+   */
   async function grade(engine: Host, card: Card, response: { choice?: number; text?: string }) {
+    if (state.card !== card) return
+
+    state = { ...state, card: null, hook: null, fetchingHook: false, typed: '' }
+    hookToken += 1
+
     const now = await engine.now()
     const correct = isCorrect(card, response)
 
@@ -268,7 +357,8 @@ export function register(on: On) {
             word: card.word,
           }
 
-    state = { ...state, card: null, verdict, hook: null, typed: '' }
+    state = { ...state, verdict }
+    note('grade', null)
 
     await persist(engine)
     engine.invalidate()
@@ -280,9 +370,10 @@ export function register(on: On) {
 
       if (!card) return
 
-      void grade(engine, card, { choice: index }).catch((error: unknown) =>
-        note('grade', { text: messageOf(error) }),
-      )
+      void grade(engine, card, { choice: index }).catch((error: unknown) => {
+        note('grade', { text: messageOf(error) })
+        engine.invalidate()
+      })
     },
 
     type: (text: string) => {
@@ -294,9 +385,10 @@ export function register(on: On) {
 
       if (!card) return
 
-      void grade(engine, card, { text }).catch((error: unknown) =>
-        note('grade', { text: messageOf(error) }),
-      )
+      void grade(engine, card, { text }).catch((error: unknown) => {
+        note('grade', { text: messageOf(error) })
+        engine.invalidate()
+      })
     },
 
     next: () => {
@@ -305,12 +397,16 @@ export function register(on: On) {
       // A `teach` card is an introduction, not a question: acknowledging it is
       // what schedules the word, so it goes through the grader like any other.
       if (card && card.kind === 'teach') {
-        void grade(engine, card, {}).catch(() => undefined)
+        void grade(engine, card, {}).catch((error: unknown) => {
+          note('grade', { text: messageOf(error) })
+          engine.invalidate()
+        })
 
         return
       }
 
-      state = { ...state, card: null, verdict: null, hook: null, typed: '' }
+      state = { ...state, card: null, verdict: null, hook: null, fetchingHook: false, typed: '' }
+      hookToken += 1
       engine.invalidate()
     },
 
@@ -333,12 +429,27 @@ export function register(on: On) {
             },
           }
 
-          state = { ...state, card: null, verdict: null, hook: null, typed: '' }
+          state = {
+            ...state,
+            card: null,
+            verdict: null,
+            hook: null,
+            fetchingHook: false,
+            typed: '',
+          }
+
+          hookToken += 1
+          note('grade', null)
 
           await persist(engine)
           engine.invalidate()
         })
-        .catch(() => undefined)
+        .catch((error: unknown) => {
+          // Silence here left the card on screen with nothing said: press,
+          // nothing happens, press again, nothing happens.
+          note('grade', { text: `could not skip: ${messageOf(error)}` })
+          engine.invalidate()
+        })
     },
 
     explain: () => {
@@ -346,20 +457,27 @@ export function register(on: On) {
 
       if (!word || !pack || state.fetchingHook || !settings.enrich) return
 
+      // The card this hook is for. Anything that changes the card bumps the
+      // token, so a slow reply for a word that has gone is dropped rather than
+      // drawn under whatever is on screen now.
+      const token = hookToken
+
       state = { ...state, fetchingHook: true }
       engine.invalidate()
 
       void memoryHook(engine, engine, word, settings.model, pack.englishName)
         .then((hook) => {
-          state = { ...state, hook, fetchingHook: false }
+          if (token !== hookToken) return
 
-          if (hook === null) note('hook', { text: 'could not reach the model for a hook' })
-          else note('hook', null)
-
+          state = { ...state, hook: hook.text, fetchingHook: false }
+          note('hook', hook.text === null ? { text: hook.reason } : null)
           engine.invalidate()
         })
-        .catch(() => {
+        .catch((error: unknown) => {
+          if (token !== hookToken) return
+
           state = { ...state, fetchingHook: false }
+          note('hook', { text: `could not fetch a hook: ${messageOf(error)}` })
           engine.invalidate()
         })
     },
@@ -371,11 +489,23 @@ export function register(on: On) {
 
     chooseLang: (code: string) => {
       void (async () => {
+        const previous = settings.lang
+
         settings = { ...settings, lang: code }
-        note('settings', await saveSettings(engine, settings))
-        await openLanguage(engine, code)
+
+        if (await openLanguage(engine, code)) {
+          await saveSettingsIfAllowed(engine)
+        } else {
+          // The pack would not open, so do not leave the settings naming it —
+          // the next session would start on a language with nothing to study.
+          settings = { ...settings, lang: previous }
+        }
+
         engine.invalidate()
-      })().catch((error: unknown) => note('lang', { text: messageOf(error) }))
+      })().catch((error: unknown) => {
+        note('lang', { text: messageOf(error) })
+        engine.invalidate()
+      })
     },
   })
 
@@ -384,11 +514,11 @@ export function register(on: On) {
     const generated = await generatedCodes(engine)
 
     const extra = await Promise.all(
-      generated.map(async (code) => {
+      generated.codes.map(async (code) => {
         const loaded = await loadPack(engine, code)
 
-        return loaded
-          ? { code, englishName: loaded.englishName, words: loaded.words.length }
+        return loaded.pack
+          ? { code, englishName: loaded.pack.englishName, words: loaded.pack.words.length }
           : null
       }),
     )
@@ -406,9 +536,16 @@ export function register(on: On) {
       invalidate: () => $.ui.invalidate('ui.render'),
       toast: (text) => $.ui.toast(text),
       log: (text) => $.ui.log(text),
+      status: (text) => $.ui.status(text),
       registerCommand: (spec) => $.command.register(spec),
       ask: (question, options) => $.ui.ask(question, options),
     }
+
+    // Bound before anything that can fail. Assigning it last meant a single
+    // rejection above left `host` null for the session: no band, ever, and
+    // `/lingo` falling through to nothing, with no message of its own.
+    host = engine
+    startTicker(engine)
 
     try {
       await engine.registerCommand(COMMAND)
@@ -417,12 +554,19 @@ export function register(on: On) {
       engine.log(`claudelingo: /${COMMAND_NAME} is taken (${messageOf(error)})`)
     }
 
-    settings = await loadSettings(engine)
+    const loaded = await loadSettings(engine)
+
+    settings = loaded.settings
+    settingsReadOnly = loaded.readOnly
+    note('settings', loaded.trouble)
 
     if (settings.lang) await openLanguage(engine, settings.lang)
 
-    host = engine
-    startTicker(engine)
+    return next(e)
+  }).catch(($, e, next) => {
+    // A hook that throws is skipped, and a skipped `session.start` would leave
+    // the band bound to nothing. Whatever failed, the session carries on.
+    host?.log(`claudelingo: could not start (${messageOf(next.error)})`)
 
     return next(e)
   })
@@ -431,20 +575,31 @@ export function register(on: On) {
     const engine = host
     const beneath = await next(e)
 
-    if (!engine || !settings.on) return beneath
+    if (!engine) return beneath
+
+    // Every path that draws nothing still stamps the frame. Leaving it stale
+    // had the ticker fire an invalidate a second for as long as a survey held
+    // the band — the dispatch-per-second the signature exists to avoid.
+    const standDown = async () => {
+      frame = signatureAt(await engine.now().catch(() => 0))
+
+      return beneath
+    }
+
+    if (!settings.on) return standDown()
 
     // A survey holds the band and is the person's to answer; the band yields.
-    if (e.props.hasSurvey) return beneath
+    if (e.props.hasSurvey) return standDown()
 
     // A band taller than the rows it is given scrolls in a window — and a
     // scrolling band arms none of its Buttons' hotkeys, which is the whole
     // interaction. Below the height it needs it draws nothing at all rather
     // than something that cannot be answered.
-    if (e.props.maxRows < BAND_ROWS) return beneath
+    if (e.props.maxRows < BAND_ROWS) return standDown()
 
     // `mobile` has no `Input`, so a `recall` card could not draw there; the
     // band stays off that surface rather than shipping a card kind that fails.
-    if (!isDrawable(e)) return beneath
+    if (!isDrawable(e)) return standDown()
 
     const { Box, Text, Button, Input } = $.ui.resolve(e)
     const ui = { Box, Text, Button, Input }
@@ -471,7 +626,6 @@ export function register(on: On) {
         isWorking: e.props.isWorking,
         practising: state.practising || settings.alwaysOn,
         choices,
-        trouble: troubleText(),
         enrich: settings.enrich,
         now,
       },
@@ -490,8 +644,14 @@ export function register(on: On) {
    * waits. Practise mode is the person saying otherwise, so it survives.
    */
   on('turn.complete', ($, e, next) => {
-    if (host && !state.practising && !settings.alwaysOn && state.card) {
-      state = { ...state, card: null, hook: null, typed: '' }
+    const showing = state.card !== null || state.verdict !== null
+
+    if (host && !state.practising && !settings.alwaysOn && showing) {
+      // The verdict goes with the card. Leaving it would pin "correct — el =
+      // the" across the whole idle stretch, and `pump` refuses a new card while
+      // one stands, so the band would be frozen on it until the next prompt.
+      state = { ...state, card: null, verdict: null, hook: null, fetchingHook: false, typed: '' }
+      hookToken += 1
       host.invalidate()
     }
 
@@ -539,7 +699,7 @@ export function register(on: On) {
       case 'on':
       case 'off': {
         settings = { ...settings, on: verb.toLowerCase() === 'on' }
-        note('settings', await saveSettings(engine, settings))
+        await saveSettingsIfAllowed(engine)
         engine.invalidate()
 
         return {
@@ -586,6 +746,10 @@ export function register(on: On) {
       `streak       ${counts.streak}${counts.bestStreak > counts.streak ? ` (best ${counts.bestStreak})` : ''}`,
       `accuracy     ${accuracy}`,
       readOnly ? '\n_Running read-only: the deck could not be read, so nothing is being saved._' : '',
+      settingsReadOnly ? '_Your settings could not be read, so changes are not being saved._' : '',
+      ...(troubles.size > 0
+        ? ['', '**Outstanding:**', ...[...troubles].map(([cause, text]) => `- ${cause}: ${text}`)]
+        : []),
     ]
       .filter(Boolean)
       .join('\n')
@@ -607,7 +771,7 @@ export function register(on: On) {
         ...rows,
         '',
         `\`/${COMMAND_NAME} lang <code>\` switches. ` +
-          `\`/${COMMAND_NAME} pack <Language>\` builds a new one.`,
+          `\`/${COMMAND_NAME} pack <Language> <code>\` builds a new one.`,
       ].join('\n')
     }
 
@@ -618,9 +782,18 @@ export function register(on: On) {
       )
     }
 
+    const previous = settings.lang
+
     settings = { ...settings, lang: code }
-    note('settings', await saveSettings(engine, settings))
-    await openLanguage(engine, code)
+
+    if (!(await openLanguage(engine, code))) {
+      settings = { ...settings, lang: previous }
+      engine.invalidate()
+
+      return `Could not open \`${code}\`: ${troubles.get('pack') ?? 'the pack would not load'}`
+    }
+
+    await saveSettingsIfAllowed(engine)
     engine.invalidate()
 
     return `Studying ${pack?.englishName ?? code}. Your other decks are kept as they were.`
@@ -631,25 +804,61 @@ export function register(on: On) {
    *
    * The generator is the CLI's, restated rather than rewritten — see
    * `packgen.ts` for why that matters. What differs is the transport and the
-   * refusals: `$.model.complete` instead of a subprocess, and a code that a
-   * bundled pack already uses is refused here for the reason the CLI refuses
-   * it, since progress is keyed by code *and* by rank — a generated `es` would
-   * re-attach box levels earned on Spanish to whatever word now sits at each
-   * rank.
+   * refusals: `$.model.complete` instead of a subprocess, and three checks that
+   * all exist for one reason. Progress is keyed by code *and* by rank, so any
+   * pack that lands on a code some deck already uses re-attaches every box
+   * level earned there to whatever word now sits at each rank.
    */
-  async function packText(engine: Host, language: string): Promise<string> {
-    if (!language) return `Which language? \`/${COMMAND_NAME} pack Portuguese\``
+  async function packText(engine: Host, argument: string): Promise<string> {
+    const [language = '', given] = argument.split(/\s+/).filter(Boolean)
 
-    const code = language.slice(0, 2).toLowerCase()
+    if (!language) {
+      return `Which language? \`/${COMMAND_NAME} pack Portuguese\`, or ` +
+        `\`/${COMMAND_NAME} pack Portuguese pt\` to choose the code.`
+    }
+
+    // The code names the pack *and* the deck, so it is worth being explicit
+    // about: "Portuguese".slice(0, 2) is `po`, which is nobody's idea of
+    // Portuguese and collides with Polish besides.
+    const code = (given ?? language.slice(0, 2)).toLowerCase()
+
+    if (!/^[a-z]{2}$/.test(code)) {
+      return `\`${code}\` is not a two-letter code. Try \`/${COMMAND_NAME} pack ${language} pt\`.`
+    }
 
     if (BUNDLED_CODES.includes(code)) {
       return (
         `\`${code}\` is a language claudelingo already ships, and progress is keyed by ` +
-        `code, so a generated pack would collide with it. Nothing was written.`
+        `code, so a generated pack would collide with it. Nothing was written. ` +
+        `Pick another code: \`/${COMMAND_NAME} pack ${language} xx\`.`
       )
     }
 
+    const known = await generatedCodes(engine)
+
+    // A failed read is not an empty index. Writing one back would erase every
+    // pack already generated — the bodies survive under their own keys, but
+    // nothing would ever look at them again.
+    if (known.failed) {
+      note('pack', { text: 'could not read the pack index — not generating over it' })
+
+      return 'Could not read your list of generated packs, so nothing was built: writing a new one would have erased it.'
+    }
+
+    if (known.codes.includes(code)) {
+      const answer = await engine
+        .ask(
+          `You already have a pack under "${code}". Replace it?`,
+          ['Keep it', 'Replace it'],
+        )
+        .catch(() => 'Keep it')
+
+      if (answer !== 'Replace it') return `Kept your existing \`${code}\` pack.`
+    }
+
     engine.toast(`claudelingo: building a ${language} pack…`)
+
+    const notes: string[] = []
 
     try {
       const raw = await generatePack(
@@ -657,7 +866,16 @@ export function register(on: On) {
           engine.complete({ model: settings.model, prompt, system, maxTokens: 8000 }),
         language,
         code,
-        300,
+        PACK_WORDS,
+        {
+          // The generator reports a chunk that failed twice and a run that
+          // stopped short. Dropping those reported a 100-word pack as a
+          // success when two thirds of it had been lost.
+          onProgress: (done, total, note) => {
+            if (note) notes.push(note)
+            engine.status(`claudelingo: ${language} pack — ${done}/${total}`)
+          },
+        },
       )
 
       // Validate before storing: a half-valid pack in the store would fail on
@@ -666,16 +884,39 @@ export function register(on: On) {
 
       await engine.set(packKey(code), raw)
 
-      const known = await generatedCodes(engine)
+      try {
+        await engine.set(PACKS_KEY, [...new Set([...known.codes, code])])
+      } catch (error) {
+        // The pack is written but invisible: say so, rather than reporting a
+        // failure for something that is sitting in the store.
+        note('pack', { text: `the ${code} pack is saved but not listed: ${messageOf(error)}` })
 
-      await engine.set(PACKS_KEY, [...new Set([...known, code])])
+        return (
+          `Built **${built.englishName}** (${built.words.length} words) but could not add it ` +
+          `to your list of packs, so it will not appear in \`/${COMMAND_NAME} lang\`. ` +
+          `Re-run to try again.`
+        )
+      }
+
+      note('pack', null)
+
+      // The generator's own last note already explains itself; quoting it under
+      // a heading that repeats it reads as a stutter.
+      const short =
+        built.words.length < PACK_WORDS
+          ? `\n\nAsked for ${PACK_WORDS}, ${
+              notes.at(-1) ?? `stopped at ${built.words.length}: the ranks asked for are used up`
+            }. A short pack of real words beats a full one padded out.`
+          : ''
 
       return (
-        `Built **${built.englishName}** — ${built.words.length} words.\n\n` +
+        `Built **${built.englishName}** — ${built.words.length} words.${short}\n\n` +
         `\`/${COMMAND_NAME} lang ${code}\` to start on it.`
       )
     } catch (error) {
       return `Could not build a ${language} pack: ${messageOf(error)}`
+    } finally {
+      engine.status(troubleText() ?? undefined)
     }
   }
 
@@ -690,11 +931,25 @@ export function register(on: On) {
 
     if (answer !== 'Erase it') return `Kept your ${name} deck.`
 
-    progress = emptyProgress(pack.code)
-    state = { ...state, card: null, verdict: null, hook: null, typed: '' }
+    if (readOnly) {
+      // The dialog said "this cannot be undone", and under read-only nothing is
+      // written at all: the stored deck would come back at the next session.
+      return (
+        `Did **not** erase your ${name} deck: it could not be read, so the mod is ` +
+        `running read-only and writes nothing. Nothing has changed.`
+      )
+    }
 
-    await persist(engine)
+    progress = emptyProgress(pack.code)
+    state = { ...state, card: null, verdict: null, hook: null, fetchingHook: false, typed: '' }
+    hookToken += 1
+
+    const trouble = await saveProgress(engine, progress)
+
+    note('save', trouble)
     engine.invalidate()
+
+    if (trouble) return `Could not erase your ${name} deck: ${trouble.text}`
 
     return `Erased your ${name} deck. Everything starts again from word one.`
   }

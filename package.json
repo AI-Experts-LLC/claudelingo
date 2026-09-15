@@ -55,7 +55,8 @@
     "check:dist": "node scripts/check-dist.mjs",
     "mod:restate": "node mod/scripts/restate.mjs",
     "mod:typecheck": "tsc -p mod/tsconfig.json --noEmit",
-    "mod:validate": "claude plugin validate mod"
+    "mod:validate": "claude plugin validate mod",
+    "mod:test:kit": "claude plugin test mod"
   },
   "dependencies": {},
   "devDependencies": {

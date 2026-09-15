@@ -27,13 +27,6 @@ export type Asker = (prompt: string, options: { system: string }) => Promise<str
 
 export class EnrichError extends Error {}
 
-interface GeneratedPack {
-  code: string;
-  name: string;
-  englishName: string;
-  words: Array<{ term: string; gloss: string; pos: string; note?: string }>;
-}
-
 const PACK_SYSTEM =
   "You are a corpus linguist building a beginner vocabulary pack. " +
   "Order words by descending corpus frequency, one dictionary form per entry, " +

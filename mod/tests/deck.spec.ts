@@ -5,11 +5,12 @@ import {
   generatedCodes,
   loadPack,
   loadProgress,
+  loadSettings,
   readSettings,
   saveProgress,
 } from '../hooks/deck'
 import type { Store } from '../hooks/deck'
-import { PACKS_KEY, packKey, progressKey } from '../hooks/names'
+import { PACKS_KEY, SETTINGS_KEY, packKey, progressKey } from '../hooks/names'
 import { emptyProgress } from '../hooks/srs'
 
 /**
@@ -138,7 +139,7 @@ describe('deck', () => {
   })
 
   it('loads a bundled pack', async () => {
-    const pack = await loadPack(fakeStore(), 'es')
+    const { pack } = await loadPack(fakeStore(), 'es')
 
     expect(pack?.englishName).toBe('Spanish')
     expect(pack?.words.length).toBeGreaterThan(300)
@@ -156,7 +157,7 @@ describe('deck', () => {
       [packKey('es')]: { code: 'es', name: 'X', englishName: 'X', words: [['x', 'x', 'noun']] },
     })
 
-    const pack = await loadPack(store, 'es')
+    const { pack } = await loadPack(store, 'es')
 
     expect(pack?.englishName).toBe('Spanish')
   })
@@ -174,23 +175,87 @@ describe('deck', () => {
       },
     })
 
-    const pack = await loadPack(store, 'pt')
+    const { pack } = await loadPack(store, 'pt')
 
     expect(pack?.englishName).toBe('Portuguese')
     expect(pack?.words).toHaveLength(2)
   })
 
-  it('treats an unparseable generated pack as no pack at all', async () => {
-    const store = fakeStore({
-      [packKey('pt')]: { code: 'pt', words: [['', '', '']] },
-    })
+  /**
+   * Three ways to have no pack, and they are not interchangeable.
+   *
+   * "The store did not answer" must not be reported as "there is no such
+   * pack" — that sends someone off to spend ten minutes regenerating one that
+   * is sitting right there. And a pack that is present but malformed should
+   * carry what `materialize` knows is wrong with it, since that is the only
+   * thing that tells anyone how to fix it by hand.
+   */
+  it('says why there is no pack, not merely that there is none', async () => {
+    const missing = await loadPack(fakeStore(), 'pt')
 
-    expect(await loadPack(store, 'pt')).toBeNull()
+    expect(missing.pack).toBeNull()
+    expect(missing.reason).toContain('no word pack')
+
+    const unreadable = await loadPack(fakeStore({}, { get: [packKey('pt')] }), 'pt')
+
+    expect(unreadable.pack).toBeNull()
+    expect(unreadable.reason).toContain('could not read')
+    expect(unreadable.reason).not.toContain('no word pack')
+
+    const malformed = await loadPack(
+      fakeStore({
+        [packKey('pt')]: {
+          code: 'pt',
+          words: [
+            ['casa', 'house', 'noun'],
+            ['casa', 'home', 'noun'],
+          ],
+        },
+      }),
+      'pt',
+    )
+
+    expect(malformed.pack).toBeNull()
+    expect(malformed.reason).toContain('duplicate term')
   })
 
   it('lists generated codes, never bundled ones', async () => {
     const store = fakeStore({ [PACKS_KEY]: ['pt', 'es', 7, 'sv'] })
 
-    expect(await generatedCodes(store)).toEqual(['pt', 'sv'])
+    expect(await generatedCodes(store)).toEqual({ codes: ['pt', 'sv'], failed: false })
+  })
+
+  /**
+   * An empty index and an unreadable one must not look alike.
+   *
+   * `/lingo pack` reads this index and writes it back with one code added. If a
+   * failed read looked empty, that write would erase every pack the user had
+   * ever generated — ten minutes of model quota each, and the bodies left
+   * orphaned in the store with nothing that ever looks at them again.
+   */
+  it('does not report an unreadable pack index as an empty one', async () => {
+    const store = fakeStore({}, { get: [PACKS_KEY] })
+
+    expect(await generatedCodes(store)).toEqual({ codes: [], failed: true })
+    expect(await generatedCodes(fakeStore())).toEqual({ codes: [], failed: false })
+  })
+
+  /**
+   * Settings get the deck's rule, and for a sharper reason: the defaults are
+   * not neutral. `lang: ''` is the language picker for someone who chose a year
+   * ago, and `on: true` is the band coming back for someone who turned it off.
+   */
+  it('will not write settings back over ones it could not read', async () => {
+    const store = fakeStore({}, { get: [SETTINGS_KEY] })
+    const loaded = await loadSettings(store)
+
+    expect(loaded.readOnly).toBe(true)
+    expect(loaded.trouble?.text).toContain('not saving')
+    expect(loaded.settings).toEqual(DEFAULT_SETTINGS)
+
+    const fine = await loadSettings(fakeStore({ [SETTINGS_KEY]: { lang: 'it' } }))
+
+    expect(fine.readOnly).toBe(false)
+    expect(fine.settings.lang).toBe('it')
   })
 })

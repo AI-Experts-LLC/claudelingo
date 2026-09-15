@@ -79,7 +79,7 @@ Everything the band cannot say in three rows is on `/lingo`:
 | `/lingo lang` | the languages you have; `/lingo lang fr` switches |
 | `/lingo practise` | quiz me now, even though Claude is idle |
 | `/lingo off` / `on` | clear the band without uninstalling |
-| `/lingo pack Portuguese` | build a pack for a language it does not ship |
+| `/lingo pack Portuguese pt` | build a pack for a language it does not ship |
 | `/lingo reset` | erase this language's deck, after asking |
 
 ## How it behaves
@@ -96,9 +96,16 @@ on you is not a turn running.
 one. Three rows means the conversation above never jumps as a card comes and
 goes. And a band taller than the rows it is given scrolls in a window — at which
 point, in the engine's words, "a bare digit arms none of its Buttons' hotkeys". A
-fourth row would not look wrong. It would silently turn every answer key off. So
-the height is pinned by a test, per branch, and the band draws nothing at all
-where it has not been given three rows to be pressable in.
+fourth row would not look wrong. It would silently turn every answer key off.
+
+Which makes *how* the height is measured the whole game. Counting the rows you
+wrote is not enough: `Text` wraps, so three parts that each fit the body width
+can still exceed it together, and then one row is two on screen while the tree
+still looks like three. The first version of this band did exactly that and
+overflowed at ordinary terminal widths. So every composite row is budgeted as a
+row by `views/row.ts`, and the tests measure rendered cells — every state, at a
+dozen widths, including a pack with 200-character glosses and one written in
+double-width CJK.
 
 **Nothing reaches the model that you did not press for.** The band is drawn by a
 render hook and graded in the plugin's own environment. No card, no answer and no
@@ -123,9 +130,11 @@ claudelingo:pack:v1:<code>     a generated word pack
 claudelingo:packs:v1           the index of generated packs
 ```
 
-Two rules survive the move off the filesystem, because they were never really
-about files — they are about the difference between *the read failed* and *what
-came back is not a deck*:
+One rule survives the move off the filesystem, because it was never really
+about files: **a read that failed authorises no write.** It applies to the deck,
+to the settings, to a word pack and to the index of generated packs, and the
+distinction it turns on is between *the read failed* and *what came back is not
+what we expected*:
 
 - **A read that failed** says nothing about what is in the store, so the band
   runs read-only and saves nothing rather than writing a fresh deck over one
@@ -137,6 +146,17 @@ A deck also carries its own language, and one that does not match is quarantined
 rather than accepted — otherwise a French deck read under `es` would miss on
 every word id and silently become an empty Spanish deck that still claims a
 streak.
+
+The settings get the same treatment, and there the defaults are the danger: a
+failed read that fell back to them would show the language picker to someone who
+chose a year ago, bring the band back for someone who ran `/lingo off`, and then
+save all of that over the real settings on the first press.
+
+Errors are pinned under the prompt with `$.ui.status` rather than drawn in the
+band. The band is three rows and the third is the controls, so an error that
+took a row would delete the very keys needed to clear it — a trap, not a
+message. `/lingo stats` lists all of them; the pinned line shows the most
+serious.
 
 ## Shared with the CLI, not copied from it
 
@@ -180,9 +200,16 @@ Two test suites, deliberately different suffixes:
   the action, that the height holds in every branch — and the deck's behaviour
   when the store misbehaves.
 - **`mod/tests/*.test.ts`** are written against `claude-code/testing` and run
-  with `claude plugin test mod`. They drive the band the way a person does:
-  `$.ui.press` presses a Button the band actually rendered, through every hook,
-  and the deck that comes out is the one the engine's own store holds.
+  with `npm run mod:test:kit` (`claude plugin test mod`). They drive the band
+  the way a person does: `$.ui.press` presses a Button the band actually
+  rendered, through every hook, and the deck that comes out is the one the
+  engine's own store holds.
+
+  **These have never been executed.** `claude plugin test` does not exist in
+  Claude Code 2.1.271, the build they were written against — the command errors
+  with `unknown command 'test'`. They typecheck against the real declarations
+  and they are the right tests, but until that runner ships they are unverified,
+  and the `*.spec.ts` files are what actually guards the mod in CI.
 
 `mod/types/claude-code.d.ts` is what `/plugin-types` wrote for the Claude Code
 version named on its first line. Regenerate it with that command after an update

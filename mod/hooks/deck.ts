@@ -161,11 +161,37 @@ export async function saveProgress(store: Store, progress: Progress): Promise<Tr
   }
 }
 
-export async function loadSettings(store: Store): Promise<Settings> {
+export interface LoadedSettings {
+  settings: Settings
+  /** Save is off: the settings could not be read, so they must not be written. */
+  readOnly: boolean
+  trouble: Trouble
+}
+
+/**
+ * Settings, and whether they may be written back.
+ *
+ * The same rule as the deck, and it matters more here than it looks. Handing
+ * back the defaults on a failed read means `lang: ''` — the language picker, as
+ * though you had never chosen — and `on: true`, the band returning for someone
+ * who ran `/lingo off`. The first press would then save those defaults over the
+ * real settings. A read that failed authorises no write.
+ */
+export async function loadSettings(store: Store): Promise<LoadedSettings> {
   try {
-    return readSettings(await store.get(SETTINGS_KEY))
-  } catch {
-    return { ...DEFAULT_SETTINGS }
+    return {
+      settings: readSettings(await store.get(SETTINGS_KEY)),
+      readOnly: false,
+      trouble: null,
+    }
+  } catch (error) {
+    return {
+      settings: { ...DEFAULT_SETTINGS },
+      readOnly: true,
+      trouble: {
+        text: `could not read your settings (${messageOf(error)}) — not saving over them`,
+      },
+    }
   }
 }
 
@@ -188,40 +214,68 @@ export async function saveSettings(store: Store, settings: Settings): Promise<Tr
  * Spanish to whatever word now sits at each rank. The same refusal is in
  * `generate.ts`; the order here is the belt to that's braces.
  */
-export async function loadPack(store: Store, code: string): Promise<Pack | null> {
+export type LoadedPack =
+  | { pack: Pack; reason?: undefined }
+  | { pack: null; reason: string }
+
+export async function loadPack(store: Store, code: string): Promise<LoadedPack> {
   const bundled = bundledPack(code)
 
-  if (bundled) return materialize(bundled)
+  if (bundled) return { pack: materialize(bundled) }
 
   let value: unknown
 
   try {
     value = await store.get(packKey(code))
-  } catch {
-    return null
+  } catch (error) {
+    // Not "there is no such pack": the store did not answer. Saying the pack is
+    // missing would send someone off to spend ten minutes regenerating one that
+    // is sitting right there.
+    return { pack: null, reason: `could not read the ${code} pack: ${messageOf(error)}` }
   }
 
-  if (!isRecord(value)) return null
+  if (!isRecord(value)) {
+    return { pack: null, reason: `no word pack for "${code}"` }
+  }
 
   try {
-    return materialize(value as unknown as RawPack)
-  } catch {
-    return null
+    return { pack: materialize(value as unknown as RawPack) }
+  } catch (error) {
+    // `materialize` knows exactly what is wrong (`duplicate term "casa"`), and
+    // that is the only thing that tells someone how to fix it by hand.
+    return { pack: null, reason: `the ${code} pack could not be read: ${messageOf(error)}` }
   }
 }
 
-/** The codes of packs generated into the store, bundled ones excluded. */
-export async function generatedCodes(store: Store): Promise<string[]> {
+export interface LoadedCodes {
+  codes: string[]
+  /** The read failed, so this list is not evidence that there are no packs. */
+  failed: boolean
+}
+
+/**
+ * The codes of packs generated into the store, bundled ones excluded.
+ *
+ * `failed` is the whole point of the shape. `/lingo pack` rewrites this index
+ * by reading it and writing it back, and an empty list from a failed read would
+ * make that write erase every pack the user has ever generated — the bodies
+ * survive under their own keys, but nothing would ever look at them again.
+ * A read that failed authorises no write, here as everywhere else.
+ */
+export async function generatedCodes(store: Store): Promise<LoadedCodes> {
   try {
     const value = await store.get(PACKS_KEY)
 
-    if (!Array.isArray(value)) return []
+    if (!Array.isArray(value)) return { codes: [], failed: false }
 
-    return value.filter(
-      (code): code is string => typeof code === 'string' && !BUNDLED_CODES.includes(code),
-    )
+    return {
+      codes: value.filter(
+        (code): code is string => typeof code === 'string' && !BUNDLED_CODES.includes(code),
+      ),
+      failed: false,
+    }
   } catch {
-    return []
+    return { codes: [], failed: true }
   }
 }
 
