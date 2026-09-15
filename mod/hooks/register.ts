@@ -88,7 +88,7 @@ interface Host extends Store {
 const COMMAND: CommandSpec = {
   name: COMMAND_NAME,
   description: 'claudelingo: your standing, your language, and the band above the prompt',
-  argumentHint: '[stats | lang <code> | practise | on | off | pack <Language> | reset]',
+  argumentHint: '[stats | lang <code> | practise | on | off | pack <Language> <code> | reset]',
   // A turn being in flight is exactly when the band is busiest, and every one
   // of these is about the band rather than about the conversation. Waiting for
   // the turn to end would answer questions about a screen that has moved on.
@@ -273,7 +273,11 @@ export function register(on: On) {
     note('pack', null)
     note('lang', null)
     note('deck', deck.trouble)
-    state = { ...state, card: null, verdict: null, hook: null, typed: '' }
+
+    // `fetchingHook` goes with the token. Leaving it set drops the in-flight
+    // reply correctly but strands the next card's explain button on "asking…",
+    // where pressing it does nothing.
+    state = { ...state, card: null, verdict: null, hook: null, fetchingHook: false, typed: '' }
 
     return true
   }
@@ -725,8 +729,22 @@ export function register(on: On) {
     }
   })
 
+  /** Everything outstanding, for the pinned line that can only show one. */
+  function troubleList(): string[] {
+    if (troubles.size === 0) return []
+
+    return ['', '**Outstanding:**', ...[...troubles].map(([cause, text]) => `- ${cause}: ${text}`)]
+  }
+
   async function statsText(engine: Host): Promise<string> {
-    if (!pack) return 'No language chosen yet — press a digit in the band above your prompt.'
+    // Still list the troubles: the pinned line promises they are here, and the
+    // no-language case is exactly when a failed read is why.
+    if (!pack) {
+      return [
+        'No language chosen yet — press a digit in the band above your prompt.',
+        ...troubleList(),
+      ].join('\n')
+    }
 
     const now = await engine.now()
     const counts = stats(pack, progress, now)
@@ -747,9 +765,7 @@ export function register(on: On) {
       `accuracy     ${accuracy}`,
       readOnly ? '\n_Running read-only: the deck could not be read, so nothing is being saved._' : '',
       settingsReadOnly ? '_Your settings could not be read, so changes are not being saved._' : '',
-      ...(troubles.size > 0
-        ? ['', '**Outstanding:**', ...[...troubles].map(([cause, text]) => `- ${cause}: ${text}`)]
-        : []),
+      ...troubleList(),
     ]
       .filter(Boolean)
       .join('\n')
@@ -817,9 +833,11 @@ export function register(on: On) {
         `\`/${COMMAND_NAME} pack Portuguese pt\` to choose the code.`
     }
 
-    // The code names the pack *and* the deck, so it is worth being explicit
-    // about: "Portuguese".slice(0, 2) is `po`, which is nobody's idea of
-    // Portuguese and collides with Polish besides.
+    // The code names the pack *and* the deck, so it is worth giving: the
+    // fallback is the first two letters, and "Portuguese" that way is `po`,
+    // which is nobody's idea of Portuguese and collides with Polish besides.
+    // The fallback stays — refusing without one would be unhelpful — but every
+    // message below names the code that was actually used.
     const code = (given ?? language.slice(0, 2)).toLowerCase()
 
     if (!/^[a-z]{2}$/.test(code)) {
@@ -910,7 +928,7 @@ export function register(on: On) {
           : ''
 
       return (
-        `Built **${built.englishName}** — ${built.words.length} words.${short}\n\n` +
+        `Built **${built.englishName}** as \`${code}\` — ${built.words.length} words.${short}\n\n` +
         `\`/${COMMAND_NAME} lang ${code}\` to start on it.`
       )
     } catch (error) {

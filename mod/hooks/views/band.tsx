@@ -7,6 +7,7 @@ import type {
   ElementConstructor,
   InputProps,
   RenderElement,
+  RenderNode,
   TextProps,
 } from 'claude-code'
 
@@ -410,6 +411,23 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
   ]
 }
 
+/**
+ * Does this row hold something a person can press?
+ *
+ * A render tree is plain data, so this is a walk rather than a flag every
+ * branch has to remember to carry — one added later is covered without being
+ * told to be. `children` sits beside `props` on an element, not inside it
+ * (`StyledElement`); reading it from `props` finds nothing and quietly reports
+ * every row as unpressable.
+ */
+function isPressable(node: RenderNode): boolean {
+  if (typeof node === 'string') return false
+  if (node.type === 'Button' || node.type === 'Input') return true
+  if (!('children' in node) || node.children === undefined) return false
+
+  return node.children.some(isPressable)
+}
+
 /** How a card is asked, in words. The CLI's `questionFor`, minus the teach case. */
 function questionRow(card: Card, englishName: string): string {
   switch (card.kind) {
@@ -439,9 +457,13 @@ export function bandView(kit: BandKit, model: BandModel): RenderElement {
   const body = rowsOf(kit, model, columns)
 
   if (kit.columns < BAND_MIN_COLUMNS) {
-    // The last row, not the first: a question nobody can answer is worth less
-    // than the keys that answer it.
-    return <Box flexDirection="column">{body.slice(-1)}</Box>
+    // One row, and it must be one that can be pressed: a question nobody can
+    // answer is worth less than the keys that answer it. Usually that is the
+    // controls, but on the picker it is the languages themselves — keeping the
+    // hint under them would leave a first-run user with nothing to press.
+    const pressable = body.filter(isPressable)
+
+    return <Box flexDirection="column">{(pressable.length > 0 ? pressable : body).slice(-1)}</Box>
   }
 
   if (!gutter) {

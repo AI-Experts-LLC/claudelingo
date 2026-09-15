@@ -248,7 +248,7 @@ band above your prompt, answered with a digit:
 ```
  ,___,  What does "tiempo" mean?
  (o.o)  1: time   2: weather   3: house   4: always
- /)_)   box 1/5   5: skip   6: explain
+ /)_)   5: skip   6: explain   box 1/5
 ```
 
 No slash command to answer with, no tmux pane, and nothing in the transcript.

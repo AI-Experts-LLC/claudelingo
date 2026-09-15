@@ -213,12 +213,52 @@ describe('band', () => {
   /**
    * Narrow, it keeps the row that can be pressed rather than the one that
    * merely reads: a question nobody can answer is worth less than the keys.
+   *
+   * The picker is the case that makes this more than a preference. Its
+   * pressable row is the languages, with a hint *below* them — so "keep the
+   * last row" left a first-run user on a narrow terminal with no way to choose
+   * a language at all.
    */
-  it('falls back to the controls row when three cannot say anything useful', () => {
-    const { tree, nodes } = draw({ card: cardAt(1), item: reviewing(1) }, BAND_MIN_COLUMNS - 1)
+  it.each([
+    ['a multiple-choice card', { card: cardAt(1), item: reviewing(1) }],
+    ['a teach card', { card: teachCard() }],
+    ['a verdict', { verdict: { correct: true, answer: 'the', word: SPANISH.words[0]! } }],
+    ['the idle ticker', {}],
+    [
+      'the language picker',
+      {
+        choices: [
+          { code: 'es', englishName: 'Spanish', words: 312 },
+          { code: 'fr', englishName: 'French', words: 311 },
+        ],
+      },
+    ],
+  ])('keeps one pressable row when three will not fit: %s', (_name, over) => {
+    const { tree, nodes } = draw(over as Partial<BandModel>, BAND_MIN_COLUMNS - 1)
 
     expect(bodyRows(tree)).toHaveLength(1)
-    expect(buttons(nodes).length).toBeGreaterThan(0)
+    expect(
+      buttons(nodes).length + nodes.filter((node) => node.type === 'Input').length,
+      `${_name}: the one surviving row has nothing to press`,
+    ).toBeGreaterThan(0)
+  })
+
+  /**
+   * Control labels are charged whole and never shrink, so the narrowest
+   * supported band is the one with the least headroom — the teach card's
+   * `1: got it  5: skip  6: explain` is 30 cells at exactly 30 columns.
+   *
+   * Nothing else would notice a one-character rename here, and the cost of one
+   * is the four-row band that disarms every hotkey. So it is pinned.
+   */
+  it('fits its widest controls row at the narrowest supported width', () => {
+    for (const over of [{ card: teachCard() }, { card: cardAt(1), item: reviewing(1) }]) {
+      const { tree } = draw(over, BAND_MIN_COLUMNS)
+
+      for (const row of bodyRows(tree)) {
+        expect(rowCells(row), `${BAND_MIN_COLUMNS} columns`).toBeLessThanOrEqual(BAND_MIN_COLUMNS)
+      }
+    }
   })
 
   it('offers a teach card an acknowledgement, not options', () => {

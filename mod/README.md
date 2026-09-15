@@ -5,7 +5,7 @@ The quiz, inside Claude Code, answered with a digit.
 ```
  ,___,  What does "tiempo" mean?
  (o.o)  1: time   2: weather   3: house   4: always
- /)_)   box 1/5   5: skip   6: explain
+ /)_)   5: skip   6: explain   box 1/5
 ```
 
 Press `1`. That is the whole interaction, and it is the whole reason this

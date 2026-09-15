@@ -126,14 +126,3 @@ export function fitRow(parts: readonly Part[], columns: number): string[] {
     part.fixed ? part.label : fit(part.label, budgets.get(index) ?? 0),
   )
 }
-
-/** The cells a row of parts would take, given the labels it ended up with. */
-export function rowWidth(parts: readonly Part[], labels: readonly string[]): number {
-  const overhead = parts.reduce((sum, part) => sum + (part.overhead ?? 0), 0)
-
-  return (
-    overhead +
-    GAP * Math.max(0, parts.length - 1) +
-    labels.reduce((sum, label) => sum + stringWidth(label), 0)
-  )
-}
