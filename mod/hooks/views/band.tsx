@@ -24,7 +24,7 @@ import type { Mood } from '../ui/mascot'
 import { MAX_BOX } from '../srs'
 import { bar } from '../ticker'
 import type { Tick } from '../ticker'
-import type { Card, ItemProgress, Pack, Verdict } from '../types'
+import type { Card, ItemProgress, Pack, QuizRun, Verdict } from '../types'
 import type { PackChoice } from '../pack'
 import { buttonOverhead, fit, fitRow } from './row'
 import type { Part } from './row'
@@ -79,6 +79,9 @@ export type BandUi = {
 /** What a press does. The view names them; `register.ts` supplies them. */
 export interface BandActions {
   answer: (index: number) => void
+  quiz: () => void
+  again: () => void
+  done: () => void
   spell: (text: string) => void
   type: (text: string) => void
   next: () => void
@@ -102,6 +105,8 @@ export interface BandModel {
   isWorking: boolean
   /** Quizzing regardless, because practise was pressed or always-on is set. */
   practising: boolean
+  /** The quiz you asked for: its progress while running, its score when done. */
+  quiz: QuizRun | null
   /** The languages the picker offers, when nothing has been chosen yet. */
   choices: readonly PackChoice[] | null
   /** Can the model be asked for a memory hook? */
@@ -252,6 +257,60 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
     ]
   }
 
+  // ── A quiz you asked for, finished ───────────────────────────────────────
+  //
+  // After the verdict for its last card, not instead of it: you get told how
+  // that one went, and the score arrives when you move past it.
+  const run = model.quiz
+
+  if (run && run.done >= run.total && !model.verdict) {
+    const asked = run.total - run.taught
+
+    const score =
+      asked > 0
+        ? `${run.correct} of ${asked} right`
+        : `${run.taught} new ${run.taught === 1 ? 'word' : 'words'}`
+
+    const extra = asked > 0 && run.taught > 0 ? `, ${run.taught} new` : ''
+
+    return [
+      line(`Quiz done \u2014 ${score}${extra}`, {
+        bold: true,
+        color: asked === 0 || run.correct === asked ? 'success' : undefined,
+      }),
+      dim(
+        asked > 0 && run.correct === asked
+          ? 'every one. The next ones will be harder.'
+          : 'wrong ones come back sooner; right ones come back later.',
+      ),
+      controls([
+        {
+          key: KEYS.again,
+          hotkey: CONTROL_HOTKEYS.again,
+          part: named(CONTROL_HOTKEYS.again, 'again'),
+          onPress: actions.again,
+        },
+        {
+          key: KEYS.done,
+          hotkey: CONTROL_HOTKEYS.done,
+          part: named(CONTROL_HOTKEYS.done, 'done'),
+          onPress: actions.done,
+        },
+      ]),
+    ]
+  }
+
+  /**
+   * `2/5` while a run is going, so you can see the end coming.
+   *
+   * It replaces the box level rather than sitting beside it: two ratios in one
+   * row (`2/5  box 1/5`) read as one thing gone wrong rather than two things
+   * going right, and during a run the position in the run is what you want.
+   */
+  const running = run !== null && run.done < run.total
+  const progress = running ? [`${run.done + 1}/${run.total}`] : []
+  const counter = (box: string) => (running ? progress : [box])
+
   // ── Just answered ────────────────────────────────────────────────────────
   if (model.verdict) {
     const { correct, answer, word } = model.verdict
@@ -275,6 +334,7 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
             onPress: actions.next,
           },
         ]),
+        progress,
       ),
     ]
   }
@@ -315,6 +375,7 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
             },
             skipButton,
           ]),
+          progress,
         ),
       ]
     }
@@ -330,7 +391,7 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
           onInput={actions.type}
           onSubmit={actions.spell}
         />,
-        controls(withExplain([skipButton]), [box]),
+        controls(withExplain([skipButton]), counter(box)),
       ]
     }
 
@@ -358,7 +419,7 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
           />
         ))}
       </Box>,
-      controls(withExplain([skipButton]), [box]),
+      controls(withExplain([skipButton]), counter(box)),
     ]
   }
 
@@ -366,11 +427,15 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
   //
   // The ticker, exactly as the CLI's panel runs it: a word alone, a moment to
   // reach for it, then the meaning. Nothing here is graded and nothing written.
-  const practiseButton: Control = {
-    key: KEYS.practise,
-    hotkey: CONTROL_HOTKEYS.practise,
-    part: named(CONTROL_HOTKEYS.practise, 'practise'),
-    onPress: actions.practise,
+  // The idle band's one button starts a quiz. It used to say "practise" and
+  // turn on an endless mode, which is a worse thing to offer: it never says how
+  // long it will go on for and it never tells you how you did. `/lingo practise`
+  // still does that for anyone who wants it.
+  const quizButton: Control = {
+    key: KEYS.quiz,
+    hotkey: CONTROL_HOTKEYS.quiz,
+    part: named(CONTROL_HOTKEYS.quiz, 'quiz'),
+    onPress: actions.quiz,
   }
 
   const tick = model.tick
@@ -379,7 +444,7 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
     return [
       line(model.pack ? `${model.pack.englishName} · all caught up` : 'claudelingo'),
       dim(`${bar(1, 10)}  nothing due`),
-      controls([practiseButton], ['/lingo stats']),
+      controls([quizButton], ['/lingo stats']),
     ]
   }
 
@@ -407,7 +472,7 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
       </Text>
     </Box>,
     dim(`${bar(tick.total ? tick.learned / tick.total : 0, 10)}  ${counts} · #${tick.rank}`),
-    controls([practiseButton], ['/lingo stats', '/lingo lang']),
+    controls([quizButton], ['/lingo stats', '/lingo lang']),
   ]
 }
 
@@ -426,6 +491,14 @@ function isPressable(node: RenderNode): boolean {
   if (!('children' in node) || node.children === undefined) return false
 
   return node.children.some(isPressable)
+}
+
+/** What to say under a score, which depends on what kind of run it was. */
+function asideFor(asked: number, run: QuizRun): string {
+  if (asked === 0) return 'shown, not tested — you will be asked about them shortly.'
+  if (run.correct === asked) return 'every one. The next ones will be harder.'
+
+  return 'wrong ones come back sooner; right ones come back later.'
 }
 
 /** How a card is asked, in words. The CLI's `questionFor`, minus the teach case. */

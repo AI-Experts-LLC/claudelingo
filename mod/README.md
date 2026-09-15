@@ -65,22 +65,58 @@ band's Buttons already has the focus, which is a chord and a hunt.
 
 | Key | |
 |---|---|
+| `1` | start a quiz, when the band is idle |
 | `1`–`4` | answer a multiple-choice card |
 | `1` | acknowledge a new word, or move past a verdict |
 | `5` | skip, without penalty — the word comes back in ten minutes |
 | `6` | ask the model for a memory hook |
 | type + `Enter` | spell a word out, on a card that asks you to |
+| `1` / `5` | at the score: go again, or put it away |
 
 Everything the band cannot say in three rows is on `/lingo`:
 
 | | |
 |---|---|
+| `/lingo quiz [n]` | a quiz, right now — five cards unless you say otherwise |
 | `/lingo` or `/lingo stats` | where you stand |
 | `/lingo lang` | the languages you have; `/lingo lang fr` switches |
 | `/lingo practise` | quiz me now, even though Claude is idle |
 | `/lingo off` / `on` | clear the band without uninstalling |
 | `/lingo pack Portuguese pt` | build a pack for a language it does not ship |
 | `/lingo reset` | erase this language's deck, after asking |
+
+## Two ways a card gets in front of you
+
+**The band decides.** While a turn is running it puts a card up, because that is
+the dead time this exists to fill. When the turn ends the card comes down.
+
+**You decide.** Press `1` on the idle band, or run `/lingo quiz`, and you get a
+bounded run of five cards right where you are — whether or not Claude is doing
+anything:
+
+```
+ ,___,  What does "el" mean?
+ (o.o)  1: the (f. pl.)  2: a (f.)  3: the (m.)  4: the (f.)
+ /)_)   5: skip   6: explain   2/5
+```
+
+It counts down, it carries on across a prompt you send, and it ends with a
+score instead of trailing off:
+
+```
+ ,___,  Quiz done — 4 of 5 right
+ (o.o)  wrong ones come back sooner; right ones come back later.
+ /)_)   1: again   5: done
+```
+
+Cards that introduce a word are shown rather than asked, so they count towards
+the run but never towards the score — five new words is not nought out of five.
+`/lingo quiz 20` asks for more; fifty is the cap, because a run keeps asking
+until it is done and a thousand-card quiz is a band you cannot get rid of.
+
+`/lingo practise` is still there for the endless version, which is what the
+idle button used to do. It was a worse thing to offer: it never said how long
+it would go on for, and it never told you how you did.
 
 ## How it behaves
 

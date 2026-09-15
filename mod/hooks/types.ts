@@ -142,12 +142,34 @@ export interface BandState {
   verdict: Verdict | null
   /** Practise pressed: quiz on regardless of whether a turn is running. */
   practising: boolean
+  /** The quiz you asked for, running or just finished. */
+  quiz: QuizRun | null
   /** A memory hook fetched for the card on screen. */
   hook: string | null
   /** A fetch in flight, so the band draws a wait rather than firing twice. */
   fetchingHook: boolean
   /** What the person has typed into a `recall` card's field. */
   typed: string
+}
+
+/**
+ * A quiz you asked for: a bounded run of cards, right where you are.
+ *
+ * The band already puts a card up while Claude is working, which is the point
+ * of the thing — but that is the band deciding, and it ends when the turn does.
+ * A run is you deciding: it starts on a press, it keeps asking whether or not a
+ * turn is in flight, it counts, and it stops with a score rather than trailing
+ * off. Those are different enough to be separate state.
+ */
+export interface QuizRun {
+  /** Cards this run will put up. */
+  total: number
+  /** Cards dealt with so far, introductions included. */
+  done: number
+  /** Of the ones that could be got wrong, how many were right. */
+  correct: number
+  /** How many were introductions — shown, not asked, so not scored. */
+  taught: number
 }
 
 export interface Verdict {

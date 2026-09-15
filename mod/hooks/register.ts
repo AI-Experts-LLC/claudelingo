@@ -17,6 +17,8 @@ import {
   COMMAND_NAME,
   PACKS_KEY,
   PACK_WORDS,
+  QUIZ_LENGTH,
+  QUIZ_MAX,
   PLUGIN_NAME,
   REDRAW_MS,
   TICK_MS,
@@ -88,7 +90,7 @@ interface Host extends Store {
 const COMMAND: CommandSpec = {
   name: COMMAND_NAME,
   description: 'claudelingo: your standing, your language, and the band above the prompt',
-  argumentHint: '[stats | lang <code> | practise | on | off | pack <Language> <code> | reset]',
+  argumentHint: '[quiz [n] | stats | lang <code> | practise | on | off | pack <Language> <code> | reset]',
   // A turn being in flight is exactly when the band is busiest, and every one
   // of these is about the band rather than about the conversation. Waiting for
   // the turn to end would answer questions about a screen that has moved on.
@@ -150,6 +152,7 @@ export function register(on: On) {
     card: null,
     verdict: null,
     practising: false,
+    quiz: null,
     hook: null,
     fetchingHook: false,
     typed: '',
@@ -282,9 +285,36 @@ export function register(on: On) {
     return true
   }
 
-  /** Whether the band should be asking questions at this moment. */
+  /** A quiz run that still has cards to put up. */
+  const quizRunning = () => state.quiz !== null && state.quiz.done < state.quiz.total
+
+  /** A quiz run that has used all its cards: the score is what is on screen. */
+  const quizFinished = () => state.quiz !== null && state.quiz.done >= state.quiz.total
+
+  /**
+   * Whether the band should be asking questions at this moment.
+   *
+   * A run you started outranks whether a turn happens to be in flight: you
+   * asked, so it asks, and it keeps asking until its cards are used up.
+   */
   const isQuizzing = (isWorking: boolean) =>
-    settings.on && (isWorking || state.practising || settings.alwaysOn)
+    settings.on && (isWorking || state.practising || settings.alwaysOn || quizRunning())
+
+  /** Start a run of `total` cards, replacing whatever is on the band. */
+  function startQuiz(engine: Host, total: number) {
+    state = {
+      ...state,
+      quiz: { total, done: 0, correct: 0, taught: 0 },
+      card: null,
+      verdict: null,
+      hook: null,
+      fetchingHook: false,
+      typed: '',
+    }
+
+    hookToken += 1
+    engine.invalidate()
+  }
 
   /**
    * Put a card up if one is due and there is room for it.
@@ -301,6 +331,11 @@ export function register(on: On) {
    */
   function pump(now: number, isWorking: boolean): void {
     if (!pack || state.card || state.verdict) return
+
+    // A finished run holds the band until its score is put away. Without this a
+    // turn running in the background would deal card six over the top of it.
+    if (quizFinished()) return
+
     if (!isQuizzing(isWorking)) return
 
     const picked = selectNext(pack, progress, settings, now)
@@ -361,7 +396,24 @@ export function register(on: On) {
             word: card.word,
           }
 
-    state = { ...state, verdict }
+    const run = state.quiz
+
+    state = {
+      ...state,
+      verdict,
+      quiz: run
+        ? {
+            ...run,
+            done: run.done + 1,
+            // A `teach` card is shown, not asked, so it counts towards the run
+            // but never towards the score — five new words is not nought out of
+            // five.
+            taught: run.taught + (card.kind === 'teach' ? 1 : 0),
+            correct: run.correct + (card.kind !== 'teach' && correct ? 1 : 0),
+          }
+        : null,
+    }
+
     note('grade', null)
 
     await persist(engine)
@@ -488,6 +540,15 @@ export function register(on: On) {
 
     practise: () => {
       state = { ...state, practising: true }
+      engine.invalidate()
+    },
+
+    quiz: () => startQuiz(engine, QUIZ_LENGTH),
+
+    again: () => startQuiz(engine, state.quiz?.total ?? QUIZ_LENGTH),
+
+    done: () => {
+      state = { ...state, quiz: null, card: null, verdict: null, typed: '' }
       engine.invalidate()
     },
 
@@ -629,6 +690,7 @@ export function register(on: On) {
         streak: progress.streak,
         isWorking: e.props.isWorking,
         practising: state.practising || settings.alwaysOn,
+        quiz: state.quiz,
         choices,
         enrich: settings.enrich,
         now,
@@ -650,7 +712,8 @@ export function register(on: On) {
   on('turn.complete', ($, e, next) => {
     const showing = state.card !== null || state.verdict !== null
 
-    if (host && !state.practising && !settings.alwaysOn && showing) {
+    // A run you asked for outlives the turn: it is bounded, so it ends itself.
+    if (host && !state.practising && !settings.alwaysOn && !state.quiz && showing) {
       // The verdict goes with the card. Leaving it would pin "correct — el =
       // the" across the whole idle stretch, and `pump` refuses a new card while
       // one stands, so the band would be frozen on it until the next prompt.
@@ -670,7 +733,11 @@ export function register(on: On) {
    * would quiz through the next Notification too.
    */
   on('prompt.submit', ($, e, next) => {
-    state = { ...state, practising: false, verdict: null }
+    // Practising is "keep asking while Claude is idle", and Claude is about to
+    // stop being idle, so the ordinary rule takes over. A quiz run is a fixed
+    // number of cards you asked for, so it carries on across the prompt and
+    // finishes where it said it would.
+    state = { ...state, practising: false, verdict: state.quiz ? state.verdict : null }
 
     return next(e)
   })
@@ -692,9 +759,28 @@ export function register(on: On) {
       case 'language':
         return { text: await langText(engine, argument) }
 
+      case 'quiz': {
+        // `Number('')` is 0, and 0 is finite — so a bare `/lingo quiz` asked
+        // for a one-card quiz until this told the two apart.
+        const asked = argument.trim() === '' ? Number.NaN : Number(argument)
+
+        const total = Number.isFinite(asked)
+          ? Math.max(1, Math.min(QUIZ_MAX, Math.floor(asked)))
+          : QUIZ_LENGTH
+
+        if (!pack) return { text: 'No language chosen yet — press a digit in the band.' }
+
+        startQuiz(engine, total)
+
+        return {
+          text:
+            `${total} ${total === 1 ? 'card' : 'cards'}, above your prompt. ` +
+            'Press the digit beside your answer.',
+        }
+      }
+
       case 'practise':
       case 'practice':
-      case 'quiz':
         state = { ...state, practising: true }
         engine.invalidate()
 
@@ -723,8 +809,8 @@ export function register(on: On) {
         return {
           text:
             `Unknown: \`/${COMMAND_NAME} ${verb}\`.\n\n` +
-            `\`/${COMMAND_NAME}\` or \`stats\` · \`lang [code]\` · \`practise\` · ` +
-            `\`on\`/\`off\` · \`pack <Language>\` · \`reset\``,
+            `\`/${COMMAND_NAME} quiz [n]\` · \`stats\` · \`lang [code]\` · \`practise\` · ` +
+            `\`on\`/\`off\` · \`pack <Language> <code>\` · \`reset\``,
         }
     }
   })

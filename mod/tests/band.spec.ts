@@ -76,6 +76,9 @@ function noActions(): BandActions & { pressed: string[] } {
     skip: () => pressed.push('skip'),
     explain: () => pressed.push('explain'),
     practise: () => pressed.push('practise'),
+    quiz: () => pressed.push('quiz'),
+    again: () => pressed.push('again'),
+    done: () => pressed.push('done'),
     chooseLang: (code) => pressed.push(`lang:${code}`),
   }
 }
@@ -97,6 +100,7 @@ function model(over: Partial<BandModel> = {}): BandModel {
     streak: 0,
     isWorking: true,
     practising: false,
+    quiz: null,
     choices: null,
     enrich: true,
     now: 0,
@@ -457,6 +461,113 @@ describe('band height, in cells', () => {
 
       for (const row of bodyRows(tree)) {
         expect(rowCells(row), `${columns} columns`).toBeLessThanOrEqual(body)
+      }
+    }
+  })
+})
+
+/**
+ * A quiz you asked for.
+ *
+ * The band already puts cards up while Claude works, but that is the band
+ * deciding and it stops when the turn does. A run is a bounded thing you
+ * started: it counts, it survives a turn ending, and it finishes with a score
+ * rather than trailing off.
+ */
+describe('a quiz run', () => {
+  const running = (over: Partial<BandModel> = {}) => ({
+    quiz: { total: 5, done: 1, correct: 1, taught: 0 },
+    card: cardAt(1),
+    item: reviewing(1),
+    ...over,
+  })
+
+  it('offers a quiz from the idle band', () => {
+    const { nodes, actions } = draw({})
+    const button = buttons(nodes).find((b) => b.props.key === KEYS.quiz)
+
+    expect(button).toBeDefined()
+    expect(button!.props.hotkey).toBe('1')
+    ;(button!.props.onPress as () => void)()
+
+    expect(actions.pressed).toEqual(['quiz'])
+  })
+
+  it('shows how far through the run you are, on every card kind', () => {
+    for (const card of [teachCard(), cardAt(1), cardAt(5)]) {
+      const { tree } = draw(running({ card, item: reviewing(card.kind === 'recall' ? 5 : 1) }))
+      const controls = bodyRows(tree).at(-1)!
+
+      expect(textOf(controls), card.kind).toContain('2/5')
+    }
+  })
+
+  it('counts the card you are on, not the ones behind you', () => {
+    const first = draw(running({ quiz: { total: 5, done: 0, correct: 0, taught: 0 } }))
+    const last = draw(running({ quiz: { total: 5, done: 4, correct: 3, taught: 0 } }))
+
+    expect(textOf(bodyRows(first.tree).at(-1)!)).toContain('1/5')
+    expect(textOf(bodyRows(last.tree).at(-1)!)).toContain('5/5')
+  })
+
+  /**
+   * The score arrives after the last card's verdict, not instead of it: you
+   * still get told how that one went.
+   */
+  it('waits for the last verdict before showing the score', () => {
+    const finished = { total: 5, done: 5, correct: 4, taught: 0 }
+
+    const withVerdict = draw({
+      quiz: finished,
+      verdict: { correct: true, answer: 'the', word: SPANISH.words[0]! },
+    })
+
+    expect(textOf(bodyRows(withVerdict.tree)[0]!)).toContain('correct')
+
+    const after = draw({ quiz: finished })
+
+    expect(textOf(bodyRows(after.tree)[0]!)).toContain('4 of 5 right')
+  })
+
+  it('scores only what could be got wrong', () => {
+    const allNew = draw({ quiz: { total: 5, done: 5, correct: 0, taught: 5 } })
+
+    // Five words introduced is not nought out of five.
+    expect(textOf(bodyRows(allNew.tree)[0]!)).toContain('5 new words')
+    expect(textOf(bodyRows(allNew.tree)[0]!)).not.toContain('0 of')
+
+    const mixed = draw({ quiz: { total: 5, done: 5, correct: 2, taught: 2 } })
+
+    expect(textOf(bodyRows(mixed.tree)[0]!)).toContain('2 of 3 right')
+    expect(textOf(bodyRows(mixed.tree)[0]!)).toContain('2 new')
+  })
+
+  it('offers another run, or an end to it', () => {
+    const { nodes, actions } = draw({ quiz: { total: 5, done: 5, correct: 5, taught: 0 } })
+    const keys = buttons(nodes).map((b) => b.props.key)
+
+    expect(keys).toEqual([KEYS.again, KEYS.done])
+    ;(buttons(nodes)[0]!.props.onPress as () => void)()
+    ;(buttons(nodes)[1]!.props.onPress as () => void)()
+
+    expect(actions.pressed).toEqual(['again', 'done'])
+  })
+
+  it('is still three rows, and still fits', () => {
+    for (const quiz of [
+      { total: 5, done: 2, correct: 1, taught: 0 },
+      { total: 5, done: 5, correct: 5, taught: 0 },
+      { total: 50, done: 50, correct: 0, taught: 50 },
+    ]) {
+      for (const columns of [BAND_MIN_COLUMNS, 40, OWL_MIN_COLUMNS, 80]) {
+        const { tree } = draw({ quiz, card: quiz.done < quiz.total ? cardAt(1) : null, item: reviewing(1) }, columns)
+        const body = columns >= OWL_MIN_COLUMNS ? columns - MASCOT_WIDTH - GAP : columns
+
+        expect(bodyRows(tree).length).toBeLessThanOrEqual(3)
+
+        for (const row of bodyRows(tree)) {
+          expect(rowCells(row), `${columns} columns`).toBeLessThanOrEqual(body)
+        }
       }
     }
   })

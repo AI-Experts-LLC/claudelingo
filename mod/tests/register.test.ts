@@ -1,7 +1,15 @@
 import type { Args, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
-import { COMMAND_NAME, PLUGIN_NAME, SETTINGS_KEY, answerKey, KEYS, progressKey } from '../hooks/names'
+import {
+  COMMAND_NAME,
+  PLUGIN_NAME,
+  QUIZ_LENGTH,
+  SETTINGS_KEY,
+  answerKey,
+  KEYS,
+  progressKey,
+} from '../hooks/names'
 
 tier('user')
 
@@ -256,6 +264,83 @@ describe('register', () => {
     await $.command.run(running('on'))
 
     expect(keysOf(await $.ui.render(band())).length).toBeGreaterThan(0)
+  })
+
+  /**
+   * The quiz you ask for, driven the way a person drives it: press the button,
+   * answer its cards, and the run ends itself with a score.
+   */
+  test('a quiz you asked for keeps asking while Claude is idle', async ($, on) => {
+    studying(on)
+
+    await $.session.start(SESSION)
+
+    const idle = band({ isWorking: false })
+
+    // Idle: no card, just the offer.
+    expect(keysOf(await $.ui.render(idle))).toEqual([KEYS.quiz])
+
+    await $.ui.press({ plugin: PLUGIN_NAME, key: KEYS.quiz })
+
+    // A card, with Claude still idle — the run outranks `isWorking`.
+    expect(keysOf(await $.ui.render(idle))).toContain(KEYS.next)
+  })
+
+  test('a run ends itself with a score rather than trailing off', async ($, on) => {
+    studying(on)
+
+    await $.session.start(SESSION)
+
+    const idle = band({ isWorking: false })
+
+    await $.ui.render(idle)
+    await $.ui.press({ plugin: PLUGIN_NAME, key: KEYS.quiz })
+
+    // Walk the whole run. A fresh deck introduces words, so every card is a
+    // `teach` acknowledged with `next`; each press deals the following one.
+    for (let card = 0; card < QUIZ_LENGTH; card++) {
+      const keys = keysOf(await $.ui.render(idle))
+
+      expect(keys, `card ${card + 1} of ${QUIZ_LENGTH}`).toContain(KEYS.next)
+
+      await $.ui.press({ plugin: PLUGIN_NAME, key: KEYS.next })
+    }
+
+    // The run is used up: the score, not a sixth card.
+    const done = keysOf(await $.ui.render(idle))
+
+    expect(done).toEqual([KEYS.again, KEYS.done])
+
+    await $.ui.press({ plugin: PLUGIN_NAME, key: KEYS.done })
+
+    expect(keysOf(await $.ui.render(idle))).toEqual([KEYS.quiz])
+  })
+
+  test('/lingo quiz takes a length, defaults, and caps it', async ($, on) => {
+    studying(on)
+
+    await $.session.start(SESSION)
+
+    // `Number('')` is 0 and 0 is finite, so a bare `quiz` asked for one card.
+    const bare = await $.command.run(running('quiz'))
+
+    expect(bare.text).toContain(`${QUIZ_LENGTH} cards`)
+
+    const three = await $.command.run(running('quiz 3'))
+
+    expect(three.text).toContain('3 cards')
+
+    const nonsense = await $.command.run(running('quiz plenty'))
+
+    expect(nonsense.text).toContain(`${QUIZ_LENGTH} cards`)
+
+    const capped = await $.command.run(running('quiz 9999'))
+
+    expect(capped.text).toContain('50 cards')
+
+    const one = await $.command.run(running('quiz 1'))
+
+    expect(one.text, 'one card, not "1 cards"').toContain('1 card,')
   })
 
   test('refuses to build a pack over a language it already ships', async ($, on) => {

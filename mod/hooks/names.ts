@@ -49,6 +49,12 @@ export const KEYS = {
   practise: 'practise',
   /** Where a `recall` card's typing goes. */
   spell: 'spell',
+  /** Starts a quiz run, from the idle band. */
+  quiz: 'quiz',
+  /** Runs the same quiz again, from the score. */
+  again: 'again',
+  /** Puts the score away. */
+  done: 'done',
 } as const
 
 /**
@@ -67,7 +73,20 @@ export const CONTROL_HOTKEYS = {
   skip: '5',
   explain: '6',
   practise: '1',
+  quiz: '1',
+  again: '1',
+  done: '5',
 } as const
+
+/**
+ * Cards in a quiz you asked for, and the most you may ask for.
+ *
+ * Five is about a minute, which is the length of a pause worth filling. The cap
+ * is there because a run keeps asking until it is done: a thousand-card quiz
+ * would be a band you cannot get rid of.
+ */
+export const QUIZ_LENGTH = 5
+export const QUIZ_MAX = 50
 
 /** Words a generated pack asks for. */
 export const PACK_WORDS = 300
