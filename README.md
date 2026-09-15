@@ -226,15 +226,23 @@ for ever.
 
 Open `~/.claude/settings.json` and delete:
 
-- the `"statusLine"` block, if its `command` is `claudelingo statusline`
-- every hook entry whose command starts with `claudelingo` — there are six, under
+- the `"statusLine"` block, if its `command` **ends in** `claudelingo
+  statusline` — a plugin-style install wrote an absolute path there, so it may
+  read `"/long/path/bin/claudelingo" statusline` rather than the bare name
+- every hook entry whose command mentions `claudelingo` — there are six, under
   `SessionStart`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `SessionEnd` and
   `Notification`
 
-Then remove the old program itself — `npm rm -g claudelingo` if you installed it
-that way, and `rm -rf ~/.claudelingo/src` if you used the curl installer. Leave
-`~/.claudelingo/progress-*.json` alone until the import has run; after that they
-are only a backup.
+Then remove the old program itself:
+
+```bash
+npm rm -g claudelingo            # if you installed it from npm
+rm -rf ~/.claudelingo/src        # if you used the curl installer
+rm -f ~/.local/bin/claudelingo   # the symlink that installer left on your PATH
+```
+
+Leave `~/.claudelingo/progress-*.json` alone until the import has run; after
+that they are only a backup.
 
 If you would rather keep the old one for now, that is fine — but run
 `/lingo stats` after your first mod session and check the numbers match what the
@@ -258,9 +266,10 @@ Two test suites, deliberately different suffixes:
 
 - **`tests/*.spec.ts`** run under vitest today. They cover the scheduler, the
   width tables, the pack generator, the deck's behaviour when the store
-  misbehaves, the migration, and the band's tree — that options are Buttons,
-  that they carry the digits, that pressing one reaches the action, and that the
-  height holds in every branch at every width.
+  misbehaves, the migration, the 933 shipped words and the owl's fixed size, and
+  the band's tree — that options are Buttons, that they carry the digits, that
+  pressing one reaches the action, and that the height holds in every branch at
+  every width.
 - **`tests/*.test.ts`** are written against `claude-code/testing` and run with
   `npm run test:kit` (`claude plugin test .`). They drive the band the way a
   person does: `$.ui.press` presses a Button the band actually rendered, through

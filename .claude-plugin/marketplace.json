@@ -10,5 +10,6 @@
       "source": "./",
       "description": "Learn a language in the dead time while Claude is working. A spaced-repetition quiz in the band above your prompt, answered with a digit."
     }
-  ]
+  ],
+  "description": "claudelingo: a vocabulary quiz in the band above your Claude Code prompt."
 }

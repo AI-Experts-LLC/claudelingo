@@ -46,8 +46,6 @@ describe('the packs that ship', () => {
     const terms = new Set<string>()
 
     for (const word of pack.words) {
-      expect(word.term.trim()).toBe(word.term)
-      expect(word.gloss.trim()).toBe(word.gloss)
       expect(word.term.length).toBeGreaterThan(0)
       expect(word.gloss.length).toBeGreaterThan(0)
       expect(VALID_POS.has(word.pos), `${pack.code}: "${word.term}" has pos "${word.pos}"`).toBe(true)
@@ -93,6 +91,23 @@ describe('the packs that ship', () => {
 
       expect(card.kind).toBe('recall')
       expect(isCorrect(card, { text: word.term }), `${pack.code}:${word.term}`).toBe(true)
+    }
+  })
+
+  /**
+   * Checked on the raw rows, not the materialised words.
+   *
+   * `materialize` trims, so asserting `word.gloss.trim() === word.gloss` after
+   * it has run is an assertion that cannot fail — it was one in the CLI's suite
+   * too. The untidiness this is meant to catch lives in the source rows.
+   */
+  it.each(BUNDLED)('$englishName is written without stray whitespace', (raw) => {
+    for (const [term, gloss, pos, note] of raw.words) {
+      expect(term, `"${term}"`).toBe(term.trim())
+      expect(gloss, `"${gloss}"`).toBe(gloss.trim())
+      expect(pos, `"${pos}"`).toBe(pos.trim())
+
+      if (note !== undefined) expect(note, `"${note}"`).toBe(note.trim())
     }
   })
 
@@ -144,6 +159,12 @@ describe('the owl', () => {
 
       for (const line of face) {
         expect(stringWidth(line), `${mood} at tick ${tick}: "${line}"`).toBe(MASCOT_WIDTH)
+
+        // `mascot.ts` promises pure ASCII, because the band has to survive a
+        // terminal with no unicode. Width alone does not catch a BMP symbol:
+        // `MASCOT_WIDTH` is derived from the owls themselves, so a one-column
+        // `♥` keeps every dimension assertion green.
+        expect(line, `${mood} at tick ${tick}: "${line}" is not ASCII`).toMatch(/^[\x20-\x7e]*$/)
       }
     }
   })

@@ -25,7 +25,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "validate": "claude plugin validate .",
+    "validate": "claude plugin validate .claude-plugin/plugin.json && claude plugin validate .",
     "test:kit": "claude plugin test .",
     "check": "npm run typecheck && npm run validate && npm run test"
   },

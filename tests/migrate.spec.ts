@@ -44,7 +44,12 @@ function fakeFiles(
   fail: { list?: boolean; read?: string[] } = {},
 ): Files {
   return {
-    exists: async (path) => files !== null && path === '/home/.claudelingo',
+    exists: async (path) => {
+      if (files === null) return false
+      if (path === '/home/.claudelingo') return true
+
+      return Object.keys(files).includes(path.split('/').pop() as string)
+    },
     list: async () => {
       if (fail.list) throw new Error('directory unreadable')
 
@@ -173,6 +178,44 @@ describe('migrating the old CLI deck', () => {
 
     expect(result.imported).toEqual([])
     expect(store.entries[progressKey('es')]).toBeUndefined()
+  })
+
+  /**
+   * A settings file that would not open is not one that named no language.
+   * Conflating them writes the marker and loses the answer for good.
+   */
+  it('comes back for settings it could not read', async () => {
+    const store = fakeStore()
+
+    const result = await migrate(
+      store,
+      fakeFiles(
+        { 'progress-es.json': deck('es'), 'settings.json': '{"lang":"fr"}' },
+        { read: ['settings.json'] },
+      ),
+      '/home',
+    )
+
+    expect(result.imported).toEqual(['es'])
+    expect(result.lang).toBeNull()
+    expect(result.trouble?.text).toContain('settings.json')
+    expect(store.entries[MIGRATED_KEY]).toBeUndefined()
+  })
+
+  /**
+   * A marker that will not write means this runs again next session. Repeating
+   * "kept the es deck already here" every session from then on is noise.
+   */
+  it('stays quiet when it moved nothing and could not record that it finished', async () => {
+    const store = fakeStore(
+      { [progressKey('es')]: emptyProgress('es') },
+      { set: [MIGRATED_KEY] },
+    )
+
+    const result = await migrate(store, fakeFiles({ 'progress-es.json': deck('es') }), '/home')
+
+    expect(result.imported).toEqual([])
+    expect(migrationNotice(result)).toBeNull()
   })
 
   it('ignores settings that name no language', async () => {

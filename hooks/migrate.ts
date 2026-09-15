@@ -151,7 +151,11 @@ export async function migrate(
       }
     }
 
-    result.lang = await readLang(files, `${dir}/settings.json`)
+    const settings = await readLang(files, `${dir}/settings.json`)
+
+    result.lang = settings.lang
+
+    if (settings.reason !== undefined) unresolved.push(settings.reason)
   } catch (error) {
     // Say so and try again next session: recording success here would mean
     // never looking at those files again.
@@ -179,16 +183,31 @@ export async function migrate(
     }
   }
 
-  await mark(store)
+  // A marker that would not write means this runs again next session; saying
+  // "kept the es deck already here" every session from now on is noise, not
+  // news, so an unmarked run that moved nothing says nothing at all.
+  const marked = await mark(store)
+
+  if (!marked && result.imported.length === 0) return { ...result, skipped: [] }
 
   return result
 }
 
-async function mark(store: Store): Promise<void> {
+/**
+ * Record that the import is finished, and say whether that stuck.
+ *
+ * A marker that cannot be written is not a correctness problem — the next
+ * session finds every deck already present and imports nothing — but it does
+ * mean the notice would be repeated for ever. The caller uses this to stay
+ * quiet about decks it did not actually move.
+ */
+async function mark(store: Store): Promise<boolean> {
   try {
     await store.set(MIGRATED_KEY, new Date().toISOString())
+
+    return true
   } catch {
-    // Worst case it looks again next session and finds everything already here.
+    return false
   }
 }
 
@@ -233,18 +252,40 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** The language the old install was on, so this one opens where you left off. */
-async function readLang(files: Files, path: string): Promise<string | null> {
-  try {
-    const parsed: unknown = JSON.parse(await files.read(path))
+/**
+ * The language the old install was on, so this one opens where you left off.
+ *
+ * Told apart the same way the decks are: a settings file that would not open is
+ * not a settings file that named nothing. The difference is small here — the
+ * decks are imported either way and the picker asks once — but conflating them
+ * would write the marker and lose the answer for good, which is the failure
+ * this module exists to avoid.
+ */
+async function readLang(
+  files: Files,
+  path: string,
+): Promise<{ lang: string | null; reason?: string }> {
+  // Absent is a perfectly ordinary answer: it means no language was ever set.
+  if (!(await files.exists(path))) return { lang: null }
 
-    if (typeof parsed !== 'object' || parsed === null) return null
+  let text: string
+
+  try {
+    text = await files.read(path)
+  } catch (error) {
+    return { lang: null, reason: `settings.json could not be read: ${messageOf(error)}` }
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(text)
+
+    if (typeof parsed !== 'object' || parsed === null) return { lang: null }
 
     const lang = (parsed as Partial<Settings>).lang
 
-    return typeof lang === 'string' && lang.length > 0 ? lang : null
+    return { lang: typeof lang === 'string' && lang.length > 0 ? lang : null }
   } catch {
-    return null
+    return { lang: null }
   }
 }
 
