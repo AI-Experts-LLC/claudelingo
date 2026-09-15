@@ -542,6 +542,24 @@ describe('a quiz run', () => {
     expect(textOf(bodyRows(mixed.tree)[0]!)).toContain('2 new')
   })
 
+  /**
+   * The line under the score has to match the run it describes.
+   *
+   * A run of nothing but introductions cannot have got anything wrong, so
+   * telling someone "wrong ones come back sooner" is advice about a thing that
+   * did not happen. The score row alone does not catch this — it was wrong for
+   * a whole round while the score above it read correctly.
+   */
+  it.each([
+    ['all new words', { total: 5, done: 5, correct: 0, taught: 5 }, 'shown, not tested'],
+    ['a perfect run', { total: 5, done: 5, correct: 5, taught: 0 }, 'every one'],
+    ['a mixed run', { total: 5, done: 5, correct: 3, taught: 0 }, 'come back sooner'],
+  ])('says something true under the score: %s', (_name, quiz, expected) => {
+    const { tree } = draw({ quiz })
+
+    expect(textOf(bodyRows(tree)[1]!)).toContain(expected)
+  })
+
   it('offers another run, or an end to it', () => {
     const { nodes, actions } = draw({ quiz: { total: 5, done: 5, correct: 5, taught: 0 } })
     const keys = buttons(nodes).map((b) => b.props.key)

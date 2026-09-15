@@ -238,7 +238,7 @@ Then remove the old program itself:
 ```bash
 npm rm -g claudelingo            # if you installed it from npm
 rm -rf ~/.claudelingo/src        # if you used the curl installer
-rm -f ~/.local/bin/claudelingo   # the symlink that installer left on your PATH
+rm -f "$(command -v claudelingo)" # the symlink that installer left on your PATH
 ```
 
 Leave `~/.claudelingo/progress-*.json` alone until the import has run; after
@@ -258,7 +258,7 @@ plugin and there is no equivalent hook, so that went with the CLI.
 npm install
 npm run check      # typecheck + validate + tests
 npm run typecheck  # tsc against types/claude-code.d.ts
-npm run validate   # claude plugin validate .
+npm run validate   # the plugin + its hooks module, then the marketplace
 npm test           # vitest
 ```
 

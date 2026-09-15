@@ -206,6 +206,35 @@ describe('migrating the old CLI deck', () => {
    * A marker that will not write means this runs again next session. Repeating
    * "kept the es deck already here" every session from then on is noise.
    */
+  /**
+    * The quiet rule is narrow on purpose: silence is for a run that moved
+    * nothing. A genuine import must still be announced even if the marker
+    * would not write, or someone's deck moves and nobody says so.
+    */
+  it('still announces a real import even when the marker would not write', async () => {
+    const store = fakeStore(
+      { [progressKey('fr')]: emptyProgress('fr') },
+      { set: [MIGRATED_KEY] },
+    )
+
+    const result = await migrate(
+      store,
+      fakeFiles({ 'progress-es.json': deck('es'), 'progress-fr.json': deck('fr') }),
+      '/home',
+    )
+
+    // One moved and one was left alone. The quiet rule is for a run that moved
+    // nothing, so widening it to every unmarked run would drop the second half
+    // of a notice that still has something to say.
+    expect(result.imported).toEqual(['es'])
+    expect(result.skipped).toEqual(['fr'])
+
+    const notice = migrationNotice(result)
+
+    expect(notice).toContain('es')
+    expect(notice).toContain('kept the fr deck')
+  })
+
   it('stays quiet when it moved nothing and could not record that it finished', async () => {
     const store = fakeStore(
       { [progressKey('es')]: emptyProgress('es') },
@@ -292,6 +321,20 @@ describe('migrating the old CLI deck', () => {
      * Contents that are not a deck are final, not transient: they will never
      * become one, so they are not a reason to keep looking for ever.
      */
+    /**
+     * A store that will not answer is no place to start writing decks into,
+     * and the marker check is the first thing that touches it.
+     */
+    it('does nothing at all when the store will not answer', async () => {
+      const store = fakeStore({}, { get: [MIGRATED_KEY] })
+
+      const result = await migrate(store, fakeFiles({ 'progress-es.json': deck('es') }), '/home')
+
+      expect(result.imported).toEqual([])
+      expect(store.entries[progressKey('es')]).toBeUndefined()
+      expect(store.entries[MIGRATED_KEY]).toBeUndefined()
+    })
+
     it('still finishes when a file is merely not a deck', async () => {
       const store = fakeStore()
 

@@ -278,11 +278,7 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
         bold: true,
         color: asked === 0 || run.correct === asked ? 'success' : undefined,
       }),
-      dim(
-        asked > 0 && run.correct === asked
-          ? 'every one. The next ones will be harder.'
-          : 'wrong ones come back sooner; right ones come back later.',
-      ),
+      dim(asideFor(asked, run)),
       controls([
         {
           key: KEYS.again,
