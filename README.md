@@ -1,249 +1,10 @@
 # claudelingo
 
-Learn a language in the dead time while Claude Code or Codex is working.
+Learn a language in the dead time while Claude is working.
 
-`claudelingo` is a small terminal pane you keep beside your agent. When Claude starts
-thinking, it teaches you a word. When Claude needs you back, it gets out of the way.
-
-```
-┌─ claudelingo · Spanish   ● agent working ──────────────┐
-│  meaning · box 1/5                                     │
-│                                                        │
-│  what does «tiempo» mean?                              │
-│                                                        │
-│  1) time          2) weather                           │
-│  3) house         4) always                            │
-│                                                        │
-│  ████░░░░░░░░░░░░░░░░░░░░                              │
-│  streak 7 · learned 42/312 · due 11 · mastered 3       │
-└─ 1-4 answer / s skip / q quit ─────────────────────────┘
-```
-
-Spanish, French and Italian ship in the box — roughly the 310 most common words in
-each, which is most of what you actually hear in a day. Any other language can be
-generated on demand.
-
-## Install
-
-Inside Claude Code:
-
-```
-/plugin install AI-Experts-LLC/claudelingo
-```
-
-That is the whole install. The plugin brings its own hooks and its `/lingo`
-skill, and Claude Code puts its `bin/` on the PATH the hooks run with, so there is
-nothing to build and nothing to edit.
-
-One line goes in `~/.claude/settings.json` if you want the panel under your
-prompt, because Claude Code takes a status line only from the main config, never
-from a plugin. Ask Claude for it — **"set up the claudelingo panel"** — or run it
-yourself. A plugin's `bin/` is on the PATH its *hooks* get, not your shell's, so
-the command needs its full path:
-
-```bash
-cd "$HOME"/.claude/plugins/*/claudelingo && bin/claudelingo init --statusline-only
-```
-
-That writes the plugin's own absolute path into the setting, since the status
-line does not run with the plugin PATH either. It exits non-zero if it could not
-install — a status line is the only thing this mode installs, so nothing else
-succeeding would be no comfort.
-
-Prefer not to use plugins? The standalone installer still works:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/AI-Experts-LLC/claudelingo/main/install.sh | sh
-```
-
-**No API key, ever.** Everything that needs a model — memory hooks, generating a
-pack for a new language — runs through the `claude` command you already have, on
-the Claude Code login and quota you are already using. claudelingo ships with no
-API SDK and no credential handling of any kind.
-
-Requirements: Node 20.11+. tmux is optional and only used to place the pane beside
-you.
-
-## Nothing to learn
-
-The first time it opens, it introduces itself and asks what you want to learn:
-
-```
-┌─ claudelingo ─────────────────────────────────┐
-│   ,___,  Which language?                      │
-│   (o.-)                                       │
-│   /)_)   Press its number.                     │
-│                                               │
-│  · [1] Spanish     312 words                  │
-│    [2] French      311 words                  │
-│    [3] Italian     310 words                  │
-└─ 1-9 choose a language ───────────────────────┘
-```
-
-Three screens, one key each, and then you are learning. It never asks again.
-
-After that there is nothing to memorise: **the keys that work are always along the
-bottom of the pane**, and they change with what is on screen. `?` lists all of
-them. `l` changes language from anywhere — pick a number and it switches on the
-spot, deck and all.
-
-## What you get, without doing anything else
-
-One command:
-
-```bash
-claudelingo start
-```
-
-Claude Code opens with the pane already beside it. Or just run `claude` as usual —
-the pane opens itself, because `init` wires that up.
-
-Then, when Claude starts working on something, the pane asks rather than assuming:
-
-```
-┌─ claudelingo · Spanish   ● agent working ──────────┐
-│                                                    │
-│   ,___,  Claude is working.                        │
-│   (o.-)  Want a quiz?                              │
-│   /)_)   3 cards ready                             │
-│                                                    │
-│  y  yes, go on                                     │
-│  n  not now                                        │
-│                                                    │
-└─ y yes / n not now / q quit ───────────────────────┘
-```
-
-Say yes once and it stops asking for the rest of that pane's life. Say no and it
-asks again next time Claude picks something up. A pane you opened yourself never
-asks — running it was the answer.
-
-The owl reacts as you go: asleep while Claude is idle, watching while a card is
-up, pleased when you get one right, and a bit startled when you do not. It steps
-aside entirely on a pane too narrow to hold it.
-
-## A quiz in the chat
-
-If you are not in tmux — or you just want a couple of cards where you are:
-
-```
-/lingo
-```
-
-Every control lives on that one command, and the panel's bottom row tells you
-which to type: `/lingo 2` to answer, `/lingo skip`, `/lingo stats`,
-`/lingo lang fr`.
-
-Claude asks a card using its own multiple-choice UI, you click an answer, and the
-schedule updates. It never sees which answer is right: `claudelingo next` withholds
-it and `claudelingo answer` does the grading, so the answer cannot leak into the
-transcript before you have replied and the deck stays the single source of truth.
-
-It stands aside if a pane is already open — two graders writing one deck is how
-progress gets lost.
-
-## Three surfaces
-
-Claude Code draws its own terminal UI and does not host third-party widgets, so
-there is no way to put an interactive box inside it. What it *does* give you is a
-status line that renders one row per line your command prints — so the whole
-widget fits under your prompt, even though it can never take a keypress.
-
-That ceiling is what the three surfaces below are shaped around. It is also
-lifted, where [function hooks](mod/README.md) are enabled — see **The mod**.
-
-**The panel** lives *inside* Claude Code, under your chat bar:
-
-```
- ,___,  What does "tiempo" mean?
- (o.o)  1 time   2 weather   3 house   4 always
- /)_)   /lingo 1-4 answer   /lingo skip
-```
-
-With nothing outstanding it tickers: every eight seconds a word appears alone,
-you get four seconds to reach for it, then the meaning arrives.
-
-```
- ,___,  «primero» = ?
- (o.o)  ░░░░░░░░░░ 0/312 · #60
- /)_)   /lingo quiz   /lingo stats   /lingo lang
-```
-
-```
- ,___,  «primero» = first
- (^.^)  ░░░░░░░░░░ 0/312 · #60
- /)_)   /lingo quiz   /lingo stats   /lingo lang
-```
-
-It walks the language's most common words in order — `#60` is where that word
-sits in the list — and it never ends: mastering the deck does not empty it,
-because this is exposure rather than a queue. Nothing here is graded, and nothing
-is written. The quiz lives where answers can actually be taken: the pane, and
-`/lingo quiz` in the chat.
-
-It is always exactly three rows, so the conversation above it never jumps; it
-drops the owl below 46 columns and falls back to a single line below 30. Because it
-cannot take input, **the bottom row is always the controls** — it names the exact
-command to type, and the chat bar is directly above it:
-
-| Type | What happens |
-|---|---|
-| `/lingo` | A card, asked with buttons you click |
-| `/lingo 2` | Answers the outstanding card with option 2 |
-| `/lingo ok` | Acknowledges a new word |
-| `/lingo skip` | Drops it, and delays it ten minutes |
-| `/lingo stats` | Where you are |
-| `/lingo lang fr` | Switches language for good |
-| `/lingo off` | One line instead of the panel (`/lingo on` brings it back) |
-
-Prefer the single line? `claudelingo panel off`, or `--compact`. It is strictly
-read-only either way — a running pane owns the deck, and a status line that wrote
-to it would fight that pane's lock.
-
-In the pane, `t` shows where you stand and `w` lists every word you have met:
-
-```
-┌─ claudelingo · Spanish ─────────────────────┐
-│   ,___,  getting by                         │
-│   (o.o)  38 more for "holding a conversation"│
-│  ██████████████░░░░░░░░░                    │
-│  words met      112 of 1000                 │
-│  mastered       27                          │
-│  accuracy       84%                         │
-└─ any key to close ──────────────────────────┘
-```
-
-```
-┌─ claudelingo · Spanish ─────────────────────┐
-│  words you have met  112                    │
-│  #1   el      the (m.)        5/5  96%      │
-│  #2   los     the (m. pl.)    4/5  88%      │
-│  #3   de      of, from        3/5  71%      │
-│  1–8 of 112                                 │
-└─ ↑↓ scroll · any key to close ──────────────┘
-```
-
-The list is in frequency order, so the words you are weakest on and the words
-that matter most are on the same screen.
-
-**The pane** is a full interactive box that takes keypresses directly — one key
-per answer, no slash commands. That needs a real terminal of its own, so it opens
-beside you in tmux.
-
-Use any of them, or all three. The panel teaches and takes commands while you
-work, `/lingo` gives you buttons to click, and the pane is the fastest way to get
-through a lot of cards.
-
-`init` installs the panel and the `/lingo` skill together (skip the panel with
-`--no-statusline`). The panel refreshes on a timer, because Claude Code's own
-updates go quiet exactly while it is thinking — which is when it is supposed to be
-teaching.
-
-## The mod
-
-Everything above is shaped by one fact: a status line can draw but cannot
-listen. [Function hooks](https://github.com/anthropics/claude-code/tree/main/mods)
-remove that, and `mod/` is claudelingo rebuilt on them — the quiz itself, in the
-band above your prompt, answered with a digit:
+claudelingo is a Claude Code **mod**: a quiz in the band above your prompt,
+answered with a digit. When Claude starts thinking, it teaches you a word. When
+Claude needs you back, it gets out of the way.
 
 ```
  ,___,  What does "tiempo" mean?
@@ -251,264 +12,255 @@ band above your prompt, answered with a digit:
  /)_)   5: skip   6: explain   box 1/5
 ```
 
-No slash command to answer with, no tmux pane, and nothing in the transcript.
+Press `1`. That is the whole interaction.
+
+Spanish, French and Italian ship in the box — roughly the 310 most common words
+in each, which is most of what you actually hear in a day. Any other language
+can be generated on demand.
+
+## Install
+
+Function hooks are early access, so the mod loads only where they are enabled:
 
 ```bash
-CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir mod
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir /path/to/claudelingo
 ```
 
-It is a fourth surface rather than a replacement. The mod needs a Claude Code
-with function hooks turned on; the CLI works in Codex, in a plain terminal, and
-in the version of Claude Code you already have. They share the scheduler, the
-word packs and the pack generator rather than reimplementing them —
-`mod/README.md` has the whole story, including what the mod deletes: the status
-file and five hook events that reconstruct "is the agent working?", the deck
-lock, the atomic writes, and the `claude -p` subprocess.
+Or install it as a plugin and set the variable however you normally would:
 
-## How it decides when to quiz you
+```
+/plugin install AI-Experts-LLC/claudelingo
+```
 
-The pane only asks questions while your agent is actually working. It learns that
-from the integrations `init` sets up:
+Without that variable the hooks module is ignored entirely and nothing appears —
+that is the flag doing its job, not a broken install.
 
-| Signal | Source | Pane |
-|---|---|---|
-| `UserPromptSubmit` | Claude Code hook | starts quizzing |
-| `Stop`, `SubagentStop`, `SessionEnd` | Claude Code hook | stands down |
-| `Notification` | Claude Code hook | stands down |
-| a user turn appearing in the rollout transcript | Codex | starts quizzing |
-| `agent-turn-complete` | Codex `notify` | stands down |
+The first band you see asks which language, with a digit per answer. It never
+asks again.
 
-`Notification` is deliberately on the stand-down side: Claude fires it when it wants
-a permission decision, and that is exactly when you should be looking at Claude
-rather than at a vocabulary card.
+**No API key, ever.** Memory hooks and generated packs run through
+`$.model.complete`, on the Claude Code login and quota you already have.
 
-Codex has no "turn started" hook, so claudelingo tails the newest rollout transcript
-under `~/.codex/sessions` for that edge. The scan is cached on directory mtimes, so a
-long Codex history costs nothing to sit next to — idle cost is flat rather than
-growing with the number of transcripts you have accumulated. Transcripts that already exist when the pane
-opens are skipped to their end, so yesterday's session can never set it off; a
-transcript that *appears* afterwards is a live session and is read from its first
-line, because Codex writes the session header and your first message together. Each
-transcript keeps its own read position, so two sessions alternating never replay
-turns you have already seen.
+## Two ways a card gets in front of you
 
-If a session is killed mid-turn its `Stop` hook never fires. A `busy` older than
-fifteen minutes is treated as idle, so the pane can't get stuck quizzing forever.
+**The band decides.** While a turn is running it puts a card up, because that is
+the dead time this exists to fill. When the turn ends the card comes down.
 
-Press `p` at any time to practise regardless of what your agent is doing.
+**You decide.** Press `1` on the idle band, or run `/lingo quiz`, and you get a
+bounded run of five cards right where you are — whether or not Claude is doing
+anything:
+
+```
+ ,___,  What does "el" mean?
+ (o.o)  1: the (f. pl.)  2: a (f.)  3: the (m.)  4: the (f.)
+ /)_)   5: skip   6: explain   2/5
+```
+
+It counts down, carries on across a prompt you send, and ends with a score
+instead of trailing off:
+
+```
+ ,___,  Quiz done — 4 of 5 right
+ (o.o)  wrong ones come back sooner; right ones come back later.
+ /)_)   1: again   5: done
+```
+
+Cards that introduce a word are shown rather than asked, so they count towards
+the run but never towards the score — five new words is not nought out of five.
+`/lingo quiz 20` asks for more; fifty is the cap, because a run keeps asking
+until it is done.
+
+## The keys
+
+Every hotkey is a digit, and that is a constraint rather than a taste. In the
+band a bare digit presses from an empty composer with nothing focused — which is
+what makes an answer cost one keystroke. A letter presses only once one of the
+band's Buttons already has the focus, which is a chord and a hunt.
+
+| Key | |
+|---|---|
+| `1` | start a quiz, when the band is idle |
+| `1`–`4` | answer a multiple-choice card |
+| `1` | acknowledge a new word, or move past a verdict |
+| `5` | skip, without penalty — the word comes back in ten minutes |
+| `6` | ask the model for a memory hook |
+| type + `Enter` | spell a word out, on a card that asks you to |
+| `1` / `5` | at the score: go again, or put it away |
+
+Everything the band cannot say in three rows is on `/lingo`:
+
+| | |
+|---|---|
+| `/lingo quiz [n]` | a quiz, right now — five cards unless you say otherwise |
+| `/lingo` or `/lingo stats` | where you stand |
+| `/lingo lang` | the languages you have; `/lingo lang fr` switches |
+| `/lingo practise` | keep asking while Claude is idle, without a fixed length |
+| `/lingo off` / `on` | clear the band without uninstalling |
+| `/lingo pack Portuguese pt` | build a pack for a language it does not ship |
+| `/lingo reset` | erase this language's deck, after asking |
 
 ## How it teaches
 
 Every word walks the same ramp, and only moves up when you get it right:
 
-1. **New word** — shown, not asked. Term, gloss, gender, and where it sits in the
-   frequency list.
+1. **New word** — shown, not asked. Term, gloss, gender, and where it sits in
+   the frequency list.
 2. **Meaning** (boxes 1–2) — the word, four English glosses.
 3. **Translate** (boxes 3–4) — the English, four words in the target language.
-4. **Spell it** (box 5) — the English, and you type the word. Accents and case are
-   forgiven; the spelling is not.
+4. **Fill the gap** (box 4, where the word has a sentence) — the word in
+   context, which is most of what "knowing" it means.
+5. **Spell it** (box 5) — the English, and you type the word. Accents and case
+   are forgiven; the spelling is not.
 
-Scheduling is Leitner-style with two tiers: short steps of 1 minute, 10 minutes and
-an hour while a word is still `learning`, then 1, 3, 7, 16 and 35 days once it
-graduates to `review`. A wrong answer drops the word one box and sends it back
-through the short steps — it never wipes your history.
+Scheduling is Leitner-style with two tiers: short steps of 1 minute, 10 minutes
+and an hour while a word is still `learning`, then 1, 3, 7, 16 and 35 days once
+it graduates to `review`. A wrong answer drops the word one box and sends it
+back through the short steps — it never wipes your history.
 
 At most 8 words are in flight at once and at most 20 new ones per day, so a long
 afternoon of agent-watching builds a real deck instead of a flood you forget.
-Skipping (`s`) costs nothing: it defers the word for ten minutes without touching the
-box, and works on a word you have not been taught yet. While you are typing an answer,
-`Esc` clears it and a second `Esc` skips the card.
 
-## Memory hooks
+## How it behaves
 
-Press `e` on any card to ask Claude for a memory hook — a cognate, an etymology, or
-a vivid image — plus a one-line example sentence. Answers are cached on disk, so a
-word is only ever paid for once.
+**It teaches while Claude thinks and stands down when Claude needs you.** A card
+goes up only while a turn is running. When the turn completes the card comes
+down, because it was put up for the dead time and the dead time is over. A quiz
+you asked for is the exception: it is bounded, so it finishes where it said it
+would.
 
-This runs through the `claude` command in print mode, on the Claude Code login you
-already have. There is no API key to set up and no second bill. If `claude` is not
-on your PATH the pane says so once, on startup, and does not offer `e` at all;
-everything else still works. `--no-enrich` turns it off entirely.
+**It is always exactly three rows.** Two reasons, and the second is the sharp
+one. Three rows means the conversation above never jumps as a card comes and
+goes. And a band taller than the rows it is given scrolls in a window — at which
+point, in the engine's words, "a bare digit arms none of its Buttons' hotkeys".
+A fourth row would not look wrong. It would silently turn every answer key off.
 
-## Other languages
+Which makes *how* the height is measured the whole game. Counting the rows you
+wrote is not enough: `Text` wraps, so three parts that each fit the body width
+can still exceed it together, and then one row is two on screen while the tree
+still looks like three. An early version did exactly that and overflowed at
+ordinary terminal widths. So every composite row is budgeted as a row by
+`hooks/views/row.ts`, and the tests measure rendered cells — every state, at a
+dozen widths, including a pack with 200-character glosses and one written in
+double-width CJK.
 
-```bash
-claudelingo pack generate --lang Portuguese --code pt --count 300
-claudelingo --lang pt
-```
+**Nothing reaches the model that you did not press for.** The band is drawn by a
+render hook and graded in the plugin's own environment. No card, no answer and
+no verdict is ever written to the transcript, so a session's context costs the
+same whether you are learning Spanish or not.
 
-The code matters. It names both the pack and the progress file, so claudelingo
-refuses a code that a bundled pack already uses (`--lang Estonian` would otherwise
-default to `es` and quietly leave you studying Spanish), and refuses to replace an
-existing generated pack unless you pass `--overwrite` — progress is keyed by
-position, so replacing a pack in place re-attaches box levels earned on one language
-to whatever word now sits at each rank.
-
-The pack is generated through your Claude Code session, validated, and written to
-`~/.claudelingo/packs/pt.json`. Packs are plain JSON and hand-editable:
-
-```json
-{
-  "code": "pt",
-  "name": "Português",
-  "englishName": "Portuguese",
-  "words": [
-    ["de", "of, from", "prep"],
-    ["casa", "house", "noun", "feminine"]
-  ]
-}
-```
-
-Entries are `[term, gloss, pos, note?]`, ordered most frequent first. Control
-characters are stripped on load, because a newline in a gloss would turn the status
-line into two lines inside Claude Code's UI and a raw escape would restyle
-everything after it. One further rule the loader enforces: no duplicate terms. Where two words
-genuinely collide, put the distinction in the gloss itself (`"to be (permanent)"` vs `"to be (state, place)"`).
-
-## Commands
-
-```
-claudelingo start [args]         start Claude Code with the pane beside it
-claudelingo                      open the companion pane on its own
-claudelingo init [--project]     install the Claude Code + Codex integrations
-claudelingo uninit [--project]   remove them again
-claudelingo hook <event>         report agent state (called by the hooks)
-claudelingo notify [json]        Codex notify target
-claudelingo status               show the current agent state
-claudelingo statusline           the panel Claude Code draws (it calls this)
-claudelingo next --json          hand out one card, for the /lingo skill
-claudelingo answer --choice N    grade the card next handed out
-claudelingo skip                 drop the outstanding card, delay it 10 minutes
-claudelingo lang [code]          show or change the language you are studying
-claudelingo panel [on|off]       the full panel under the prompt, or one line
-claudelingo stats                show your progress
-claudelingo langs                list installed word packs
-claudelingo pack generate        build a pack for another language
-claudelingo reset --yes          erase progress for the current language
-```
-
-Options: `--lang <code>`, `--always-on`, `--ask` / no `--ask`, `--no-enrich`,
-`--no-color`, `--width <n>` (below 20 is ignored with a warning; above 1000 is
-clamped),
-`--model <id>`, `--compact`. For `init`: `--no-statusline`, `--statusline-only`,
-`--no-auto-pane` / `--auto-pane`. For `pack generate`: `--code <xx>`,
-`--overwrite`. For `hook`: `--source <name>`.
-
-Flags come *before* `start`: everything after it is passed on to Claude Code.
-`claudelingo --lang fr start`, not `claudelingo start --lang fr` — the second is
-refused rather than silently studying the wrong language.
-
-`init` exits non-zero if either integration fails to install, so a pane that will
-never wake up is not reported as a success.
-
-## Keys
-
-| Key | |
-|---|---|
-| `1`–`4` | answer a multiple-choice card |
-| type + `Enter` | spell a word out |
-| `space` | continue to the next card |
-| `s` | skip, without penalty |
-| `e` | ask Claude for a memory hook |
-| `p` | practise even when the agent is idle |
-| `Esc` | clear a typed answer; again to skip the card |
-| `q` / `Ctrl-C` | quit |
-| `?` | help |
-
-While you are typing an answer, letters go into the input — `q` does not quit
-mid-word.
+**The owl still blinks.** Asleep while Claude is idle, watching while a card is
+up, pleased when you get one right, a bit startled when you do not, and it steps
+aside on a band too narrow to hold it.
 
 ## Where things live
 
-Everything sits under `~/.claudelingo` (override with `CLAUDELINGO_HOME`):
+`$.store`, which the engine owns — one JSON file per plugin under your Claude
+Code configuration directory, at the user level rather than per project, so your
+deck follows you between repos:
 
 ```
-settings.json        your language and preferences
-status.json          the current agent state, written by the hooks
-progress-<lang>.json your deck
-progress-<lang>.lock held by the running pane, so a second one cannot clobber it
-pending-<lang>.json  the question /lingo has asked and not yet graded
-                     (delete it, or run `claudelingo skip`, to clear a stuck one)
-packs/               generated word packs
-cache/               memory hooks already fetched
+claudelingo:settings:v1        your language and preferences
+claudelingo:progress:v1:<lang> your deck, one per language
+claudelingo:hook:v1:<word>     a memory hook already paid for
+claudelingo:pack:v1:<code>     a generated word pack
+claudelingo:packs:v1           the index of generated packs
+claudelingo:migrated:v1        when the old CLI's decks were read in
 ```
 
-Progress is written after every answer to a temp file that is flushed and renamed, so
-quitting — or a crash, or a power cut — never costs you more than the card on screen.
+One rule runs through all of it: **a read that failed authorises no write.** It
+applies to the deck, the settings, a word pack and the pack index, and it turns
+on the difference between *the read failed* and *what came back is not what we
+expected*:
 
-Three rules protect that file.
+- **A read that failed** says nothing about what is in the store, so the band
+  runs read-only and saves nothing rather than writing a fresh deck over one
+  that is almost certainly fine.
+- **A value that is not a deck** is moved to `<key>:quarantine` before anything
+  is written over it, and the band says where it went.
 
-**A deck that cannot be parsed is moved aside, never overwritten** — you get a
-`progress-es.json.corrupt-<timestamp>` copy and the pane tells you where it went.
+A deck also carries its own language, and one that does not match is quarantined
+rather than accepted — otherwise a French deck read under `es` would miss on
+every word id and silently become an empty Spanish deck that still claims a
+streak. The settings get the same treatment, and there the defaults are the
+danger: a failed read that fell back to them would show the language picker to
+someone who chose a year ago, bring the band back for someone who ran
+`/lingo off`, and then save all of that over the real settings on the first
+press.
 
-**A deck that cannot be read is left exactly where it is.** The distinction is not
-which error came back but whether the *read* failed or the *content* did — a
-permission error, a full file-descriptor table, or a stale handle on a networked home
-says nothing about what is in the file. In that case the pane runs read-only and saves
-nothing rather than replacing a deck that is almost certainly fine; fix the problem and
-restart to resume saving. Read-only commands like `stats` never move a deck aside at all.
+Errors are pinned under the prompt with `$.ui.status` rather than drawn in the
+band. The band is three rows and the third is the controls, so an error that
+took a row would delete the very keys needed to clear it — a trap, not a
+message. `/lingo stats` lists all of them; the pinned line shows the most
+serious.
 
-`claudelingo reset` takes the same lock the pane does, so it cannot report success
-while an open pane is about to write its deck straight back over the top.
+## Coming from the version that was a CLI
 
-**Only one pane at a time may study a given language.** Two panes each hold the whole
-deck in memory, so the second to save would erase the first's work. The lock is written
-with its owner's pid already inside it and then linked into place, so it can never
-exist naming nobody — a lock that does is refused rather than reclaimed, because
-guessing wrong there deletes a live pane's lock. Run a second pane on a different
-`--lang` instead. A lock left behind by a crashed pane is reclaimed automatically, and
-the refusal message names the lock file in case a recycled pid ever makes it look
-occupied. If the lock cannot be taken at all, the pane says so rather than quietly
-dropping the guarantee.
+claudelingo used to be a terminal program: a tmux pane, a status-line panel, a
+`/lingo` skill, five hook events writing a `status.json` it read back to guess
+whether the agent was working, a Codex transcript tailer, a lock file per
+language, and a `claude -p` subprocess whenever it needed a model. All of that
+existed to reach *around* Claude Code, because until function hooks there was no
+way to reach into it.
 
-Anything that goes wrong is shown in red and stays on screen until it is actually
-fixed — a failing save, a Codex watcher that has gone blind, an unreadable
-`status.json`, a missing credential, a lock that could not be taken. Each is tracked
-separately, so one clearing never hides another, and each clears itself when its own
-condition resolves. The pane keeps running rather than crashing out and leaving your
-terminal in raw mode. If stdout is not a terminal there is no panel to draw on, so
-startup problems go to stderr instead of vanishing.
+It is gone. `e.props.isWorking` answers the first, a `Button` answers the
+second, `$.store` the third, `$.model.complete` the last.
 
-## Development
+**Your deck comes with you.** The first session reads `~/.claudelingo` and
+imports every `progress-<lang>.json` it finds, along with the language you were
+studying — box levels, due dates, streak and accuracy intact. It copies rather
+than moves, so the old files stay where they are. A deck already in the store
+wins, because anything answered here is newer than a file written before this
+was installed and two schedules for one word cannot be merged honestly. It runs
+once, and says what it found.
+
+What is not coming back: **Codex support**. The pane watched Codex rollout
+transcripts so it could quiz you while Codex worked. A mod is a Claude Code
+plugin and there is no equivalent hook, so that went with the CLI.
+
+## Developing
 
 ```bash
 npm install
-npm run build
-npm test           # unit + end-to-end + the mod's specs
-npm run test:unit
-npm run test:e2e
-npm run typecheck
+npm run check      # typecheck + validate + tests
+npm run typecheck  # tsc against types/claude-code.d.ts
+npm run validate   # claude plugin validate .
+npm test           # vitest
 ```
 
-The mod has its own toolchain, because a hooks module compiles against Claude
-Code's declarations rather than against Node:
+Two test suites, deliberately different suffixes:
 
-```bash
-npm run mod:typecheck   # tsc against mod/types/claude-code.d.ts
-npm run mod:validate    # claude plugin validate mod
-npm run mod:restate     # restate src/ under mod/hooks/ (see mod/README.md)
-```
+- **`tests/*.spec.ts`** run under vitest today. They cover the scheduler, the
+  width tables, the pack generator, the deck's behaviour when the store
+  misbehaves, the migration, and the band's tree — that options are Buttons,
+  that they carry the digits, that pressing one reaches the action, and that the
+  height holds in every branch at every width.
+- **`tests/*.test.ts`** are written against `claude-code/testing` and run with
+  `npm run test:kit` (`claude plugin test .`). They drive the band the way a
+  person does: `$.ui.press` presses a Button the band actually rendered, through
+  every hook, and the deck that comes out is the one the engine's own store
+  holds.
 
-`npm test` runs `mod:restate --check` before anything else. The mod cannot
-import across the package boundary, so the scheduler and the word packs exist on
-both sides; a stale copy is not untidiness but two decks disagreeing about which
-word rank 7 is, and the suite refuses to be green while one stands.
+  **These have never been executed.** `claude plugin test` does not exist in
+  Claude Code 2.1.271, the build they were written against — the command errors
+  with `unknown command 'test'`. They typecheck against the real declarations
+  and they are the right tests, but until that runner ships they are unverified,
+  and the `*.spec.ts` files are what actually guards this in CI.
 
-The end-to-end tests spawn the real binary and drive it over pipes, firing genuine
-hook events, appending to a genuine Codex transcript, revoking write permission on the
-home directory, and reading back the frames a user would see. `CLAUDELINGO_FORCE_RENDER=1` makes the pane paint without a
-TTY and `CLAUDELINGO_SEED` fixes the shuffle, which is what makes those assertions
-stable.
+`types/claude-code.d.ts` is what `/plugin-types` wrote for the Claude Code
+version named on its first line. Regenerate it with that command after an update
+rather than editing it.
 
-Panel width is measured in terminal **columns**, not code points, so a generated CJK
-pack cannot tear the border. The width tables are generated from the Unicode
-character database rather than hand-listed, and checked against it. `test/unit/width.test.ts` checks that against an
-independent expected-column table rather than the renderer's own measure — otherwise
-the assertion cannot fail.
+Several behaviours here are pinned by tests written specifically so that
+deleting the behaviour makes them fail. If you change something load-bearing,
+break it on purpose first and check the suite notices — twice during this
+project a test passed with the bug deliberately reinstated, and both times that
+check was the only thing that caught it.
 
-That principle is applied throughout: several behaviours here are pinned by tests
-written specifically so that deleting the behaviour makes them fail. If you change
-something load-bearing, break it on purpose first and check the suite notices.
+## Early access
+
+Hooks modules load only where function hooks are enabled, and the API this is
+written against may change between releases without notice. That is the bet this
+version makes: there is no longer a fallback that works without them.
 
 ## Licence
 
