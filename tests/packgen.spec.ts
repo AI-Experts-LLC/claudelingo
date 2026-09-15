@@ -104,12 +104,18 @@ describe('pack generation', () => {
    * the size recovers the chunk; throwing instead discarded 693 words of
    * French, about half an hour of somebody's quota.
    */
-  it('retries a bad chunk once, smaller, and keeps what it already had', async () => {
+  it('retries a bad chunk once, at half the size, over the same ranks', async () => {
     const model = fakeModel([words(1, 100), 'not json at all', words(101, 50)])
     const pack = await generatePack(model.ask, 'X', 'xx', 200)
 
     expect(pack.words.length).toBeGreaterThan(100)
     expect(model.calls()).toBe(3)
+
+    // The retry is the point: half the size, and the same band of ranks, so a
+    // retry at full width or one that skipped the failed chunk still fails here.
+    expect(model.prompts[1]).toContain('Exactly 100 entries')
+    expect(model.prompts[2]).toContain('Exactly 50 entries')
+    expect(model.prompts[2]).toContain('ranked 101')
   })
 
   it('keeps the words it has when a chunk fails twice', async () => {
@@ -127,9 +133,35 @@ describe('pack generation', () => {
   })
 
   it('throws only when it got nothing at all', async () => {
+    // Both shapes of nothing: a reply that will not parse, twice over, and one
+    // that parses to an empty list.
+    await expect(generatePack(fakeModel(['not json']).ask, 'X', 'xx', 10)).rejects.toThrow(
+      /no words/,
+    )
+
     await expect(generatePack(fakeModel(['not json']).ask, 'X', 'xx', 10)).rejects.toBeInstanceOf(
       EnrichError,
     )
+
+    await expect(
+      generatePack(fakeModel(['{"words":[]}']).ask, 'X', 'xx', 10),
+    ).rejects.toThrow(/no words/)
+  })
+
+  /**
+   * `note` is the gender or irregularity that makes a card answerable, and it
+   * has to survive the round trip into the pack's compact row form.
+   */
+  it('carries a note through to the built pack', async () => {
+    const model = fakeModel([
+      JSON.stringify({
+        words: [{ term: 'casa', gloss: 'house', pos: 'noun', note: 'feminine' }],
+      }),
+    ])
+
+    const built = materialize(await generatePack(model.ask, 'X', 'xx', 1))
+
+    expect(built.words[0]?.note).toBe('feminine')
   })
 
   /**

@@ -26,10 +26,11 @@ Function hooks are early access, so the mod loads only where they are enabled:
 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir /path/to/claudelingo
 ```
 
-Or install it as a plugin and set the variable however you normally would:
+Or add the repo as a marketplace and install from it:
 
 ```
-/plugin install AI-Experts-LLC/claudelingo
+/plugin marketplace add AI-Experts-LLC/claudelingo
+/plugin install claudelingo@claudelingo
 ```
 
 Without that variable the hooks module is ignored entirely and nothing appears —
@@ -210,8 +211,34 @@ imports every `progress-<lang>.json` it finds, along with the language you were
 studying — box levels, due dates, streak and accuracy intact. It copies rather
 than moves, so the old files stay where they are. A deck already in the store
 wins, because anything answered here is newer than a file written before this
-was installed and two schedules for one word cannot be merged honestly. It runs
-once, and says what it found.
+was installed and two schedules for one word cannot be merged honestly.
+
+It runs once, and says what it found — but *once* is why the next part matters.
+
+### Turn the old one off first
+
+The old install does not remove itself, and this version has deleted the command
+that used to (`claudelingo uninit`). Until you remove it by hand you have two
+claudelingos running: the mod above your prompt, and the old status-line panel
+below it, each writing its own deck. Because the import runs once, every answer
+you give through the old panel after that first session is invisible to the mod
+for ever.
+
+Open `~/.claude/settings.json` and delete:
+
+- the `"statusLine"` block, if its `command` is `claudelingo statusline`
+- every hook entry whose command starts with `claudelingo` — there are six, under
+  `SessionStart`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `SessionEnd` and
+  `Notification`
+
+Then remove the old program itself — `npm rm -g claudelingo` if you installed it
+that way, and `rm -rf ~/.claudelingo/src` if you used the curl installer. Leave
+`~/.claudelingo/progress-*.json` alone until the import has run; after that they
+are only a backup.
+
+If you would rather keep the old one for now, that is fine — but run
+`/lingo stats` after your first mod session and check the numbers match what the
+panel was showing, because from then on the two decks drift apart.
 
 What is not coming back: **Codex support**. The pane watched Codex rollout
 transcripts so it could quiz you while Codex worked. A mod is a Claude Code
@@ -244,7 +271,8 @@ Two test suites, deliberately different suffixes:
   Claude Code 2.1.271, the build they were written against — the command errors
   with `unknown command 'test'`. They typecheck against the real declarations
   and they are the right tests, but until that runner ships they are unverified,
-  and the `*.spec.ts` files are what actually guards this in CI.
+  and the `*.spec.ts` files are what actually guards this. (There is no CI in
+  this repo yet either, so "guards" means `npm run check` before you push.)
 
 `types/claude-code.d.ts` is what `/plugin-types` wrote for the Claude Code
 version named on its first line. Regenerate it with that command after an update

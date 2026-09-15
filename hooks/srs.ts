@@ -117,9 +117,8 @@ export function selectNext(
 /**
  * A skip costs nothing but a delay — punishing it would poison the box levels.
  *
- * Shared by the pane and by `claudelingo skip`, so the two cannot drift: a word
- * with no progress row yet gets one in the `new` stage, because without it
- * `selectNext` hands back the very card that was just skipped.
+ * A word with no progress row yet gets one in the `new` stage, because without
+ * it `selectNext` hands back the very card that was just skipped.
  */
 export const SKIP_DELAY_MS = 10 * MINUTE;
 
@@ -226,27 +225,6 @@ export function buildCard(pack: Pack, word: Word, item: ItemProgress | null, rng
     answerIndex: options.findIndex((w) => w.id === word.id),
     accepted: [label(word)],
   };
-}
-
-/**
- * How a card is asked, in words.
- *
- * One place, so two surfaces cannot drift into asking the same card two
- * different ways.
- */
-export function questionFor(card: Card, pack: Pack): string {
-  switch (card.kind) {
-    case "recognize":
-      return `What does "${card.prompt}" mean?`;
-    case "reverse":
-      return `How do you say "${card.prompt}" in ${pack.englishName}?`;
-    case "cloze":
-      return `Fill the gap:  ${card.prompt}`;
-    case "teach":
-      return `New word: "${card.word.term}" (${card.word.pos}) means "${card.word.gloss}".`;
-    default:
-      return `Spell the ${pack.englishName} word for "${card.prompt}".`;
-  }
 }
 
 export function isCorrect(card: Card, response: { choice?: number; text?: string }): boolean {

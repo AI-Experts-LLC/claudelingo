@@ -19,11 +19,16 @@
  * - **A deck already here wins.** Anything you have answered in the band is
  *   newer than a file last written before you installed this, and merging two
  *   schedules for one word means inventing an answer nobody gave.
- * - **A read that failed is not an empty deck.** If the file is there but
- *   unreadable, the import stops and says so, rather than recording "nothing to
- *   import" and never looking again.
- * - **It runs once.** The marker is written whatever the outcome, so a machine
- *   with no old install pays one `exists` check per session and nothing more.
+ * - **A read that failed is not an empty deck.** That holds for the directory,
+ *   for each deck file, and for the store read that checks whether a deck is
+ *   already here — a failure at any of the three says so and changes nothing,
+ *   because each of them otherwise reads as "there was nothing there" and
+ *   authorises a write over something never seen.
+ * - **It runs once, but only once it is finished.** The marker is written when
+ *   every deck has been imported, skipped, or found not to be a deck — so a
+ *   machine with no old install pays one `exists` check per session and nothing
+ *   more, while a deck that could not be reached today is tried again tomorrow.
+ *   Marking early is what turns a transient failure into permanent loss.
  */
 
 import { isProgress } from './deck'
@@ -86,6 +91,9 @@ export async function migrate(
 
   const result: Migration = { imported: [], skipped: [], lang: null, trouble: null }
 
+  /** Decks that could not be settled either way, so the marker is withheld. */
+  const unresolved: string[] = []
+
   try {
     const entries = await files.list(dir)
 
@@ -94,20 +102,53 @@ export async function migrate(
 
       if (code === null) continue
 
-      const progress = await readProgress(files, `${dir}/${name}`, code)
+      const read = await readProgress(files, `${dir}/${name}`, code)
 
-      if (progress === null) continue
+      if (read.kind === 'unreadable') {
+        // The file is there and we could not open it. Skipping quietly and
+        // marking the import done would strand that deck for ever, including
+        // after the permission that caused it is fixed.
+        unresolved.push(`${code} (${read.reason})`)
+
+        continue
+      }
+
+      // Present but not a deck: an older schema, or a file that only looks like
+      // one. Nothing to import and nothing that will change, so it is not a
+      // reason to come back.
+      if (read.kind === 'invalid') continue
+
+      const progress = read.progress
 
       // Anything already answered here is newer than a file written before this
       // was installed; two schedules for one word cannot be merged honestly.
-      if ((await store.get(progressKey(code)).catch(() => undefined)) !== undefined) {
+      //
+      // `.catch(() => undefined)` here would be the whole point of this module
+      // thrown away: a store that failed to answer would read as "no deck here"
+      // and the import would write over one it never saw. A read that failed
+      // authorises no write, which is the rule `deck.ts` is built on.
+      let held: unknown
+
+      try {
+        held = await store.get(progressKey(code))
+      } catch (error) {
+        unresolved.push(`${code} (could not check for an existing deck: ${messageOf(error)})`)
+
+        continue
+      }
+
+      if (held !== undefined) {
         result.skipped.push(code)
 
         continue
       }
 
-      await store.set(progressKey(code), progress)
-      result.imported.push(code)
+      try {
+        await store.set(progressKey(code), progress)
+        result.imported.push(code)
+      } catch (error) {
+        unresolved.push(`${code} (could not be saved: ${messageOf(error)})`)
+      }
     }
 
     result.lang = await readLang(files, `${dir}/settings.json`)
@@ -120,6 +161,20 @@ export async function migrate(
         text: `could not read your old claudelingo deck (${
           error instanceof Error ? error.message : String(error)
         }) — it is still in ${dir}`,
+      },
+    }
+  }
+
+  // Only once everything is either imported, skipped or known not to be a deck.
+  // Marking with something still unresolved is what turns a transient failure
+  // into permanent loss: the files stay on disk and nothing ever reads them.
+  if (unresolved.length > 0) {
+    return {
+      ...result,
+      trouble: {
+        text:
+          `could not bring over ${unresolved.join(', ')} from ${dir} — ` +
+          'it is still there, and this will try again next session',
       },
     }
   }
@@ -137,22 +192,45 @@ async function mark(store: Store): Promise<void> {
   }
 }
 
-/** One deck file, if it is a deck for the language its name claims. */
-async function readProgress(
-  files: Files,
-  path: string,
-  code: string,
-): Promise<Progress | null> {
+/**
+ * One deck file: readable and a deck, readable and not a deck, or unreadable.
+ *
+ * Three outcomes rather than two, because the middle one is final and the last
+ * one is not. A file whose contents are not a deck will never become one; a
+ * file that would not open today may open tomorrow, and the difference decides
+ * whether it is safe to stop looking.
+ */
+type ReadDeck =
+  | { kind: 'deck'; progress: Progress }
+  | { kind: 'invalid' }
+  | { kind: 'unreadable'; reason: string }
+
+async function readProgress(files: Files, path: string, code: string): Promise<ReadDeck> {
+  let text: string
+
+  try {
+    text = await files.read(path)
+  } catch (error) {
+    return { kind: 'unreadable', reason: `could not be read: ${messageOf(error)}` }
+  }
+
   let parsed: unknown
 
   try {
-    parsed = JSON.parse(await files.read(path))
+    parsed = JSON.parse(text)
   } catch {
-    // One unreadable deck does not stop the others.
-    return null
+    // Parsed and rejected: the contents are not a deck and never will be.
+    return { kind: 'invalid' }
   }
 
-  return isProgress(parsed, code) ? parsed : null
+  // The filename claims a language and the deck carries one. If they disagree
+  // the file is not what it says it is, and importing it would attach one
+  // language's box levels to another's word ids.
+  return isProgress(parsed, code) ? { kind: 'deck', progress: parsed } : { kind: 'invalid' }
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /** The language the old install was on, so this one opens where you left off. */

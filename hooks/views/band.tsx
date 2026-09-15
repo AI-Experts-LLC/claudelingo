@@ -501,7 +501,7 @@ function asideFor(asked: number, run: QuizRun): string {
   return 'wrong ones come back sooner; right ones come back later.'
 }
 
-/** How a card is asked, in words. The CLI's `questionFor`, minus the teach case. */
+/** How a card is asked, in words. `teach` has its own layout above. */
 function questionRow(card: Card, englishName: string): string {
   switch (card.kind) {
     case 'recognize':

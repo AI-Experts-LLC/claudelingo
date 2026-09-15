@@ -15,12 +15,19 @@ import { emptyProgress } from '../hooks/srs'
  * here, a file it cannot read, a store it cannot write.
  */
 
-function fakeStore(entries: Record<string, unknown> = {}, fail: { set?: string[] } = {}) {
+function fakeStore(
+  entries: Record<string, unknown> = {},
+  fail: { set?: string[]; get?: string[] } = {},
+) {
   const held: Record<string, unknown> = { ...entries }
 
   const store: Store & { entries: Record<string, unknown> } = {
     entries: held,
-    get: async (key) => held[key],
+    get: async (key) => {
+      if (fail.get?.includes(key)) throw new Error('store unreachable')
+
+      return held[key]
+    },
     set: async (key, value) => {
       if (fail.set?.includes(key)) throw new Error('store refused')
 
@@ -32,7 +39,10 @@ function fakeStore(entries: Record<string, unknown> = {}, fail: { set?: string[]
 }
 
 /** A `~/.claudelingo` in memory. */
-function fakeFiles(files: Record<string, string> | null, fail: { list?: boolean } = {}): Files {
+function fakeFiles(
+  files: Record<string, string> | null,
+  fail: { list?: boolean; read?: string[] } = {},
+): Files {
   return {
     exists: async (path) => files !== null && path === '/home/.claudelingo',
     list: async () => {
@@ -42,6 +52,9 @@ function fakeFiles(files: Record<string, string> | null, fail: { list?: boolean 
     },
     read: async (path) => {
       const name = path.split('/').pop() as string
+
+      if (fail.read?.includes(name)) throw new Error('EACCES: permission denied')
+
       const text = files?.[name]
 
       if (text === undefined) throw new Error(`no such file: ${path}`)
@@ -173,6 +186,82 @@ describe('migrating the old CLI deck', () => {
 
     expect(result.lang).toBeNull()
     expect(result.imported).toEqual(['es'])
+  })
+
+  /**
+   * The three ways a read can fail, each of which otherwise reads as "nothing
+   * there" and authorises a write over something never seen.
+   *
+   * Every one of these passed before the check that produces it existed — they
+   * are here because a reviewer found them by probing, not because the suite
+   * did. Break any of the three guards and the matching case fails.
+   */
+  describe('a read that failed authorises no write', () => {
+    it('does not overwrite a deck it could not check for', async () => {
+      const mine = { ...emptyProgress('es'), streak: 99 }
+
+      const store = fakeStore(
+        { [progressKey('es')]: mine },
+        { get: [progressKey('es')] },
+      )
+
+      const result = await migrate(store, fakeFiles({ 'progress-es.json': deck('es') }), '/home')
+
+      // The store said nothing about whether a deck was there, so nothing is
+      // written over it, and the import is not recorded as done.
+      expect((store.entries[progressKey('es')] as { streak: number }).streak).toBe(99)
+      expect(result.imported).toEqual([])
+      expect(result.trouble?.text).toContain('es')
+      expect(store.entries[MIGRATED_KEY]).toBeUndefined()
+    })
+
+    it('comes back for a deck file it could not open', async () => {
+      const store = fakeStore()
+
+      const result = await migrate(
+        store,
+        fakeFiles(
+          { 'progress-es.json': deck('es'), 'progress-fr.json': deck('fr') },
+          { read: ['progress-es.json'] },
+        ),
+        '/home',
+      )
+
+      // The one that opened is imported; the one that did not is named, and
+      // the marker is withheld so it is tried again rather than stranded.
+      expect(result.imported).toEqual(['fr'])
+      expect(result.trouble?.text).toContain('es')
+      expect(result.trouble?.text).toContain('try again')
+      expect(store.entries[MIGRATED_KEY]).toBeUndefined()
+    })
+
+    it('comes back for a deck it read but could not save', async () => {
+      const store = fakeStore({}, { set: [progressKey('es')] })
+
+      const result = await migrate(store, fakeFiles({ 'progress-es.json': deck('es') }), '/home')
+
+      expect(result.imported).toEqual([])
+      expect(result.trouble?.text).toContain('could not be saved')
+      expect(store.entries[MIGRATED_KEY]).toBeUndefined()
+    })
+
+    /**
+     * Contents that are not a deck are final, not transient: they will never
+     * become one, so they are not a reason to keep looking for ever.
+     */
+    it('still finishes when a file is merely not a deck', async () => {
+      const store = fakeStore()
+
+      const result = await migrate(
+        store,
+        fakeFiles({ 'progress-es.json': 'not json', 'progress-fr.json': deck('fr') }),
+        '/home',
+      )
+
+      expect(result.imported).toEqual(['fr'])
+      expect(result.trouble).toBeNull()
+      expect(store.entries[MIGRATED_KEY]).toBeDefined()
+    })
   })
 
   it('says what it did, and nothing when it did nothing', () => {

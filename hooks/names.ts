@@ -103,12 +103,7 @@ export const PACK_WORDS = 300
 /** Rows the band draws. Fixed, so the conversation above it never jumps. */
 export const BAND_ROWS = 3
 
-/**
- * Below this many columns the owl gutter costs more than it gives.
- *
- * The CLI's panel uses the same figure for the same reason; kept a literal on
- * each side because the two surfaces are free to diverge.
- */
+/** Below this many columns the owl gutter costs more than it gives. */
 export const OWL_MIN_COLUMNS = 46
 
 /** Below this, three rows cannot say anything useful: draw one instead. */

@@ -21,7 +21,7 @@ tier('user')
  * comes out the other side is the one the engine's own store holds. The specs
  * check the tree; these check that pressing it does something.
  *
- * Run with `claude plugin test mod`.
+ * Run with `npm run test:kit` (`claude plugin test .`).
  */
 
 const SESSION: Args<'session.start'> = {

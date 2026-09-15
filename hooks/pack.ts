@@ -1,15 +1,11 @@
 /**
  * Turning a written pack into words the band can ask about.
  *
- * The CLI's `materialize`, less the filesystem around it. Every rule it
- * enforces is enforced here for the same reasons, and one of them matters more
- * in a mod than it did in a pane: control characters. The CLI strips them
- * because a newline in a gloss turns its one-line status line into two and a
- * raw escape restyles everything after it. Here a gloss is drawn as a `Text`
- * child in a band that has promised to be three rows tall — so a newline breaks
- * the promise the conversation above it relies on, and an escape is data the
- * model wrote arriving in a render tree. Both are cut here, once, rather than
- * at each of the places that draw a word.
+ * One rule here matters more than the rest: control characters are stripped. A
+ * gloss is drawn as a `Text` child in a band that has promised to be three rows
+ * tall, so a newline breaks the promise the conversation above it relies on,
+ * and a raw escape is data the model wrote arriving in a render tree. Both are
+ * cut here, once, rather than at each of the places that draw a word.
  */
 
 import { canCloze } from './cloze'
