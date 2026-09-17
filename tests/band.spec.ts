@@ -330,6 +330,67 @@ describe('band', () => {
     expect(Math.max(...widths) - Math.min(...widths)).toBeLessThanOrEqual(1)
   })
 
+  /**
+   * What `explain` actually puts on screen.
+   *
+   * The button, the fetch and the hook that comes back are three separate
+   * things, and only the first had a test — so "does the explain button do
+   * anything?" was a fair question the suite could not answer. This covers the
+   * last one: a hook that arrived has to be the line you read.
+   */
+  describe('explain', () => {
+    const word = SPANISH.words[0]!
+
+    it('shows a fetched hook under a verdict, in place of the remark', () => {
+      const verdict = { correct: true, answer: 'the', word }
+
+      const without = draw({ verdict })
+      const withHook = draw({ verdict, hook: 'Both come from Latin "tempus".' })
+
+      expect(textOf(bodyRows(withHook.tree)[1]!)).toContain('Latin "tempus"')
+      expect(textOf(bodyRows(without.tree)[1]!)).not.toContain('Latin')
+    })
+
+    it('says it is asking while the model is being asked', () => {
+      const card = cardAt(1)
+
+      const idle = draw({ card, item: reviewing(1) })
+      const busy = draw({ card, item: reviewing(1), fetchingHook: true })
+
+      const label = (d: typeof idle) =>
+        String(buttons(d.nodes).find((b) => b.props.key === KEYS.explain)?.props.label)
+
+      expect(label(idle)).toBe('explain')
+      expect(label(busy)).toContain('asking')
+    })
+
+    it('reaches the explain action when pressed', () => {
+      const { nodes, actions } = draw({ card: cardAt(1), item: reviewing(1) })
+      const button = buttons(nodes).find((b) => b.props.key === KEYS.explain)
+
+      ;(button!.props.onPress as () => void)()
+
+      expect(actions.pressed).toEqual(['explain'])
+    })
+
+    /** A long hook must not push the band to a fourth row. */
+    it('keeps the band three rows however long the hook is', () => {
+      const verdict = { correct: false, answer: 'the', word }
+      const hook = 'a mnemonic far longer than any terminal row could ever hope to hold, '.repeat(4)
+
+      for (const columns of [BAND_MIN_COLUMNS, 40, OWL_MIN_COLUMNS, 80, 120]) {
+        const { tree } = draw({ verdict, hook }, columns)
+        const body = columns >= OWL_MIN_COLUMNS ? columns - MASCOT_WIDTH - GAP : columns
+
+        expect(bodyRows(tree).length).toBeLessThanOrEqual(3)
+
+        for (const row of bodyRows(tree)) {
+          expect(rowCells(row), `${columns} columns`).toBeLessThanOrEqual(body)
+        }
+      }
+    })
+  })
+
   it('hides the explain key when enrichment is off', () => {
     const on = draw({ card: cardAt(1), item: reviewing(1), enrich: true })
     const off = draw({ card: cardAt(1), item: reviewing(1), enrich: false })
