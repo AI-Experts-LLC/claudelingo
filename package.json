@@ -5,22 +5,35 @@
   "type": "module",
   "license": "MIT",
   "author": "AI Experts LLC",
+  "homepage": "https://github.com/AI-Experts-LLC/claudelingo#readme",
+  "bugs": "https://github.com/AI-Experts-LLC/claudelingo/issues",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AI-Experts-LLC/claudelingo.git"
   },
   "keywords": [
     "claude-code",
+    "claude",
     "mod",
     "function-hooks",
     "language-learning",
     "spaced-repetition",
-    "vocabulary"
+    "vocabulary",
+    "flashcards"
+  ],
+  "bin": {
+    "claudelingo": "cli/claudelingo.mjs"
+  },
+  "files": [
+    "cli",
+    ".claude-plugin",
+    "hooks",
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
-    "node": ">=20.11"
+    "node": ">=18"
   },
-  "private": true,
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
@@ -28,7 +41,8 @@
     "test:kit": "claude plugin test .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "validate": "claude plugin validate .claude-plugin/plugin.json && claude plugin validate .",
-    "check": "npm run typecheck && npm run validate && npm run test && npm run test:install"
+    "check": "npm run typecheck && npm run validate && npm run test && npm run test:install",
+    "prepublishOnly": "npm run check"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

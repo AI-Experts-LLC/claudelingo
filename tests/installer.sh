@@ -1,5 +1,5 @@
 #!/bin/sh
-# Tests for install.sh, run against throwaway home directories.
+# Tests for the installer (`claudelingo install`), run against throwaway homes.
 #
 #   sh tests/installer.sh
 #
@@ -8,21 +8,16 @@
 # only our entries changed, a backup before any change, nothing changed twice,
 # and nothing taken back on uninstall that we did not add.
 #
-# `claude` is a stub that reports a version, and the repository is cloned from
-# this checkout, so nothing here touches the network or a real Claude Code.
+# `claude` is a stub that reports a version, and the installer runs from this
+# checkout, so nothing here touches the network or a real Claude Code. The last
+# group packs the real npm tarball and installs from that, which is the only way
+# to know the published package carries everything the plugin needs.
 
 set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-
-# Clone from a snapshot of this checkout, including uncommitted changes, so the
-# test exercises the tree it lives in.
-SOURCE="$WORK/source"
-mkdir -p "$SOURCE"
-(cd "$ROOT" && git ls-files -co --exclude-standard | tar -cf - -T -) | tar -xf - -C "$SOURCE"
-(cd "$SOURCE" && git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm snapshot)
 
 pass=0
 fail=0
@@ -41,10 +36,14 @@ home() {
   chmod +x "$H/stub/claude"
 }
 
+NODE_DIR=$(dirname "$(command -v node)")
+
+# `run` is `claudelingo install`; `run --uninstall` is `claudelingo uninstall`.
 run() {
-  HOME="$H" PATH="$H/stub:/usr/bin:/bin" \
-    CLAUDELINGO_REPO="file://$SOURCE" CLAUDELINGO_REF=main \
-    sh "$ROOT/install.sh" "$@" > "$H/out" 2>&1
+  cmd=install
+  if [ "${1:-}" = --uninstall ]; then cmd=uninstall; shift; fi
+  HOME="$H" PATH="$H/stub:$NODE_DIR:/usr/bin:/bin" \
+    node "$ROOT/cli/claudelingo.mjs" "$cmd" "$@" > "$H/out" 2>&1
 }
 
 json() { python3 -c "import json,sys; d=json.load(open('$H/.claude/settings.json')); print($1)"; }
@@ -56,7 +55,7 @@ home fresh 2.1.274
 run
 check "clones the plugin" '[ -f "$H/.claude/skills/claudelingo/.claude-plugin/plugin.json" ]'
 check "turns function hooks on" '[ "$(json "d[\"env\"][\"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS\"]")" = 1 ]'
-check "remembers the flag was not there before" 'grep -q "\"present\": false" "$H/.claude/skills/claudelingo/.install-state"'
+check "remembers the flag was not there before" 'grep -Eq "\"present\": ?false" "$H/.claude/skills/claudelingo/.install-state"'
 check "creates a new settings.json readable only by you" '[ "$(stat -c %a "$H/.claude/settings.json" 2>/dev/null || stat -f %Lp "$H/.claude/settings.json")" = 600 ]'
 check "makes no backup of a file that did not exist" '[ "$(backups)" = 0 ]'
 check "tells you to start claude" 'grep -q "Start Claude Code as usual" "$H/out"'
@@ -95,7 +94,7 @@ check "says what it changed" 'grep -q "removed 3 old claudelingo hooks" "$H/out"
 echo "running it again"
 run
 check "changes nothing the second time" '[ "$(backups)" = 1 ]'
-check "updates the plugin in place" 'grep -q "updated to" "$H/out"'
+check "updates the plugin in place" 'grep -q "updated $H/.claude/skills/claudelingo" "$H/out"'
 
 echo "uninstalling"
 run --uninstall
@@ -232,6 +231,79 @@ check "turns them on" '[ "$(json "d[\"env\"][\"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS
 run --uninstall
 check "puts back the value that was there, not nothing" '[ "$(json "d[\"env\"][\"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS\"]")" = 0 ]'
 
+home changed-mind 2.1.274
+run
+python3 -c "import json; p='$H/.claude/settings.json'; d=json.load(open(p)); d['env']['CLAUDE_CODE_ENABLE_FUNCTION_HOOKS']='0'; json.dump(d, open(p,'w'))"
+run
+run --uninstall
+check "restores what the latest install found, not the first" '[ "$(json "d[\"env\"][\"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS\"]")" = 0 ]'
+
+echo "a config directory that is itself a symlink"
+home linked-dir 2.1.274
+rm -rf "$H/.claude"
+mkdir -p "$H/real/claude-config" "$H/real/shared"
+ln -s "$H/real/claude-config" "$H/.claude"
+printf '{ "theme": "dark" }\n' > "$H/real/shared/settings.json"
+# Relative, climbing out of the linked directory: `..` must be resolved after
+# following ~/.claude, or it points at a file that does not exist.
+ln -s ../shared/settings.json "$H/real/claude-config/settings.json"
+run
+check "writes the file the link really points at" 'grep -q CLAUDE_CODE_ENABLE_FUNCTION_HOOKS "$H/real/shared/settings.json"'
+check "creates no stray settings.json beside the link" '[ ! -e "$H/shared/settings.json" ] && [ -L "$H/real/claude-config/settings.json" ]'
+
+home linked-dangling 2.1.274
+rm -rf "$H/.claude"
+mkdir -p "$H/real/claude-config" "$H/real/shared"
+ln -s "$H/real/claude-config" "$H/.claude"
+ln -s ../shared/settings.json "$H/real/claude-config/settings.json"
+run
+check "follows a dangling relative link through a linked directory to where the file belongs" '[ -f "$H/real/shared/settings.json" ] && grep -q CLAUDE_CODE_ENABLE_FUNCTION_HOOKS "$H/real/shared/settings.json" && [ ! -e "$H/shared" ]'
+
+home via-linked-subdir 2.1.274
+mkdir -p "$H/.claude/shared" "$H/elsewhere/deep"
+ln -s "$H/elsewhere/deep" "$H/.claude/sub"
+printf '{ "theme": "dark" }\n' > "$H/elsewhere/settings.json"
+# `sub/..` is `elsewhere`, not `.claude`: the link must be followed before `..`.
+ln -s sub/../settings.json "$H/.claude/settings.json"
+run
+check "resolves sub/.. after following sub, not as text" 'grep -q CLAUDE_CODE_ENABLE_FUNCTION_HOOKS "$H/elsewhere/settings.json" && [ ! -e "$H/.claude/settings.json.claudelingo-backup" ]'
+
+echo "skills on another filesystem"
+if [ -d /dev/shm ] && [ -w /dev/shm ] && [ "$(stat -c %d /dev/shm 2>/dev/null)" != "$(stat -c %d "$WORK" 2>/dev/null)" ]; then
+  home other-device 2.1.274
+  SHM=$(mktemp -d /dev/shm/claudelingo-test.XXXXXX)
+  ln -s "$SHM" "$H/.claude/skills"
+  run
+  check "installs when skills/ is a link onto a different device" '[ -f "$SHM/claudelingo/.claude-plugin/plugin.json" ] && ! grep -q EXDEV "$H/out"'
+  run
+  check "and updates there, keeping the plugin and its record" '[ -f "$SHM/claudelingo/.claude-plugin/plugin.json" ] && [ -f "$SHM/claudelingo/.install-state" ] && grep -q "updated" "$H/out"'
+  check "leaves no staging folder behind" '[ ! -e "$SHM/.claudelingo-staging" ] && [ ! -e "$SHM/.claudelingo-previous" ]'
+  rm -rf "$SHM"
+else
+  echo "  skip (no second filesystem at /dev/shm)"
+fi
+
+echo "an install that was interrupted part-way"
+home interrupted 2.1.274
+mkdir -p "$H/.claude/skills/.claudelingo-previous/.claude-plugin" "$H/.claude/skills/.claudelingo-staging"
+printf '{ "name": "claudelingo" }\n' > "$H/.claude/skills/.claudelingo-previous/.claude-plugin/plugin.json"
+printf '{"flag": {"present": true, "value": "0"}}' > "$H/.claude/skills/.claudelingo-previous/.install-state"
+printf '{ "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1" } }\n' > "$H/.claude/settings.json"
+run
+check "recovers the record the interrupted run had set aside" 'grep -Eq "\"value\": ?\"0\"" "$H/.claude/skills/claudelingo/.install-state"'
+check "clears what the interrupted run left" '[ ! -e "$H/.claude/skills/.claudelingo-previous" ] && [ ! -e "$H/.claude/skills/.claudelingo-staging" ]'
+run --uninstall
+check "so uninstall can still put back the user's original value" '[ "$(json "d[\"env\"][\"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS\"]")" = 0 ]'
+
+echo "a failure that is not a refusal"
+home cannot-create 2.1.274
+mkdir -p "$H/locked"
+chmod 555 "$H/locked"
+ln -s "$H/locked/deeper/settings.json" "$H/.claude/settings.json"
+run
+chmod 755 "$H/locked"
+check "still leaves you a way to start, instead of a stack trace" '[ -x "$H/.local/bin/claude-lingo" ] && ! grep -q "    at " "$H/out"'
+
 echo "leftovers from earlier installs"
 home leftovers 2.1.274
 mkdir -p "$H/.claude/skills/claudelingo-mod/.claude-plugin" "$H/.claude/skills/unrelated/.claude-plugin" "$H/.claudelingo/src/skills/lingo" "$H/.local/bin" "$H/elsewhere/lingo"
@@ -255,6 +327,58 @@ mkdir -p "$H/.claude/skills/claudelingo-mod/.claude-plugin"
 printf '{ "name": "someone-elses-plugin" }\n' > "$H/.claude/skills/claudelingo-mod/.claude-plugin/plugin.json"
 run
 check "keeps a folder called claudelingo-mod that holds a different plugin" '[ -d "$H/.claude/skills/claudelingo-mod" ]'
+
+echo "the older claudelingo, still wired into someone's settings"
+home legacy-calls 2.1.274
+out=$(HOME="$H" PATH="$NODE_DIR:/usr/bin:/bin" node "$ROOT/cli/claudelingo.mjs" statusline; echo "exit=$?")
+check "answers its status line with nothing, rather than text in their status line" '[ "$out" = "exit=0" ]'
+out=$(HOME="$H" PATH="$NODE_DIR:/usr/bin:/bin" node "$ROOT/cli/claudelingo.mjs" hook Stop --source claude; echo "exit=$?")
+check "answers its hooks silently, rather than an error on every turn" '[ "$out" = "exit=0" ]'
+out=$(HOME="$H" PATH="$NODE_DIR:/usr/bin:/bin" node "$ROOT/cli/claudelingo.mjs" session-start; echo "exit=$?")
+check "answers its session start silently" '[ "$out" = "exit=0" ]'
+out=$(HOME="$H" PATH="$NODE_DIR:/usr/bin:/bin" node "$ROOT/cli/claudelingo.mjs" notify '{"type":"agent-turn-complete"}'; echo "exit=$?")
+check "answers its Codex notify silently" '[ "$out" = "exit=0" ]'
+out=$(HOME="$H" PATH="$NODE_DIR:/usr/bin:/bin" node "$ROOT/cli/claudelingo.mjs" stats 2>&1; echo "exit=$?")
+check "does not silently swallow a command that was never a hook" 'echo "$out" | grep -q "exit=1"'
+
+echo "status"
+home status 2.1.274
+HOME="$H" PATH="$H/stub:$NODE_DIR:/usr/bin:/bin" node "$ROOT/cli/claudelingo.mjs" status > "$H/out" 2>&1
+check "says not ready before installing, and exits non-zero" '[ $? != 0 ] || grep -q "Not ready" "$H/out"'
+run
+HOME="$H" PATH="$H/stub:$NODE_DIR:/usr/bin:/bin" node "$ROOT/cli/claudelingo.mjs" status > "$H/out" 2>&1
+status=$?
+check "says ready once installed" '[ "$status" = 0 ] && grep -q "Ready." "$H/out" && grep -q "function hooks        on" "$H/out"'
+
+echo "the published package"
+PACK="$WORK/pack"
+mkdir -p "$PACK"
+(cd "$ROOT" && npm pack --silent --pack-destination "$PACK" >/dev/null 2>&1)
+TARBALL=$(ls "$PACK"/claudelingo-*.tgz 2>/dev/null | head -1)
+check "packs" '[ -n "$TARBALL" ] && [ -f "$TARBALL" ]'
+
+home npx 2.1.274
+(cd "$H" && HOME="$H" PATH="$H/stub:$NODE_DIR:/usr/bin:/bin" npm_config_cache="$WORK/npm-cache" \
+  npx --yes --package="$TARBALL" claudelingo install > "$H/out" 2>&1)
+check "installs through npx from the tarball" 'grep -q "Done. Start Claude Code as usual" "$H/out"'
+check "carries the plugin manifest" '[ -f "$H/.claude/skills/claudelingo/.claude-plugin/plugin.json" ]'
+check "carries every hooks module the manifest names" '[ -f "$H/.claude/skills/claudelingo/hooks/register.ts" ] && [ -f "$H/.claude/skills/claudelingo/hooks/views/band.tsx" ] && [ -f "$H/.claude/skills/claudelingo/hooks/packs/es.ts" ]'
+check "does not copy the installer into the plugin" '[ ! -d "$H/.claude/skills/claudelingo/cli" ]'
+check "ships no tests" '! tar -tzf "$TARBALL" | grep -q "package/tests/"'
+
+home curl 2.1.274
+HOME="$H" PATH="$H/stub:$NODE_DIR:/usr/bin:/bin" npm_config_cache="$WORK/npm-cache" CLAUDELINGO_PACKAGE="$TARBALL" \
+  sh -c "cat '$ROOT/install.sh' | sh" > "$H/out" 2>&1
+check "every npx command documented or printed pins @latest, so npx never runs an older claudelingo" '! grep -Eho "npx( -y| --yes)? claudelingo[^ \x60]*" "$ROOT/README.md" "$ROOT/cli/claudelingo.mjs" "$ROOT/install.sh" | grep -Ev "claudelingo@latest$" | grep -q .'
+check "the curl command hands off to the package and installs" '[ -f "$H/.claude/skills/claudelingo/.claude-plugin/plugin.json" ] && grep -q "Done." "$H/out"'
+HOME="$H" PATH="$H/stub:$NODE_DIR:/usr/bin:/bin" npm_config_cache="$WORK/npm-cache" CLAUDELINGO_PACKAGE="$TARBALL" \
+  sh -c "cat '$ROOT/install.sh' | sh -s -- --uninstall" > "$H/out" 2>&1
+check "and uninstalls the same way" '[ ! -d "$H/.claude/skills/claudelingo" ]'
+
+home no-node 2.1.274
+mkdir -p "$WORK/empty"
+HOME="$H" PATH="$H/stub:$WORK/empty" /bin/sh "$ROOT/install.sh" > "$H/out" 2>&1
+check "says Node is needed when there is none" 'grep -q "needs Node.js 18" "$H/out"'
 
 echo
 echo "$pass passed, $fail failed"
