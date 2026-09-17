@@ -262,11 +262,8 @@ describe('migrating the old CLI deck', () => {
 
   /**
    * The three ways a read can fail, each of which otherwise reads as "nothing
-   * there" and authorises a write over something never seen.
-   *
-   * Every one of these passed before the check that produces it existed — they
-   * are here because a reviewer found them by probing, not because the suite
-   * did. Break any of the three guards and the matching case fails.
+   * there" and authorises a write over something never seen. Break any of the
+   * three guards and the matching case fails.
    */
   describe('a read that failed authorises no write', () => {
     it('does not overwrite a deck it could not check for', async () => {

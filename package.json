@@ -24,14 +24,14 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:install": "sh tests/installer.sh",
+    "test:kit": "claude plugin test .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "validate": "claude plugin validate .claude-plugin/plugin.json && claude plugin validate .",
-    "test:kit": "claude plugin test .",
-    "check": "npm run typecheck && npm run validate && npm run test"
+    "check": "npm run typecheck && npm run validate && npm run test && npm run test:install"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }

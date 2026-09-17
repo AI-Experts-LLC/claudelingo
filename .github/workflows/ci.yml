@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # `claude plugin validate` runs without a login. It is the only check that
+      # catches a hooks.json pointing at a module that does not exist, which is
+      # the mod silently never loading.
+      - name: Validate the plugin
+        run: |
+          npm install -g @anthropic-ai/claude-code@latest
+          npm run validate
+
+      - name: Tests
+        run: npm test
+
+      - name: Installer tests
+        run: npm run test:install
