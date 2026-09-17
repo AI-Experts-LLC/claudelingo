@@ -19,15 +19,22 @@ generated on demand.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AI-Experts-LLC/claudelingo/main/install.sh | sh
+npx claudelingo install
 ```
 
 Then start Claude Code as usual with `claude`. The first time, the band asks
 which language you want to learn. Press a digit.
 
-**Requirements:** Claude Code **2.1.271 or newer**, `git`, and `python3` (both
-come with the Xcode Command Line Tools on macOS). Check your version with
-`claude --version`.
+Or, without npm:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AI-Experts-LLC/claudelingo/main/install.sh | sh
+```
+
+Both do exactly the same thing; the curl script hands off to the npm package.
+
+**Requirements:** Claude Code **2.1.271 or newer** and Node.js 18 or newer.
+Check with `claude --version` and `node --version`.
 
 claudelingo is a **mod**: a Claude Code plugin built on
 [function hooks](https://github.com/anthropics/claude-code/tree/main/mods),
@@ -36,8 +43,8 @@ installer has to switch the feature on.
 
 ### What the installer does
 
-1. Clones this repository into `~/.claude/skills/claudelingo`, where Claude Code
-   loads it as a plugin. Run the same command again to update.
+1. Copies the plugin into `~/.claude/skills/claudelingo`, where Claude Code
+   loads it as a plugin. To update, run `npx claudelingo@latest install`.
 2. Adds `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` to the `env` block of
    `~/.claude/settings.json`, which turns function hooks on. Before changing
    anything it saves a copy beside the file, `settings.json.claudelingo-backup`
@@ -52,10 +59,13 @@ installer has to switch the feature on.
    yours that merely mentions it is kept. Your old progress is imported the
    first time you start Claude.
 
+Nothing happens when the package is merely downloaded; it only changes things
+when you run `install`.
+
 Prefer not to have your settings touched? Use this instead:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AI-Experts-LLC/claudelingo/main/install.sh | sh -s -- --no-settings
+npx claudelingo install --no-settings
 ```
 
 With that option, `settings.json` is left alone and you start Claude Code with
@@ -64,7 +74,7 @@ With that option, `settings.json` is left alone and you start Claude Code with
 ### Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AI-Experts-LLC/claudelingo/main/install.sh | sh -s -- --uninstall
+npx claudelingo uninstall
 ```
 
 This removes the plugin and puts the function-hooks setting back the way it was
@@ -171,11 +181,10 @@ language already has a deck in the new version, that deck is kept rather than
 overwritten.
 
 The installer removes the old version's status line and hooks from
-`settings.json` for you. The old program itself can then be deleted:
-
-```bash
-rm -rf ~/.claudelingo/src && rm -f "$(command -v claudelingo)"
-```
+`settings.json` for you. The old program lived in `~/.claudelingo/src`, and that
+folder can be deleted. If an old `claudelingo` command is still on your PATH, it
+is harmless: the new `claudelingo` command quietly ignores the old version's
+hook calls.
 
 Codex support did not carry over. The old version could quiz you while Codex
 worked, but a mod is a Claude Code plugin, so the new version only runs inside
@@ -184,6 +193,8 @@ Claude Code.
 ## Troubleshooting
 
 **Nothing appears above the prompt.**
+- Run `npx claudelingo status`. It says what is installed, whether function
+  hooks are on, and whether your Claude Code is new enough.
 - Check `claude --version` is 2.1.271 or newer. The `stable` release channel can
   lag behind the version this needs.
 - Restart Claude Code after installing; plugins load at startup.
@@ -232,14 +243,16 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .
 | `hooks/migrate.ts` | importing decks from the older claudelingo |
 | `hooks/packgen.ts` | generating a word pack for a new language |
 | `hooks/packs/` | the built-in Spanish, French and Italian word lists |
-| `install.sh` | the installer |
+| `cli/claudelingo.mjs` | the installer: `npx claudelingo install`, `uninstall`, `status` |
+| `install.sh` | the curl installer, which hands off to the npm package |
 | `types/claude-code.d.ts` | the function-hooks API, as written by Claude Code's `/plugin-types` |
 
 **Tests**
 
 - `tests/*.spec.ts` run under vitest: the scheduler, the band's layout at every
   width, the word packs, deck storage and the migration.
-- `tests/installer.sh` runs the installer against throwaway home directories.
+- `tests/installer.sh` runs the installer against throwaway home directories,
+  then packs the real npm tarball and installs from that.
 - `tests/*.test.ts` use Claude Code's own plugin test kit and run with
   `npm run test:kit`. The `claude plugin test` command isn't available in
   current releases yet, so these don't run today.
