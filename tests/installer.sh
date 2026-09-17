@@ -251,6 +251,50 @@ run
 check "writes the file the link really points at" 'grep -q CLAUDE_CODE_ENABLE_FUNCTION_HOOKS "$H/real/shared/settings.json"'
 check "creates no stray settings.json beside the link" '[ ! -e "$H/shared/settings.json" ] && [ -L "$H/real/claude-config/settings.json" ]'
 
+home linked-dangling 2.1.274
+rm -rf "$H/.claude"
+mkdir -p "$H/real/claude-config" "$H/real/shared"
+ln -s "$H/real/claude-config" "$H/.claude"
+ln -s ../shared/settings.json "$H/real/claude-config/settings.json"
+run
+check "follows a dangling relative link through a linked directory to where the file belongs" '[ -f "$H/real/shared/settings.json" ] && grep -q CLAUDE_CODE_ENABLE_FUNCTION_HOOKS "$H/real/shared/settings.json" && [ ! -e "$H/shared" ]'
+
+home via-linked-subdir 2.1.274
+mkdir -p "$H/.claude/shared" "$H/elsewhere/deep"
+ln -s "$H/elsewhere/deep" "$H/.claude/sub"
+printf '{ "theme": "dark" }\n' > "$H/elsewhere/settings.json"
+# `sub/..` is `elsewhere`, not `.claude`: the link must be followed before `..`.
+ln -s sub/../settings.json "$H/.claude/settings.json"
+run
+check "resolves sub/.. after following sub, not as text" 'grep -q CLAUDE_CODE_ENABLE_FUNCTION_HOOKS "$H/elsewhere/settings.json" && [ ! -e "$H/.claude/settings.json.claudelingo-backup" ]'
+
+echo "skills on another filesystem"
+if [ -d /dev/shm ] && [ -w /dev/shm ] && [ "$(stat -c %d /dev/shm 2>/dev/null)" != "$(stat -c %d "$WORK" 2>/dev/null)" ]; then
+  home other-device 2.1.274
+  SHM=$(mktemp -d /dev/shm/claudelingo-test.XXXXXX)
+  ln -s "$SHM" "$H/.claude/skills"
+  run
+  check "installs when skills/ is a link onto a different device" '[ -f "$SHM/claudelingo/.claude-plugin/plugin.json" ] && ! grep -q EXDEV "$H/out"'
+  run
+  check "and updates there, keeping the plugin and its record" '[ -f "$SHM/claudelingo/.claude-plugin/plugin.json" ] && [ -f "$SHM/claudelingo/.install-state" ] && grep -q "updated" "$H/out"'
+  check "leaves no staging folder behind" '[ ! -e "$SHM/.claudelingo-staging" ] && [ ! -e "$SHM/.claudelingo-previous" ]'
+  rm -rf "$SHM"
+else
+  echo "  skip (no second filesystem at /dev/shm)"
+fi
+
+echo "an install that was interrupted part-way"
+home interrupted 2.1.274
+mkdir -p "$H/.claude/skills/.claudelingo-previous/.claude-plugin" "$H/.claude/skills/.claudelingo-staging"
+printf '{ "name": "claudelingo" }\n' > "$H/.claude/skills/.claudelingo-previous/.claude-plugin/plugin.json"
+printf '{"flag": {"present": true, "value": "0"}}' > "$H/.claude/skills/.claudelingo-previous/.install-state"
+printf '{ "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1" } }\n' > "$H/.claude/settings.json"
+run
+check "recovers the record the interrupted run had set aside" 'grep -Eq "\"value\": ?\"0\"" "$H/.claude/skills/claudelingo/.install-state"'
+check "clears what the interrupted run left" '[ ! -e "$H/.claude/skills/.claudelingo-previous" ] && [ ! -e "$H/.claude/skills/.claudelingo-staging" ]'
+run --uninstall
+check "so uninstall can still put back the user's original value" '[ "$(json "d[\"env\"][\"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS\"]")" = 0 ]'
+
 echo "a failure that is not a refusal"
 home cannot-create 2.1.274
 mkdir -p "$H/locked"
@@ -325,7 +369,7 @@ check "ships no tests" '! tar -tzf "$TARBALL" | grep -q "package/tests/"'
 home curl 2.1.274
 HOME="$H" PATH="$H/stub:$NODE_DIR:/usr/bin:/bin" npm_config_cache="$WORK/npm-cache" CLAUDELINGO_PACKAGE="$TARBALL" \
   sh -c "cat '$ROOT/install.sh' | sh" > "$H/out" 2>&1
-check "the README's commands all pin @latest, so npx never runs an older claudelingo" '! grep -o "npx claudelingo[^ ]*" "$ROOT/README.md" | grep -qv "npx claudelingo@latest"'
+check "every npx command documented or printed pins @latest, so npx never runs an older claudelingo" '! grep -Eho "npx( -y| --yes)? claudelingo[^ \x60]*" "$ROOT/README.md" "$ROOT/cli/claudelingo.mjs" "$ROOT/install.sh" | grep -Ev "claudelingo@latest$" | grep -q .'
 check "the curl command hands off to the package and installs" '[ -f "$H/.claude/skills/claudelingo/.claude-plugin/plugin.json" ] && grep -q "Done." "$H/out"'
 HOME="$H" PATH="$H/stub:$NODE_DIR:/usr/bin:/bin" npm_config_cache="$WORK/npm-cache" CLAUDELINGO_PACKAGE="$TARBALL" \
   sh -c "cat '$ROOT/install.sh' | sh -s -- --uninstall" > "$H/out" 2>&1

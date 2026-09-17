@@ -262,14 +262,15 @@ function isDanglingLink(file) {
  * The real file behind a chain of links, even when the last one dangles.
  *
  * `..` has to be resolved *after* following directory links, the way the kernel
- * does it. Treating it as text goes wrong when ~/.claude is itself a link and
+ * does it — which is `realpathSync.native`; the JavaScript `realpathSync`
+ * collapses `sub/..` as text before following `sub`. Treating it as text goes wrong when ~/.claude is itself a link and
  * settings.json is a relative link that climbs out of it: the path looks fine,
  * points somewhere else, and the install reports success while writing a stray
  * file. So every hop is resolved against the real path of its directory.
  */
 function resolveTarget(file) {
   try {
-    return fs.realpathSync(file)
+    return fs.realpathSync.native(file)
   } catch (error) {
     if (error.code === 'ELOOP') {
       throw new Refusal('settings.json could not be read (too many levels of symbolic links)')
@@ -293,7 +294,7 @@ function resolveTarget(file) {
     let directory
 
     try {
-      directory = fs.realpathSync(path.dirname(current))
+      directory = fs.realpathSync.native(path.dirname(current))
     } catch {
       directory = path.dirname(current)
     }
@@ -396,21 +397,54 @@ function installLauncher() {
 }
 
 /**
- * Copy the plugin in, replacing any earlier copy in one step.
+ * Copy the plugin in, replacing any earlier copy without ever losing it.
  *
- * Copied to a staging folder first and then moved in, so an interrupted copy
- * leaves the old plugin untouched rather than half of a new one.
+ * Staged in a dot-named folder *inside* skills/, for two reasons that each
+ * rule out somewhere else:
+ *
+ * - It shares a directory with the destination, so the final rename can never
+ *   cross filesystems. skills/ may be a symlink to another volume or a container
+ *   mount, and a rename across devices fails.
+ * - Claude Code does not load plugins from dot-named folders (verified), so a
+ *   crash cannot leave a second copy of the plugin behind to draw a second band.
+ *
+ * The old copy is moved aside, not deleted, until the new one is in place, and
+ * moved back if that fails. Its `.install-state` — the record of what the user's
+ * settings looked like before — is carried over, including from a run that was
+ * interrupted part-way.
  */
 function copyPlugin() {
-  const destination = pluginDir()
-  // Outside skills/: a staging folder left by a crash must not load as a second
-  // copy of the plugin. Same parent filesystem as the destination, so the
-  // rename is atomic.
-  const staging = path.join(claudeDir(), '.claudelingo-staging')
-  const previousState = fs.existsSync(statePath()) ? fs.readFileSync(statePath()) : null
+  const skills = path.join(claudeDir(), 'skills')
+
+  fs.mkdirSync(skills, { recursive: true })
+
+  const real = fs.realpathSync.native(skills)
+  const destination = path.join(real, 'claudelingo')
+  const staging = path.join(real, '.claudelingo-staging')
+  const previous = path.join(real, '.claudelingo-previous')
+
+  // Recover the record from wherever an earlier run left it, before any of
+  // those folders are cleared.
+  let state = null
+
+  for (const folder of [destination, previous, staging]) {
+    try {
+      state = fs.readFileSync(path.join(folder, '.install-state'))
+      break
+    } catch {
+      // Not there.
+    }
+  }
+
+  const existed = fs.existsSync(destination) || isDanglingLink(destination)
 
   fs.rmSync(staging, { recursive: true, force: true })
-  fs.mkdirSync(staging, { recursive: true })
+
+  // An old copy set aside by an interrupted run is only needed if nothing took
+  // its place; otherwise it is a leftover.
+  if (existed) fs.rmSync(previous, { recursive: true, force: true })
+
+  fs.mkdirSync(staging)
 
   for (const entry of PLUGIN_FILES) {
     const from = path.join(PACKAGE_ROOT, entry)
@@ -418,12 +452,20 @@ function copyPlugin() {
     if (fs.existsSync(from)) fs.cpSync(from, path.join(staging, entry), { recursive: true })
   }
 
-  if (previousState) fs.writeFileSync(path.join(staging, '.install-state'), previousState)
+  if (state) fs.writeFileSync(path.join(staging, '.install-state'), state)
 
-  const existed = fs.existsSync(destination)
+  if (existed) fs.renameSync(destination, previous)
 
-  fs.rmSync(destination, { recursive: true, force: true })
-  fs.renameSync(staging, destination)
+  try {
+    fs.renameSync(staging, destination)
+  } catch (error) {
+    if (existed) fs.renameSync(previous, destination)
+    fs.rmSync(staging, { recursive: true, force: true })
+
+    throw error
+  }
+
+  fs.rmSync(previous, { recursive: true, force: true })
 
   return existed
 }
@@ -503,14 +545,10 @@ function install(options) {
   let useSettings = options.settings
 
   if (useSettings) {
-    try {
-      const { changes, state } = editSettings(installChange)
+    let edited = null
 
-      // Only once the write has landed does a record of it mean anything.
-      saveState(state)
-      for (const change of changes) step(change)
-      say()
-      say('Done. Start Claude Code as usual:  claude')
+    try {
+      edited = editSettings(installChange)
     } catch (error) {
       // A refusal is a decision; anything else (a full disk, a directory that
       // cannot be created) is a failure. Either way settings.json is unchanged,
@@ -521,6 +559,23 @@ function install(options) {
           : `could not update settings.json (${error.message}); it is unchanged`,
       )
       useSettings = false
+    }
+
+    if (edited) {
+      // Only once the write has landed does a record of it mean anything. If it
+      // cannot be kept, the settings change still stands, so say that plainly.
+      try {
+        saveState(edited.state)
+      } catch (error) {
+        warn(
+          `settings.json was updated, but the record uninstall needs could not be saved (${error.message}); ` +
+            `to undo by hand later, remove env.${FLAG}`,
+        )
+      }
+
+      for (const change of edited.changes) step(change)
+      say()
+      say('Done. Start Claude Code as usual:  claude')
     }
   }
 

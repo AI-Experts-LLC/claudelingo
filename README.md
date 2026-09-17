@@ -181,9 +181,9 @@ language already has a deck in the new version, that deck is kept rather than
 overwritten.
 
 The installer removes the old version's status line and hooks from
-`settings.json` for you. Then delete the old program, because it was also a
-command called `claudelingo`, and while it is still on your PATH, `npx` can run
-it instead of this package:
+`settings.json` for you. Then delete the old program. It was also a command
+called `claudelingo`, and if it is in npm's global bin folder, `npx` can run it
+instead of this package:
 
 ```bash
 rm -rf ~/.claudelingo/src && rm -f "$(command -v claudelingo)"
