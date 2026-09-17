@@ -156,6 +156,8 @@ cat > "$H/.claude/settings.json" <<'EOF'
   "hooks": {
     "Stop": [ { "hooks": [
       { "type": "command", "command": "~/bin/notify-claudelingo hook-done" },
+      { "type": "command", "command": "~/bin/notify-claudelingo hook Stop" },
+      { "type": "command", "command": "claudelingo stats" },
       { "type": "command", "command": "echo claudelingo hook Stop" },
       { "type": "command", "command": "claudelingo hook Stop --source claude" }
     ] } ]
@@ -166,6 +168,8 @@ run
 check "keeps a status line that runs claudelingo among other things" '[ "$(json "\"statusLine\" in d")" = True ]'
 check "keeps a script whose name merely contains claudelingo" 'grep -q "notify-claudelingo hook-done" "$H/.claude/settings.json"'
 check "keeps a command that only says claudelingo" 'grep -q "echo claudelingo hook Stop" "$H/.claude/settings.json"'
+check "keeps a real verb run by a different program" 'grep -q "notify-claudelingo hook Stop" "$H/.claude/settings.json"'
+check "keeps claudelingo itself run with a verb that was never a hook" 'grep -q "\"claudelingo stats\"" "$H/.claude/settings.json"'
 check "still removes the one that is really the old claudelingo" '! grep -q "\"claudelingo hook Stop --source claude\"" "$H/.claude/settings.json"'
 check "counts only what it actually removed" 'grep -q "removed 1 old claudelingo hook$" "$H/out"'
 
@@ -208,6 +212,17 @@ check "is left alone" 'cmp -s "$H/store/settings.json" "$WORK/readonly.json" && 
 check "falls back to the launcher" '[ -x "$H/.local/bin/claude-lingo" ]'
 check "does not record a change it did not make" '! grep -q "\"flag\"" "$H/.claude/skills/claudelingo/.install-state" 2>/dev/null'
 check "says why" 'grep -q "not writable" "$H/out"'
+
+home readonly-dir 2.1.274
+mkdir -p "$H/locked"
+printf '{ "theme": "dark" }\n' > "$H/locked/settings.json"
+chmod 555 "$H/locked"
+ln -s "$H/locked/settings.json" "$H/.claude/settings.json"
+cp "$H/locked/settings.json" "$WORK/locked.json"
+run
+chmod 755 "$H/locked"
+check "leaves a writable file in a directory it cannot write alone" 'cmp -s "$H/locked/settings.json" "$WORK/locked.json" && [ -x "$H/.local/bin/claude-lingo" ]'
+check "says why, instead of a traceback" 'grep -q "is not writable" "$H/out" && ! grep -q Traceback "$H/out"'
 
 echo "someone who had turned function hooks off"
 home disabled 2.1.274

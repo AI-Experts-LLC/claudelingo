@@ -95,7 +95,9 @@ except OSError as error:
 if not isinstance(settings, dict):
     refuse("settings.json is not a JSON object")
 
-if exists and not os.access(target, os.W_OK):
+# `os.access` always says yes to root, so a deliberately read-only file would be
+# rewritten in a container. No write bit at all is the owner saying "don't".
+if exists and (not os.access(target, os.W_OK) or not os.stat(target).st_mode & 0o222):
     refuse("settings.json is not writable, so it is probably managed elsewhere")
 if os.path.isdir(directory) and not os.access(directory, os.W_OK):
     refuse(f"{directory} is not writable")

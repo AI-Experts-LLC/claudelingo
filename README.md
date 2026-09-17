@@ -40,7 +40,8 @@ installer has to switch the feature on.
    loads it as a plugin. Run the same command again to update.
 2. Adds `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` to the `env` block of
    `~/.claude/settings.json`, which turns function hooks on. Before changing
-   anything it saves a copy as `settings.json.claudelingo-backup`, and it prints
+   anything it saves a copy beside the file, `settings.json.claudelingo-backup`
+   (later runs add `-2`, `-3`, and never overwrite the first), and it prints
    exactly what it changed. The file keeps its permissions, and if it's a
    symlink (from a dotfiles repo, say), the change is written to the file it
    points to. If the file can't be written, it's left alone and you get a
