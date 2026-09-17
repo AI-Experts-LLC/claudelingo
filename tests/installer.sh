@@ -26,6 +26,7 @@ mkdir -p "$SOURCE"
 
 pass=0
 fail=0
+homes=0
 
 ok() { pass=$((pass + 1)); printf '  \033[32mok\033[0m   %s\n' "$1"; }
 bad() { fail=$((fail + 1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
@@ -33,7 +34,8 @@ check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
 # A fresh home with a `claude` stub reporting `$1` as its version.
 home() {
-  H="$WORK/home-$1-$$-$(date +%s%N)"
+  homes=$((homes + 1))
+  H="$WORK/home-$homes-$1"
   mkdir -p "$H/.claude" "$H/stub"
   printf '#!/bin/sh\necho "%s (Claude Code)"\n' "$2" > "$H/stub/claude"
   chmod +x "$H/stub/claude"
@@ -54,7 +56,8 @@ home fresh 2.1.274
 run
 check "clones the plugin" '[ -f "$H/.claude/skills/claudelingo/.claude-plugin/plugin.json" ]'
 check "turns function hooks on" '[ "$(json "d[\"env\"][\"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS\"]")" = 1 ]'
-check "remembers it added the flag" 'grep -q "\"addedFlag\": true" "$H/.claude/skills/claudelingo/.install-state"'
+check "remembers the flag was not there before" 'grep -q "\"present\": false" "$H/.claude/skills/claudelingo/.install-state"'
+check "creates a new settings.json readable only by you" '[ "$(stat -c %a "$H/.claude/settings.json" 2>/dev/null || stat -f %Lp "$H/.claude/settings.json")" = 600 ]'
 check "makes no backup of a file that did not exist" '[ "$(backups)" = 0 ]'
 check "tells you to start claude" 'grep -q "Start Claude Code as usual" "$H/out"'
 
@@ -86,7 +89,7 @@ check "keeps a hook that is not ours, in the same event" '[ "$(json "d[\"hooks\"
 check "keeps a hook that shared a group with ours" '[ "$(json "d[\"hooks\"][\"Notification\"][0][\"hooks\"][0][\"command\"]")" = "notify-send done" ]'
 check "drops an event left with nothing in it" '[ "$(json "\"Stop\" in d[\"hooks\"]")" = False ]'
 check "leaves every other setting alone" '[ "$(json "d[\"theme\"], d[\"enabledPlugins\"]")" = "dark {'"'"'something@somewhere'"'"': True}" ]'
-check "writes one backup, identical to the original" '[ "$(backups)" = 1 ] && cmp -s "$H"/.claude/settings.json.claudelingo-backup-* "$WORK/original.json"'
+check "writes one backup, identical to the original" '[ "$(backups)" = 1 ] && cmp -s "$H/.claude/settings.json.claudelingo-backup" "$WORK/original.json"'
 check "says what it changed" 'grep -q "removed 3 old claudelingo hooks" "$H/out"'
 
 echo "running it again"
@@ -96,6 +99,8 @@ check "updates the plugin in place" 'grep -q "updated to" "$H/out"'
 
 echo "uninstalling"
 run --uninstall
+check "keeps the first backup, which holds the original" 'cmp -s "$H/.claude/settings.json.claudelingo-backup" "$WORK/original.json"'
+check "writes its own backup beside it rather than over it" '[ -f "$H/.claude/settings.json.claudelingo-backup-2" ]'
 check "removes the plugin" '[ ! -d "$H/.claude/skills/claudelingo" ]'
 check "takes back the flag it added" '[ "$(json "\"env\" in d")" = False ]'
 check "keeps everything else" '[ "$(json "d[\"theme\"]")" = dark ]'
@@ -143,6 +148,75 @@ home versions3 3.0.0
 run
 check "3.0.0 is newer than 2.1.271" '[ -d "$H/.claude/skills/claudelingo" ]'
 
+echo "commands that only mention claudelingo"
+home mentions 2.1.274
+cat > "$H/.claude/settings.json" <<'EOF'
+{
+  "statusLine": { "type": "command", "command": "sh -c 'claudelingo statusline; ~/bin/mygit-status'" },
+  "hooks": {
+    "Stop": [ { "hooks": [
+      { "type": "command", "command": "~/bin/notify-claudelingo hook-done" },
+      { "type": "command", "command": "echo claudelingo hook Stop" },
+      { "type": "command", "command": "claudelingo hook Stop --source claude" }
+    ] } ]
+  }
+}
+EOF
+run
+check "keeps a status line that runs claudelingo among other things" '[ "$(json "\"statusLine\" in d")" = True ]'
+check "keeps a script whose name merely contains claudelingo" 'grep -q "notify-claudelingo hook-done" "$H/.claude/settings.json"'
+check "keeps a command that only says claudelingo" 'grep -q "echo claudelingo hook Stop" "$H/.claude/settings.json"'
+check "still removes the one that is really the old claudelingo" '! grep -q "\"claudelingo hook Stop --source claude\"" "$H/.claude/settings.json"'
+check "counts only what it actually removed" 'grep -q "removed 1 old claudelingo hook$" "$H/out"'
+
+echo "file permissions"
+home perms 2.1.274
+printf '{ "env": { "ANTHROPIC_API_KEY": "sk-secret" } }\n' > "$H/.claude/settings.json"
+chmod 600 "$H/.claude/settings.json"
+(umask 022; run)
+check "keeps a private settings.json private" '[ "$(stat -c %a "$H/.claude/settings.json" 2>/dev/null || stat -f %Lp "$H/.claude/settings.json")" = 600 ]'
+check "leaves no temporary file behind" '! ls -a "$H/.claude" | grep -q claudelingo-tmp'
+
+# 600 alone cannot tell "preserved" from "happened to match": the temporary file
+# is created private, so a writer that forgot to copy the mode would still pass
+# above. A mode that is not 600 shows the difference.
+home perms-shared 2.1.274
+printf '{ "theme": "dark" }\n' > "$H/.claude/settings.json"
+chmod 640 "$H/.claude/settings.json"
+run
+check "keeps whatever mode the file had, not just a private one" '[ "$(stat -c %a "$H/.claude/settings.json" 2>/dev/null || stat -f %Lp "$H/.claude/settings.json")" = 640 ]'
+
+echo "a settings.json that is a symlink"
+home symlink 2.1.274
+mkdir -p "$H/dotfiles"
+printf '{ "theme": "dark" }\n' > "$H/dotfiles/settings.json"
+ln -s "$H/dotfiles/settings.json" "$H/.claude/settings.json"
+run
+check "is still a symlink afterwards" '[ -L "$H/.claude/settings.json" ]'
+check "has the change written into the file it points at" 'grep -q CLAUDE_CODE_ENABLE_FUNCTION_HOOKS "$H/dotfiles/settings.json"'
+check "keeps the backup beside the real file" '[ -f "$H/dotfiles/settings.json.claudelingo-backup" ]'
+
+echo "a settings.json that cannot be written"
+home readonly 2.1.274
+mkdir -p "$H/store"
+printf '{ "theme": "dark" }\n' > "$H/store/settings.json"
+chmod 444 "$H/store/settings.json"
+ln -s "$H/store/settings.json" "$H/.claude/settings.json"
+cp "$H/store/settings.json" "$WORK/readonly.json"
+run
+check "is left alone" 'cmp -s "$H/store/settings.json" "$WORK/readonly.json" && [ -L "$H/.claude/settings.json" ]'
+check "falls back to the launcher" '[ -x "$H/.local/bin/claude-lingo" ]'
+check "does not record a change it did not make" '! grep -q "\"flag\"" "$H/.claude/skills/claudelingo/.install-state" 2>/dev/null'
+check "says why" 'grep -q "not writable" "$H/out"'
+
+echo "someone who had turned function hooks off"
+home disabled 2.1.274
+printf '{ "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "0" } }\n' > "$H/.claude/settings.json"
+run
+check "turns them on" '[ "$(json "d[\"env\"][\"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS\"]")" = 1 ]'
+run --uninstall
+check "puts back the value that was there, not nothing" '[ "$(json "d[\"env\"][\"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS\"]")" = 0 ]'
+
 echo "leftovers from earlier installs"
 home leftovers 2.1.274
 mkdir -p "$H/.claude/skills/claudelingo-mod/.claude-plugin" "$H/.claude/skills/unrelated/.claude-plugin" "$H/.claudelingo/src/skills/lingo" "$H/.local/bin" "$H/elsewhere/lingo"
@@ -155,11 +229,17 @@ printf '{}\n' > "$H/.claude/claudelingo-mod-trial.settings.json"
 run
 check "removes a second copy of the plugin" '[ ! -d "$H/.claude/skills/claudelingo-mod" ]'
 check "keeps an unrelated plugin" '[ -d "$H/.claude/skills/unrelated" ]'
+
 check "removes the old /lingo skill link" '[ ! -e "$H/.claude/skills/lingo" ]'
 check "keeps a link that is not the old skill" '[ -L "$H/.claude/skills/other-lingo" ]'
 check "replaces a launcher that pointed at the removed overlay" '! grep -q claudelingo-mod-trial "$H/.local/bin/claude-lingo" && grep -q "Installed by claudelingo" "$H/.local/bin/claude-lingo"'
 check "removes the overlay" '[ ! -f "$H/.claude/claudelingo-mod-trial.settings.json" ]'
 check "never touches the old decks" '[ -d "$H/.claudelingo" ]'
+home not-ours 2.1.274
+mkdir -p "$H/.claude/skills/claudelingo-mod/.claude-plugin"
+printf '{ "name": "someone-elses-plugin" }\n' > "$H/.claude/skills/claudelingo-mod/.claude-plugin/plugin.json"
+run
+check "keeps a folder called claudelingo-mod that holds a different plugin" '[ -d "$H/.claude/skills/claudelingo-mod" ]'
 
 echo
 echo "$pass passed, $fail failed"

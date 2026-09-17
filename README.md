@@ -39,12 +39,17 @@ installer has to switch the feature on.
 1. Clones this repository into `~/.claude/skills/claudelingo`, where Claude Code
    loads it as a plugin. Run the same command again to update.
 2. Adds `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` to the `env` block of
-   `~/.claude/settings.json`, which turns function hooks on. A timestamped
-   backup of the file is written before anything changes, and the installer
-   prints exactly what it changed.
+   `~/.claude/settings.json`, which turns function hooks on. Before changing
+   anything it saves a copy as `settings.json.claudelingo-backup`, and it prints
+   exactly what it changed. The file keeps its permissions, and if it's a
+   symlink (from a dotfiles repo, say), the change is written to the file it
+   points to. If the file can't be written, it's left alone and you get a
+   launcher command instead.
 3. If you used the older version of claudelingo, it removes that version's
-   status line and hooks from the same file, so you don't end up with two.
-   Your old progress is imported the first time you start Claude.
+   status line and hooks from the same file, so you don't end up with two. It
+   only removes entries that run the `claudelingo` program itself; anything of
+   yours that merely mentions it is kept. Your old progress is imported the
+   first time you start Claude.
 
 Prefer not to have your settings touched? Use this instead:
 
@@ -61,9 +66,10 @@ With that option, `settings.json` is left alone and you start Claude Code with
 curl -fsSL https://raw.githubusercontent.com/AI-Experts-LLC/claudelingo/main/install.sh | sh -s -- --uninstall
 ```
 
-This removes the plugin, and removes the function-hooks setting if the installer
-was the one that added it. Your decks are kept, so reinstalling picks up where
-you left off.
+This removes the plugin and puts the function-hooks setting back the way it was
+before you installed. Your decks are kept, so reinstalling picks up where you
+left off. Old-version entries the installer removed aren't restored; they're in
+`settings.json.claudelingo-backup` if you want them.
 
 ## Using it
 

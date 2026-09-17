@@ -7,7 +7,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/AI-Experts-LLC/claudelingo/main/install.sh | sh -s -- --uninstall
 #
-# What it does, all of it reversible with --uninstall:
+# What it does:
 #
 #   1. Clones claudelingo into ~/.claude/skills/claudelingo, where Claude Code
 #      loads it as a plugin. Re-running updates it.
@@ -17,6 +17,10 @@
 #   3. If the older, pre-mod claudelingo is wired into that file (its status
 #      line and hooks), removes those entries so you do not get two claudelingos
 #      writing two decks. Your old progress is imported on first run.
+#
+# --uninstall removes the plugin and puts the function-hooks setting back the
+# way it found it. It does not put back the old claudelingo entries it removed;
+# those are in the settings.json.claudelingo-backup file it wrote.
 #
 # Pass --no-settings to leave settings.json alone; you then start Claude Code
 # with `claude-lingo` instead of `claude`.
@@ -60,54 +64,81 @@ have_python() {
 # a backup before the first write, and a report of exactly what changed.
 edit_settings() {
   python3 - "$SETTINGS" "$1" "$STATE" <<'PY'
-import json, os, re, shutil, sys, time
+import json, os, shlex, shutil, sys, tempfile
 
 path, mode, state_path = sys.argv[1], sys.argv[2], sys.argv[3]
 FLAG = "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS"
 
+# Exit 3 means "left settings.json alone"; the shell falls back to a launcher.
+def refuse(reason):
+    print(f"{reason}; leaving settings.json alone", file=sys.stderr)
+    sys.exit(3)
+
+# Write through a symlink, never over it. Settings managed from a dotfiles repo
+# (stow, chezmoi, home-manager) are a link to the real file, and replacing the
+# link with a regular file would silently cut it off from where it is managed.
+target = os.path.realpath(path)
+directory = os.path.dirname(target)
+
 try:
-    with open(path) as f:
+    with open(target) as f:
         text = f.read()
     settings = json.loads(text) if text.strip() else {}
+    exists = True
 except FileNotFoundError:
-    settings = {}
+    settings, exists = {}, False
 except ValueError as error:
-    print(f"settings.json is not valid JSON ({error}); leaving it alone", file=sys.stderr)
-    sys.exit(3)
+    refuse(f"settings.json is not valid JSON ({error})")
+except OSError as error:
+    refuse(f"settings.json could not be read ({error})")
 
 if not isinstance(settings, dict):
-    print("settings.json is not a JSON object; leaving it alone", file=sys.stderr)
-    sys.exit(3)
+    refuse("settings.json is not a JSON object")
 
+if exists and not os.access(target, os.W_OK):
+    refuse("settings.json is not writable, so it is probably managed elsewhere")
+if os.path.isdir(directory) and not os.access(directory, os.W_OK):
+    refuse(f"{directory} is not writable")
+
+def load_state():
+    try:
+        with open(state_path) as f:
+            loaded = json.load(f)
+            return loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+state = load_state()
 before = json.dumps(settings, sort_keys=True)
 changes = []
 
-def state():
+def is_old_claudelingo(command, verbs):
+    """True only if the program being run *is* claudelingo, asked for one of `verbs`.
+
+    The same rule the older claudelingo used to recognise its own entries. A
+    command that merely mentions claudelingo, such as a user's `sh -c` that also
+    runs it or a script called `notify-claudelingo`, is not ours and is kept.
+    """
     try:
-        with open(state_path) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
+        words = shlex.split(str(command))
+    except ValueError:
+        return False
+    return len(words) >= 2 and os.path.basename(words[0]) == "claudelingo" and words[1] in verbs
 
 if mode == "install":
     env = settings.setdefault("env", {})
     if not isinstance(env, dict):
-        print('settings.json "env" is not an object; leaving it alone', file=sys.stderr)
-        sys.exit(3)
+        refuse('settings.json "env" is not an object')
 
-    added_flag = False
     if env.get(FLAG) != "1":
-        added_flag = FLAG not in env
+        # Remember what was there, so uninstall can put it back exactly.
+        if "flag" not in state:
+            state["flag"] = {"present": FLAG in env, "value": env.get(FLAG)}
         env[FLAG] = "1"
         changes.append(f"set env.{FLAG} = 1")
 
-    # The pre-mod claudelingo: `claudelingo statusline` and six
-    # `claudelingo hook <Event>` / `claudelingo session-start` entries. The
-    # command may carry an absolute, quoted path to the binary.
-    old = re.compile(r'claudelingo"?\s+(hook|session-start|statusline|notify)\b')
-
     line = settings.get("statusLine")
-    if isinstance(line, dict) and old.search(str(line.get("command", ""))):
+    if isinstance(line, dict) and is_old_claudelingo(line.get("command", ""), {"statusline"}):
         del settings["statusLine"]
         changes.append("removed the old claudelingo status line")
 
@@ -124,7 +155,10 @@ if mode == "install":
                 if not isinstance(inner, list):
                     kept_groups.append(group)
                     continue
-                kept = [h for h in inner if not (isinstance(h, dict) and old.search(str(h.get("command", ""))))]
+                kept = [
+                    h for h in inner
+                    if not (isinstance(h, dict) and is_old_claudelingo(h.get("command", ""), {"hook", "session-start"}))
+                ]
                 removed += len(inner) - len(kept)
                 if kept:
                     group["hooks"] = kept
@@ -138,33 +172,58 @@ if mode == "install":
         if removed:
             changes.append(f"removed {removed} old claudelingo hook{'s' if removed != 1 else ''}")
 
-    # Remember whether the flag was ours, so uninstall only takes back what it gave.
-    previous = state()
-    remembered = {"addedFlag": previous.get("addedFlag", False) or added_flag}
-    os.makedirs(os.path.dirname(state_path), exist_ok=True)
-    with open(state_path, "w") as f:
-        json.dump(remembered, f)
-
 elif mode == "uninstall":
-    if state().get("addedFlag"):
-        env = settings.get("env")
-        if isinstance(env, dict) and FLAG in env:
+    previous = state.get("flag")
+    env = settings.get("env")
+    if isinstance(previous, dict) and isinstance(env, dict) and env.get(FLAG) == "1":
+        if previous.get("present"):
+            env[FLAG] = previous.get("value")
+            changes.append(f"restored env.{FLAG} to its previous value")
+        else:
             del env[FLAG]
             if not env:
                 del settings["env"]
             changes.append(f"removed env.{FLAG}")
 
 if json.dumps(settings, sort_keys=True) != before:
-    if os.path.exists(path):
-        backup = f"{path}.claudelingo-backup-{time.strftime('%Y%m%d-%H%M%S')}"
-        shutil.copy2(path, backup)
+    if exists:
+        # Never overwrite an earlier backup: the first one holds the original.
+        backup = f"{target}.claudelingo-backup"
+        n = 1
+        while os.path.exists(backup):
+            n += 1
+            backup = f"{target}.claudelingo-backup-{n}"
+        shutil.copy2(target, backup)
         changes.append(f"backup: {backup}")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".claudelingo-tmp"
-    with open(tmp, "w") as f:
-        json.dump(settings, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, path)
+    else:
+        os.makedirs(directory, exist_ok=True)
+
+    fd, tmp = tempfile.mkstemp(prefix=".settings.", suffix=".claudelingo-tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(settings, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        # Keep the original's permissions. settings.json often holds API keys in
+        # its env block, and a new file would otherwise get the umask's, usually 644.
+        if exists:
+            shutil.copymode(target, tmp)
+        else:
+            os.chmod(tmp, 0o600)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+# Only once the write has landed does a record of it mean anything.
+if mode == "install":
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    with open(state_path, "w") as f:
+        json.dump(state, f)
 
 for change in changes:
     print(change)
@@ -214,10 +273,12 @@ uninstall() {
   say "Uninstalling claudelingo"
 
   if [ -f "$SETTINGS" ] && [ -f "$STATE" ]; then
-    if have_python; then
-      edit_settings uninstall | while IFS= read -r line; do step "$line"; done
-    else
+    if ! have_python; then
       warn "python3 not found; remove env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS from $SETTINGS by hand if you want it gone"
+    elif output=$(edit_settings uninstall); then
+      [ -n "$output" ] && printf '%s\n' "$output" | while IFS= read -r line; do step "$line"; done
+    else
+      warn "could not update $SETTINGS; remove env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS from it by hand if you want it gone"
     fi
   fi
 
