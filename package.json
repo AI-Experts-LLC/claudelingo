@@ -1,7 +1,7 @@
 {
   "name": "claudelingo",
-  "version": "0.2.0",
-  "description": "Learn a language in the dead time while Claude Code or Codex is working. A terminal companion pane that teaches and quizzes you on high-frequency vocabulary while your coding agent thinks.",
+  "version": "0.3.0",
+  "description": "Learn a language in the dead time while Claude is working. A spaced-repetition quiz in the band above your Claude Code prompt, answered with a digit.",
   "type": "module",
   "license": "MIT",
   "author": "AI Experts LLC",
@@ -11,52 +11,27 @@
   },
   "keywords": [
     "claude-code",
-    "codex",
+    "mod",
+    "function-hooks",
     "language-learning",
     "spaced-repetition",
-    "tui",
     "vocabulary"
   ],
   "engines": {
     "node": ">=20.11"
   },
-  "bin": {
-    "claudelingo": "dist/cli.js"
-  },
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
-  "files": [
-    "dist",
-    "bin",
-    "hooks",
-    "skills",
-    ".claude-plugin",
-    "scripts",
-    "README.md",
-    "LICENSE"
-  ],
+  "private": true,
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/copy-packs.mjs",
-    "dev": "tsx src/cli.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && vitest run",
-    "test:unit": "vitest run test/unit",
-    "test:e2e": "npm run build && vitest run test/e2e",
+    "test": "vitest run",
     "test:watch": "vitest",
-    "prepare": "npm run build",
-    "postinstall": "node scripts/welcome.mjs",
-    "check:dist": "node scripts/check-dist.mjs"
+    "test:install": "sh tests/installer.sh",
+    "test:kit": "claude plugin test .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "validate": "claude plugin validate .claude-plugin/plugin.json && claude plugin validate .",
+    "check": "npm run typecheck && npm run validate && npm run test && npm run test:install"
   },
-  "dependencies": {},
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }
