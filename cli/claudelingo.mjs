@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // claudelingo — installs the claudelingo mod into Claude Code.
 //
-//   npx claudelingo install        install or update
-//   npx claudelingo uninstall      remove it (your decks are kept)
-//   npx claudelingo status         what is installed, and whether it will load
+//   npx claudelingo@latest install     install or update
+//   npx claudelingo@latest uninstall   remove it (your decks are kept)
+//   npx claudelingo@latest status      what is installed, and whether it will load
 //
 // The package carries the plugin itself. `install` copies it into
 // ~/.claude/skills/claudelingo, where Claude Code loads it, and turns on function
@@ -100,7 +100,7 @@ function shellWords(command) {
     } else if (c === '\\' && i + 1 < command.length) {
       word += command[++i]
       inWord = true
-    } else if (/\s/.test(c)) {
+    } else if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
       if (inWord) words.push(word)
       word = ''
       inWord = false
@@ -258,8 +258,25 @@ function isDanglingLink(file) {
   }
 }
 
-/** The real file behind a chain of links, even when the last one dangles. */
+/**
+ * The real file behind a chain of links, even when the last one dangles.
+ *
+ * `..` has to be resolved *after* following directory links, the way the kernel
+ * does it. Treating it as text goes wrong when ~/.claude is itself a link and
+ * settings.json is a relative link that climbs out of it: the path looks fine,
+ * points somewhere else, and the install reports success while writing a stray
+ * file. So every hop is resolved against the real path of its directory.
+ */
 function resolveTarget(file) {
+  try {
+    return fs.realpathSync(file)
+  } catch (error) {
+    if (error.code === 'ELOOP') {
+      throw new Refusal('settings.json could not be read (too many levels of symbolic links)')
+    }
+    // Dangling: follow it hop by hop to where the file should be.
+  }
+
   let current = file
 
   for (let hops = 0; hops < 40; hops++) {
@@ -273,7 +290,15 @@ function resolveTarget(file) {
 
     if (!stat.isSymbolicLink()) return current
 
-    current = path.resolve(path.dirname(current), fs.readlinkSync(current))
+    let directory
+
+    try {
+      directory = fs.realpathSync(path.dirname(current))
+    } catch {
+      directory = path.dirname(current)
+    }
+
+    current = path.resolve(directory, fs.readlinkSync(current))
   }
 
   throw new Refusal('settings.json could not be read (too many levels of symbolic links)')
@@ -373,12 +398,15 @@ function installLauncher() {
 /**
  * Copy the plugin in, replacing any earlier copy in one step.
  *
- * Copied beside the destination first and then swapped, so an interrupted
- * install leaves the old plugin working rather than half of a new one.
+ * Copied to a staging folder first and then moved in, so an interrupted copy
+ * leaves the old plugin untouched rather than half of a new one.
  */
 function copyPlugin() {
   const destination = pluginDir()
-  const staging = `${destination}.claudelingo-staging`
+  // Outside skills/: a staging folder left by a crash must not load as a second
+  // copy of the plugin. Same parent filesystem as the destination, so the
+  // rename is atomic.
+  const staging = path.join(claudeDir(), '.claudelingo-staging')
   const previousState = fs.existsSync(statePath()) ? fs.readFileSync(statePath()) : null
 
   fs.rmSync(staging, { recursive: true, force: true })
@@ -484,9 +512,14 @@ function install(options) {
       say()
       say('Done. Start Claude Code as usual:  claude')
     } catch (error) {
-      if (!(error instanceof Refusal)) throw error
-
-      warn(`${error.message}; leaving settings.json alone`)
+      // A refusal is a decision; anything else (a full disk, a directory that
+      // cannot be created) is a failure. Either way settings.json is unchanged,
+      // and the plugin is already copied, so the launcher still gets you going.
+      warn(
+        error instanceof Refusal
+          ? `${error.message}; leaving settings.json alone`
+          : `could not update settings.json (${error.message}); it is unchanged`,
+      )
       useSettings = false
     }
   }
@@ -508,7 +541,7 @@ function install(options) {
   say()
   say('Start a task and a card appears above your prompt; press the digit beside')
   say('your answer. Press 1 on the idle band for a quiz. /lingo shows the rest.')
-  say('Update: npx claudelingo@latest install    Uninstall: npx claudelingo uninstall')
+  say('Update: npx claudelingo@latest install    Uninstall: npx claudelingo@latest uninstall')
 }
 
 function uninstall() {
@@ -583,14 +616,18 @@ function status() {
 
 const USAGE = `claudelingo ${packageVersion()} — a vocabulary quiz above your Claude Code prompt
 
-  npx claudelingo install        install or update
-  npx claudelingo install --no-settings
-                                 leave settings.json alone; start with claude-lingo instead
-  npx claudelingo uninstall      remove it (your decks are kept)
-  npx claudelingo status         what is installed, and whether it will load`
+  npx claudelingo@latest install        install or update
+  npx claudelingo@latest install --no-settings
+                                        leave settings.json alone; start with claude-lingo instead
+  npx claudelingo@latest uninstall      remove it (your decks are kept)
+  npx claudelingo@latest status         what is installed, and whether it will load`
 
 function main(argv) {
   const [command, ...rest] = argv
+
+  if (process.platform === 'win32' && ['install', 'update', 'uninstall', 'status'].includes(command)) {
+    fail('claudelingo does not support Windows yet: https://github.com/AI-Experts-LLC/claudelingo/issues')
+  }
 
   switch (command) {
     case 'install':

@@ -238,6 +238,28 @@ run
 run --uninstall
 check "restores what the latest install found, not the first" '[ "$(json "d[\"env\"][\"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS\"]")" = 0 ]'
 
+echo "a config directory that is itself a symlink"
+home linked-dir 2.1.274
+rm -rf "$H/.claude"
+mkdir -p "$H/real/claude-config" "$H/real/shared"
+ln -s "$H/real/claude-config" "$H/.claude"
+printf '{ "theme": "dark" }\n' > "$H/real/shared/settings.json"
+# Relative, climbing out of the linked directory: `..` must be resolved after
+# following ~/.claude, or it points at a file that does not exist.
+ln -s ../shared/settings.json "$H/real/claude-config/settings.json"
+run
+check "writes the file the link really points at" 'grep -q CLAUDE_CODE_ENABLE_FUNCTION_HOOKS "$H/real/shared/settings.json"'
+check "creates no stray settings.json beside the link" '[ ! -e "$H/shared/settings.json" ] && [ -L "$H/real/claude-config/settings.json" ]'
+
+echo "a failure that is not a refusal"
+home cannot-create 2.1.274
+mkdir -p "$H/locked"
+chmod 555 "$H/locked"
+ln -s "$H/locked/deeper/settings.json" "$H/.claude/settings.json"
+run
+chmod 755 "$H/locked"
+check "still leaves you a way to start, instead of a stack trace" '[ -x "$H/.local/bin/claude-lingo" ] && ! grep -q "    at " "$H/out"'
+
 echo "leftovers from earlier installs"
 home leftovers 2.1.274
 mkdir -p "$H/.claude/skills/claudelingo-mod/.claude-plugin" "$H/.claude/skills/unrelated/.claude-plugin" "$H/.claudelingo/src/skills/lingo" "$H/.local/bin" "$H/elsewhere/lingo"
@@ -268,6 +290,12 @@ out=$(HOME="$H" PATH="$NODE_DIR:/usr/bin:/bin" node "$ROOT/cli/claudelingo.mjs" 
 check "answers its status line with nothing, rather than text in their status line" '[ "$out" = "exit=0" ]'
 out=$(HOME="$H" PATH="$NODE_DIR:/usr/bin:/bin" node "$ROOT/cli/claudelingo.mjs" hook Stop --source claude; echo "exit=$?")
 check "answers its hooks silently, rather than an error on every turn" '[ "$out" = "exit=0" ]'
+out=$(HOME="$H" PATH="$NODE_DIR:/usr/bin:/bin" node "$ROOT/cli/claudelingo.mjs" session-start; echo "exit=$?")
+check "answers its session start silently" '[ "$out" = "exit=0" ]'
+out=$(HOME="$H" PATH="$NODE_DIR:/usr/bin:/bin" node "$ROOT/cli/claudelingo.mjs" notify '{"type":"agent-turn-complete"}'; echo "exit=$?")
+check "answers its Codex notify silently" '[ "$out" = "exit=0" ]'
+out=$(HOME="$H" PATH="$NODE_DIR:/usr/bin:/bin" node "$ROOT/cli/claudelingo.mjs" stats 2>&1; echo "exit=$?")
+check "does not silently swallow a command that was never a hook" 'echo "$out" | grep -q "exit=1"'
 
 echo "status"
 home status 2.1.274
@@ -297,6 +325,7 @@ check "ships no tests" '! tar -tzf "$TARBALL" | grep -q "package/tests/"'
 home curl 2.1.274
 HOME="$H" PATH="$H/stub:$NODE_DIR:/usr/bin:/bin" npm_config_cache="$WORK/npm-cache" CLAUDELINGO_PACKAGE="$TARBALL" \
   sh -c "cat '$ROOT/install.sh' | sh" > "$H/out" 2>&1
+check "the README's commands all pin @latest, so npx never runs an older claudelingo" '! grep -o "npx claudelingo[^ ]*" "$ROOT/README.md" | grep -qv "npx claudelingo@latest"'
 check "the curl command hands off to the package and installs" '[ -f "$H/.claude/skills/claudelingo/.claude-plugin/plugin.json" ] && grep -q "Done." "$H/out"'
 HOME="$H" PATH="$H/stub:$NODE_DIR:/usr/bin:/bin" npm_config_cache="$WORK/npm-cache" CLAUDELINGO_PACKAGE="$TARBALL" \
   sh -c "cat '$ROOT/install.sh' | sh -s -- --uninstall" > "$H/out" 2>&1

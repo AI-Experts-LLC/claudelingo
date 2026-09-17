@@ -19,7 +19,7 @@ generated on demand.
 ## Install
 
 ```bash
-npx claudelingo install
+npx claudelingo@latest install
 ```
 
 Then start Claude Code as usual with `claude`. The first time, the band asks
@@ -65,7 +65,7 @@ when you run `install`.
 Prefer not to have your settings touched? Use this instead:
 
 ```bash
-npx claudelingo install --no-settings
+npx claudelingo@latest install --no-settings
 ```
 
 With that option, `settings.json` is left alone and you start Claude Code with
@@ -74,7 +74,7 @@ With that option, `settings.json` is left alone and you start Claude Code with
 ### Uninstall
 
 ```bash
-npx claudelingo uninstall
+npx claudelingo@latest uninstall
 ```
 
 This removes the plugin and puts the function-hooks setting back the way it was
@@ -181,10 +181,17 @@ language already has a deck in the new version, that deck is kept rather than
 overwritten.
 
 The installer removes the old version's status line and hooks from
-`settings.json` for you. The old program lived in `~/.claudelingo/src`, and that
-folder can be deleted. If an old `claudelingo` command is still on your PATH, it
-is harmless: the new `claudelingo` command quietly ignores the old version's
-hook calls.
+`settings.json` for you. Then delete the old program, because it was also a
+command called `claudelingo`, and while it is still on your PATH, `npx` can run
+it instead of this package:
+
+```bash
+rm -rf ~/.claudelingo/src && rm -f "$(command -v claudelingo)"
+```
+
+That is also why every command in this README says `claudelingo@latest`: the
+`@latest` makes npx fetch this package rather than use whatever `claudelingo` it
+finds first.
 
 Codex support did not carry over. The old version could quiz you while Codex
 worked, but a mod is a Claude Code plugin, so the new version only runs inside
@@ -193,7 +200,7 @@ Claude Code.
 ## Troubleshooting
 
 **Nothing appears above the prompt.**
-- Run `npx claudelingo status`. It says what is installed, whether function
+- Run `npx claudelingo@latest status`. It says what is installed, whether function
   hooks are on, and whether your Claude Code is new enough.
 - Check `claude --version` is 2.1.271 or newer. The `stable` release channel can
   lag behind the version this needs.
@@ -243,7 +250,7 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .
 | `hooks/migrate.ts` | importing decks from the older claudelingo |
 | `hooks/packgen.ts` | generating a word pack for a new language |
 | `hooks/packs/` | the built-in Spanish, French and Italian word lists |
-| `cli/claudelingo.mjs` | the installer: `npx claudelingo install`, `uninstall`, `status` |
+| `cli/claudelingo.mjs` | the installer: `npx claudelingo@latest install`, `uninstall`, `status` |
 | `install.sh` | the curl installer, which hands off to the npm package |
 | `types/claude-code.d.ts` | the function-hooks API, as written by Claude Code's `/plugin-types` |
 

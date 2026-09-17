@@ -9,7 +9,7 @@
 #
 #   npx claudelingo@latest install
 #
-# Options: --uninstall, --no-settings. See `npx claudelingo help`.
+# Options: --uninstall, --no-settings. See `npx claudelingo@latest help`.
 
 set -eu
 
@@ -46,7 +46,7 @@ main() {
   # and a curl install can start inside any project, including one with its own
   # `claudelingo` dependency. stdin is this script when piped from curl, so
   # nothing downstream should read it.
-  cd "${TMPDIR:-/tmp}"
+  cd "${TMPDIR:-/tmp}" 2>/dev/null || cd /tmp
 
   if [ "$command" = uninstall ]; then
     exec npx --yes --package="$package" claudelingo uninstall </dev/null
