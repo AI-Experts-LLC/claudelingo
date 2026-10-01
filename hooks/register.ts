@@ -627,7 +627,18 @@ export function register(on: On) {
       every: (ms, fn) => $.clock.every(ms, fn),
       get: (key) => $.store.get(key),
       set: (key, value) => $.store.set(key, value),
-      complete: (request) => $.model.complete(request),
+      // Claude Code 2.1.286 resolves `$.model.complete` to `{ isAnswered, text }`
+      // although the types say `string`. Accept both, so a caller never sees an
+      // object where it expects the reply's text.
+      complete: async (request) => {
+        const reply: unknown = await $.model.complete(request)
+
+        if (typeof reply === 'string') return reply
+
+        const text = (reply as { text?: unknown } | null | undefined)?.text
+
+        return typeof text === 'string' ? text : ''
+      },
       invalidate: () => $.ui.invalidate('ui.render'),
       toast: (text) => $.ui.toast(text),
       log: (text) => $.ui.log(text),
