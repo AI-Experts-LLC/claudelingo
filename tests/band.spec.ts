@@ -249,14 +249,20 @@ describe('band', () => {
 
   /**
    * Control labels are charged whole and never shrink, so the narrowest
-   * supported band is the one with the least headroom — the teach card's
-   * `1: got it  5: skip  6: explain` is 30 cells at exactly 30 columns.
+   * supported band is the one with the least headroom — the wrong-answer
+   * verdict's `1: next  6: explain  2/5` is the widest controls row.
    *
    * Nothing else would notice a one-character rename here, and the cost of one
    * is the four-row band that disarms every hotkey. So it is pinned.
    */
   it('fits its widest controls row at the narrowest supported width', () => {
-    for (const over of [{ card: teachCard() }, { card: cardAt(1), item: reviewing(1) }]) {
+    const wrong = { correct: false, answer: 'the', word: SPANISH.words[0]! }
+
+    for (const over of [
+      { card: teachCard() },
+      { card: cardAt(1), item: reviewing(1) },
+      { verdict: wrong },
+    ]) {
       const { tree } = draw(over, BAND_MIN_COLUMNS)
 
       for (const row of bodyRows(tree)) {
@@ -352,10 +358,10 @@ describe('band', () => {
     })
 
     it('says it is asking while the model is being asked', () => {
-      const card = cardAt(1)
+      const verdict = { correct: false, answer: 'the', word }
 
-      const idle = draw({ card, item: reviewing(1) })
-      const busy = draw({ card, item: reviewing(1), fetchingHook: true })
+      const idle = draw({ verdict })
+      const busy = draw({ verdict, fetchingHook: true })
 
       const label = (d: typeof idle) =>
         String(buttons(d.nodes).find((b) => b.props.key === KEYS.explain)?.props.label)
@@ -365,7 +371,7 @@ describe('band', () => {
     })
 
     it('reaches the explain action when pressed', () => {
-      const { nodes, actions } = draw({ card: cardAt(1), item: reviewing(1) })
+      const { nodes, actions } = draw({ verdict: { correct: false, answer: 'the', word } })
       const button = buttons(nodes).find((b) => b.props.key === KEYS.explain)
 
       ;(button!.props.onPress as () => void)()
@@ -391,9 +397,37 @@ describe('band', () => {
     })
   })
 
+  /**
+   * Before an answer, explain would be a hint — and the hook it fetched was
+   * dropped when the card was graded, so the key promised something it could
+   * not deliver. It is offered after a wrong answer, and nowhere else.
+   */
+  describe('where explain is offered', () => {
+    const word = SPANISH.words[0]!
+    const hasExplain = (d: ReturnType<typeof draw>) =>
+      buttons(d.nodes).some((b) => b.props.key === KEYS.explain)
+
+    it('is not offered on any card that is waiting for an answer', () => {
+      for (const card of [teachCard(), cardAt(1), cardAt(5)]) {
+        const item = card.kind === 'recall' ? reviewing(5) : reviewing(1)
+
+        expect(hasExplain(draw({ card, item })), card.kind).toBe(false)
+      }
+    })
+
+    it('is not offered after a right answer', () => {
+      expect(hasExplain(draw({ verdict: { correct: true, answer: 'the', word } }))).toBe(false)
+    })
+
+    it('is offered after a wrong answer', () => {
+      expect(hasExplain(draw({ verdict: { correct: false, answer: 'the', word } }))).toBe(true)
+    })
+  })
+
   it('hides the explain key when enrichment is off', () => {
-    const on = draw({ card: cardAt(1), item: reviewing(1), enrich: true })
-    const off = draw({ card: cardAt(1), item: reviewing(1), enrich: false })
+    const verdict = { correct: false, answer: 'the', word: SPANISH.words[0]! }
+    const on = draw({ verdict, enrich: true })
+    const off = draw({ verdict, enrich: false })
 
     expect(buttons(on.nodes).map((b) => b.props.key)).toContain(KEYS.explain)
     expect(buttons(off.nodes).map((b) => b.props.key)).not.toContain(KEYS.explain)

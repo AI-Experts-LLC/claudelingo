@@ -9,7 +9,7 @@ When Claude needs you back, the card gets out of the way.
 ```
  ,___,  What does "tiempo" mean?
  (o.o)  1: time   2: weather   3: house   4: always
- /)_)   5: skip   6: explain   box 1/5
+ /)_)   5: skip   box 1/5
 ```
 
 Spanish, French and Italian are built in, roughly the 310 most common words in
@@ -88,7 +88,7 @@ where you are, whether or not Claude is busy:
 ```
  ,___,  What does "el" mean?
  (o.o)  1: the (f. pl.)  2: a (f.)  3: the (m.)  4: the (f.)
- /)_)   5: skip   6: explain   2/5
+ /)_)   5: skip   2/5
 ```
 
 It counts down, keeps going if you send Claude a prompt in the meantime, and
@@ -110,7 +110,7 @@ clicking anything first. One keystroke per answer.
 | `1`–`4` | answer a multiple-choice card |
 | `1` | acknowledge a new word, move past a result, or start a quiz from the idle band |
 | `5` | skip a card. No penalty; it comes back in ten minutes |
-| `6` | explain: ask Claude for a memory hook for this word |
+| `6` | explain: after a wrong answer, ask Claude for a memory hook for the word |
 | type + `Enter` | spell a word out, on cards that ask you to |
 
 ### Commands

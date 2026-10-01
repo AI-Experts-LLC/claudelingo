@@ -318,20 +318,20 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
     const aside =
       model.hook || remark(moodOf(model), model.streak) || word.note || word.example?.text || ''
 
+    const nextButton: Control = {
+      key: KEYS.next,
+      hotkey: CONTROL_HOTKEYS.next,
+      part: named(CONTROL_HOTKEYS.next, 'next'),
+      onPress: actions.next,
+    }
+
+    // Explain is offered after a wrong answer only. Before an answer it would be
+    // a hint, and the hook it fetched was dropped the moment the card was
+    // graded; after a right answer there is nothing to put right.
     return [
       line(said, { bold: true, color: correct ? 'success' : 'error' }),
       dim(aside),
-      controls(
-        withExplain([
-          {
-            key: KEYS.next,
-            hotkey: CONTROL_HOTKEYS.next,
-            part: named(CONTROL_HOTKEYS.next, 'next'),
-            onPress: actions.next,
-          },
-        ]),
-        progress,
-      ),
+      controls(correct ? [nextButton] : withExplain([nextButton]), progress),
     ]
   }
 
@@ -362,7 +362,7 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
         </Box>,
         line(`${card.word.gloss}  ${card.word.pos}${note}`),
         controls(
-          withExplain([
+          [
             {
               key: KEYS.next,
               hotkey: CONTROL_HOTKEYS.next,
@@ -370,7 +370,7 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
               onPress: actions.next,
             },
             skipButton,
-          ]),
+          ],
           progress,
         ),
       ]
@@ -387,7 +387,7 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
           onInput={actions.type}
           onSubmit={actions.spell}
         />,
-        controls(withExplain([skipButton]), counter(box)),
+        controls([skipButton], counter(box)),
       ]
     }
 
@@ -415,7 +415,7 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
           />
         ))}
       </Box>,
-      controls(withExplain([skipButton]), counter(box)),
+      controls([skipButton], counter(box)),
     ]
   }
 
