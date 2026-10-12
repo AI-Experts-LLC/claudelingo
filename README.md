@@ -13,7 +13,8 @@ When Claude needs you back, the card gets out of the way.
 ```
 
 Spanish, French and Italian are built in, roughly the 310 most common words in
-each, which covers most of what you hear in a day. Any other language can be
+each, which covers most of what you hear in a day. Japanese is built in as three
+script decks: hiragana, katakana and the N5 kanji. Any other language can be
 generated on demand.
 
 ## Install
@@ -151,6 +152,24 @@ the short gaps, without wiping its history.
 At most 8 words are in progress at once and at most 20 new words a day, so a
 long afternoon builds a deck you remember rather than a flood you forget.
 
+### Japanese
+
+Japanese is taught as its scripts, because a frequency list opens with
+particles like の and は, which are grammar and have no meaning to choose from
+four. Each script is a deck of its own:
+
+| Code | Deck | |
+|---|---|---|
+| `ja-hira` | Hiragana | all 104: the plain set, the voiced (が, ぱ) and the combinations (きゃ) |
+| `ja-kata` | Katakana | the same 104, in katakana |
+| `ja-kanji` | Kanji (N5) | the 79 JLPT N5 kanji, grouped by theme, each with its readings |
+
+`/lingo lang ja-hira` starts one. The ladder is the same, asked in the decks'
+own terms: how a kana is read and which kana a sound is; what a kanji means and
+which kanji a meaning is. The top step asks for a reading rather than a
+spelling: you see か or 水 and type `ka` or `mizu`. Romaji in any common system
+works (`shi` or `si`), and so does kana, so no Japanese keyboard is needed.
+
 ## Your data
 
 Everything is stored locally, in a file Claude Code keeps for the plugin under
@@ -231,7 +250,8 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .
 | `hooks/deck.ts` | reading and writing decks, settings and packs |
 | `hooks/migrate.ts` | importing decks from the older claudelingo |
 | `hooks/packgen.ts` | generating a word pack for a new language |
-| `hooks/packs/` | the built-in Spanish, French and Italian word lists |
+| `hooks/packs/` | the built-in Spanish, French and Italian word lists, and the Japanese script decks |
+| `hooks/kana.ts` | the kana table, and reading typed romaji back as kana |
 | `install.sh` | the installer |
 | `types/claude-code.d.ts` | the function-hooks API, as written by Claude Code's `/plugin-types` |
 

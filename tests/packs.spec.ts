@@ -4,6 +4,7 @@ import { BUNDLED_CHOICES, materialize } from '../hooks/pack'
 import { BUNDLED } from '../hooks/packs'
 import { MASCOT_HEIGHT, MASCOT_WIDTH, owl } from '../hooks/ui/mascot'
 import type { Mood } from '../hooks/ui/mascot'
+import { kanaToRomaji, isKana } from '../hooks/kana'
 import { buildCard, isCorrect, makeRng } from '../hooks/srs'
 import { stringWidth } from '../hooks/ui/width'
 import type { ItemProgress } from '../hooks/types'
@@ -26,19 +27,25 @@ const VALID_POS = new Set([
 
 const PACKS = BUNDLED.map((raw) => materialize(raw))
 
+/** The vocabulary packs: everything below that is about words, not scripts. */
+const VOCAB = PACKS.filter((pack) => pack.kind === 'words')
+
+/** The script decks, which are asked for readings rather than spellings. */
+const SCRIPTS = PACKS.filter((pack) => pack.kind !== 'words')
+
 const reviewing = (id: string, box: number): ItemProgress => ({
   id, stage: 'review', box, step: 0, due: 0, lastSeen: 0, seen: 1, correct: 1, lapses: 0,
 })
 
 describe('the packs that ship', () => {
-  it('ships Spanish, French and Italian', () => {
-    expect(PACKS.map((p) => p.code).sort()).toEqual(['es', 'fr', 'it'])
+  it('ships Spanish, French, Italian and three Japanese script decks', () => {
+    expect(PACKS.map((p) => p.code).sort()).toEqual(['es', 'fr', 'it', 'ja-hira', 'ja-kanji', 'ja-kata'])
     expect(BUNDLED_CHOICES.map((c) => c.englishName).sort()).toEqual([
-      'French', 'Italian', 'Spanish',
+      'French', 'Hiragana', 'Italian', 'Kanji (N5)', 'Katakana', 'Spanish',
     ])
   })
 
-  it.each(PACKS)('$englishName is substantial and internally consistent', (pack) => {
+  it.each(VOCAB)('$englishName is substantial and internally consistent', (pack) => {
     expect(pack.words.length).toBeGreaterThanOrEqual(300)
     expect(pack.englishName).toBeTruthy()
     expect(pack.name).toBeTruthy()
@@ -85,7 +92,7 @@ describe('the packs that ship', () => {
     }
   })
 
-  it.each(PACKS)('$englishName can be spelled out from its gloss at the top box', (pack) => {
+  it.each(VOCAB)('$englishName can be spelled out from its gloss at the top box', (pack) => {
     for (const word of pack.words) {
       const card = buildCard(pack, word, reviewing(word.id, 5), makeRng(1))
 
@@ -111,7 +118,7 @@ describe('the packs that ship', () => {
     }
   })
 
-  it.each(PACKS)('$englishName starts with genuinely high-frequency function words', (pack) => {
+  it.each(VOCAB)('$englishName starts with genuinely high-frequency function words', (pack) => {
     const openers = pack.words.slice(0, 20).map((w) => w.pos)
 
     const functionWords = openers.filter((pos) =>
@@ -136,6 +143,53 @@ describe('the packs that ship', () => {
 
       expect(card.prompt, `${pack.code}:${word.term}`).toContain('____')
       expect(card.prompt.toLowerCase()).not.toContain(word.term.toLowerCase())
+    }
+  })
+})
+
+/**
+ * The Japanese script decks.
+ *
+ * Kana is a closed set, so the decks are checked for being the whole of it.
+ * Kanji are checked for what makes their cards answerable: a reading for the
+ * top card, and readings that are kana the typed answer can be compared with.
+ */
+describe('the Japanese script decks', () => {
+  it('teaches every plain, voiced and combined kana, in both scripts', () => {
+    const hiragana = PACKS.find((p) => p.code === 'ja-hira')!
+    const katakana = PACKS.find((p) => p.code === 'ja-kata')!
+
+    expect(hiragana.words).toHaveLength(104)
+    expect(katakana.words).toHaveLength(104)
+    expect(hiragana.words.slice(0, 5).map((w) => w.term).join('')).toBe('あいうえお')
+    expect(katakana.words.slice(0, 5).map((w) => w.term).join('')).toBe('アイウエオ')
+    expect(katakana.words.map((w) => w.gloss)).toEqual(hiragana.words.map((w) => w.gloss))
+  })
+
+  it('teaches the 79 N5 kanji, each with a reading in kana', () => {
+    const kanji = PACKS.find((p) => p.code === 'ja-kanji')!
+
+    expect(kanji.words).toHaveLength(79)
+
+    for (const word of kanji.words) {
+      expect(word.readings?.length, word.term).toBeGreaterThan(0)
+
+      for (const reading of word.readings ?? []) {
+        expect(isKana(reading), `${word.term}: "${reading}"`).toBe(true)
+        expect(kanaToRomaji(reading), `${word.term}: "${reading}"`).not.toBeNull()
+      }
+    }
+  })
+
+  it.each(SCRIPTS)('$englishName is answered at the top box with a reading', (pack) => {
+    for (const word of pack.words) {
+      const card = buildCard(pack, word, reviewing(word.id, 5), makeRng(1))
+      const reading = word.readings?.[0] ?? ''
+
+      expect(card.kind).toBe('recall')
+      expect(card.prompt).toBe(word.term)
+      expect(isCorrect(card, { text: kanaToRomaji(reading) ?? '' }), `${word.term} in romaji`).toBe(true)
+      expect(isCorrect(card, { text: reading }), `${word.term} in kana`).toBe(true)
     }
   })
 })

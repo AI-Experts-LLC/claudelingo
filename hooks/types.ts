@@ -25,15 +25,30 @@ export interface Word {
   example?: { text: string; translation: string }
   /** Optional extra: noun gender, an irregular form, a usage caveat. */
   note?: string
+  /**
+   * How the term is read, in kana, for a script pack. Their top card asks for
+   * a reading, typed in romaji or kana, rather than a spelling.
+   */
+  readings?: string[]
 }
 
+/**
+ * What a pack teaches.
+ *
+ * `words` is vocabulary, asked for meanings and spelled out at the top. `kana`
+ * and `kanji` are scripts: a kana's gloss is its romaji, a kanji's is its
+ * meaning, and both are asked for their reading at the top.
+ */
+export type PackKind = 'words' | 'kana' | 'kanji'
+
 export interface Pack {
-  /** ISO 639-1 code. */
+  /** ISO 639-1 code, or a code of its own for a script deck, e.g. `ja-hira`. */
   code: string
   /** Name in the target language, e.g. "Español". */
   name: string
   /** Name in English, e.g. "Spanish". */
   englishName: string
+  kind: PackKind
   words: Word[]
 }
 
@@ -42,12 +57,16 @@ export interface RawPack {
   code: string
   name: string
   englishName: string
+  /** `words` when absent, which every pack written before scripts is. */
+  kind?: PackKind
   /**
    * `[term, gloss, pos, note?, example?]`, ordered most-frequent first.
    *
    * `example` is a short sentence using the word, with its English translation
    * after a `|`. It is what a cloze card blanks out, and it is optional: packs
    * written before sentences existed stay valid.
+   *
+   * In a `kanji` pack, `note` is the readings, space separated, in kana.
    */
   words: Array<
     | [string, string, string]

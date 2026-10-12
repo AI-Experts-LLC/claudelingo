@@ -378,7 +378,7 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
 
     if (card.kind === 'recall') {
       return [
-        line(`Spell the ${pack.englishName} for "${card.prompt}"`, { bold: true }),
+        line(questionRow(card, pack), { bold: true }),
         <Input
           key={KEYS.spell}
           placeholder="type it, then Enter"
@@ -403,7 +403,7 @@ function rowsOf(kit: BandKit, model: BandModel, columns: number): RenderElement[
     )
 
     return [
-      line(questionRow(card, pack.englishName), { bold: true }),
+      line(questionRow(card, pack), { bold: true }),
       <Box flexDirection="row" gap={2}>
         {card.choices.map((choice, index) => (
           <Button
@@ -497,15 +497,29 @@ function asideFor(asked: number, run: QuizRun): string {
   return 'wrong ones come back sooner; right ones come back later.'
 }
 
-/** How a card is asked, in words. `teach` has its own layout above. */
-function questionRow(card: Card, englishName: string): string {
+/**
+ * How a card is asked, in words. `teach` has its own layout above.
+ *
+ * A script deck is asked differently: a kana has a sound rather than a meaning,
+ * "How do you say 'ka' in Hiragana?" is not a question anyone asks, and the top
+ * card wants a reading rather than a spelling.
+ */
+function questionRow(card: Card, pack: Pack): string {
+  const kana = pack.kind === 'kana'
+
   switch (card.kind) {
     case 'recognize':
-      return `What does "${card.prompt}" mean?`
+      return kana ? `How do you read "${card.prompt}"?` : `What does "${card.prompt}" mean?`
     case 'reverse':
-      return `How do you say "${card.prompt}" in ${englishName}?`
+      if (kana) return `Which is "${card.prompt}"?`
+      if (pack.kind === 'kanji') return `Which kanji means "${card.prompt}"?`
+      return `How do you say "${card.prompt}" in ${pack.englishName}?`
     case 'cloze':
       return `Fill the gap:  ${card.prompt}`
+    case 'recall':
+      if (kana) return `Type "${card.prompt}" in romaji`
+      if (pack.kind === 'kanji') return `Type a reading of "${card.prompt}", in romaji or kana`
+      return `Spell the ${pack.englishName} for "${card.prompt}"`
     default:
       return card.prompt
   }

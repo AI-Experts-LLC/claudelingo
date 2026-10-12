@@ -651,3 +651,62 @@ describe('a quiz run', () => {
     }
   })
 })
+
+/**
+ * The Japanese script decks, asked in their own words.
+ *
+ * A kana has a sound, not a meaning, and the top card of a script deck wants a
+ * reading typed rather than a spelling. Asking "What does か mean?" was the
+ * question that started this.
+ */
+describe('a Japanese script deck', () => {
+  const deck = (code: string) => materialize(BUNDLED.find((raw) => raw.code === code)!)
+  const HIRAGANA = deck('ja-hira')
+  const KANJI = deck('ja-kanji')
+
+  const at = (pack: Pack, rank: number, box: number) => {
+    const word = pack.words[rank - 1]!
+    const item = { ...reviewing(box), id: word.id }
+
+    return { pack, card: buildCard(pack, word, item, makeRng(1)), item }
+  }
+
+  const question = (over: Partial<BandModel>) => textOf(bodyRows(draw(over).tree)[0]!)
+
+  it('asks how a kana is read, and which kana a sound is', () => {
+    expect(question(at(HIRAGANA, 6, 1))).toBe('How do you read "か"?')
+    expect(question(at(HIRAGANA, 6, 3))).toBe('Which is "ka"?')
+    expect(question(at(HIRAGANA, 6, 5))).toBe('Type "か" in romaji')
+  })
+
+  it('asks what a kanji means, which kanji a meaning is, and how it is read', () => {
+    const water = KANJI.words.findIndex((w) => w.term === '水') + 1
+
+    expect(question(at(KANJI, water, 1))).toBe('What does "水" mean?')
+    expect(question(at(KANJI, water, 3))).toBe('Which kanji means "water"?')
+    expect(question(at(KANJI, water, 5))).toBe('Type a reading of "水", in romaji or kana')
+  })
+
+  it('shows a kanji with its readings when it is introduced', () => {
+    const water = KANJI.words.find((w) => w.term === '水')!
+    const { tree } = draw({ pack: KANJI, card: buildCard(KANJI, water, null, makeRng(1)) })
+
+    expect(textOf(bodyRows(tree)[1]!)).toContain('みず mizu · スイ sui')
+  })
+
+  it('takes a reading card on an Input, and keeps every row inside the band', () => {
+    for (const over of [at(HIRAGANA, 104, 5), at(KANJI, 79, 5), at(KANJI, 79, 3)]) {
+      for (const columns of [BAND_MIN_COLUMNS, OWL_MIN_COLUMNS, 80]) {
+        const { tree, nodes } = draw(over, columns)
+        const body = columns >= OWL_MIN_COLUMNS ? columns - MASCOT_WIDTH - GAP : columns
+
+        if (over.card.kind === 'recall') expect(nodes.some((node) => node.type === 'Input')).toBe(true)
+        expect(bodyRows(tree)).toHaveLength(3)
+
+        for (const row of bodyRows(tree)) {
+          expect(rowCells(row), `${over.card.word.term} at ${columns} columns`).toBeLessThanOrEqual(body)
+        }
+      }
+    }
+  })
+})

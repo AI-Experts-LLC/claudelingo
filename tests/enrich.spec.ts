@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import type { Store } from '../hooks/deck'
-import { memoryHook, oneLine } from '../hooks/enrich'
+import { memoryHook, oneLine, replyText } from '../hooks/enrich'
 import type { Completer } from '../hooks/enrich'
 import { hookKey } from '../hooks/names'
 import { materialize } from '../hooks/pack'
@@ -169,5 +169,30 @@ describe('oneLine', () => {
 
   it('is empty for an empty reply', () => {
     expect(oneLine('   \n  ')).toBe('')
+  })
+})
+
+/**
+ * `$.model.complete` resolved to the text in Claude Code 2.1.271 and to an
+ * answer object by 2.1.296. Reading the object as a string broke every pack
+ * build, so both shapes have to come out as text, and a reply that never came
+ * has to say why rather than pass for an empty one.
+ */
+describe("the model's reply", () => {
+  it('is the text, whichever shape it came in', () => {
+    expect(replyText('hola')).toBe('hola')
+    expect(replyText({ isAnswered: true, text: 'hola', usage: {} })).toBe('hola')
+  })
+
+  it('names the reason when there was no answer', () => {
+    expect(() =>
+      replyText({ isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded_error' }),
+    ).toThrow('the model did not answer (api-error: overloaded_error)')
+    expect(() => replyText({ isAnswered: false, reason: 'empty-reply' })).toThrow(/empty-reply/)
+  })
+
+  it('refuses a shape it does not know rather than guessing', () => {
+    expect(() => replyText(undefined)).toThrow(/unrecognised reply/)
+    expect(() => replyText({ text: 'no flag' })).toThrow(/unrecognised reply/)
   })
 })

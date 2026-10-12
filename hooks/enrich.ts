@@ -24,6 +24,29 @@ export interface Completer {
   complete: (request: { model: string; prompt: string; system?: string; maxTokens?: number }) => Promise<string>
 }
 
+/**
+ * The reply's text, whichever shape `$.model.complete` resolved to.
+ *
+ * Claude Code 2.1.271, which wrote `types/claude-code.d.ts`, resolves to the
+ * text. 2.1.296 resolves to `{ isAnswered: true, text }`, or to
+ * `{ isAnswered: false, reason }` when no reply came, and treating that object
+ * as a string failed every pack build with "undefined is not a function" and
+ * reported every memory hook as the model having nothing to say. Both shapes are
+ * accepted, and a reply that never came is an error that says why.
+ */
+export function replyText(reply: unknown): string {
+  if (typeof reply === 'string') return reply
+
+  const answer = (reply ?? {}) as { isAnswered?: unknown; text?: unknown; reason?: unknown; error?: unknown }
+
+  if (answer.isAnswered === true && typeof answer.text === 'string') return answer.text
+
+  const reason = typeof answer.reason === 'string' ? answer.reason : 'unrecognised reply'
+  const detail = typeof answer.error === 'string' ? `: ${answer.error}` : ''
+
+  throw new Error(`the model did not answer (${reason}${detail})`)
+}
+
 const SYSTEM =
   'You help someone remember a foreign word. Answer with one sentence of at most ' +
   '20 words: a cognate, an etymology, or a vivid image linking the word to its ' +

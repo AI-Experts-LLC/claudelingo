@@ -9,6 +9,7 @@
  */
 
 import { canCloze } from './cloze'
+import { kanaToRomaji } from './kana'
 import { BUNDLED } from './packs'
 import type { Pack, RawPack, Word } from './types'
 
@@ -47,7 +48,19 @@ export function materialize(raw: RawPack): Pack {
     const word: Word = { id: `${raw.code}:${index + 1}`, rank: index + 1, term, gloss, pos }
     const note = clean(rawNote ?? '')
 
-    if (note) word.note = note
+    if (raw.kind === 'kana') {
+      word.readings = [term]
+    } else if (raw.kind === 'kanji') {
+      // A kanji pack's note is its readings. They are kept as kana to check a
+      // typed answer against, and shown with their romaji, since someone still
+      // learning kana cannot read them otherwise.
+      word.readings = note.split(' ').filter(Boolean)
+      if (word.readings.length) {
+        word.note = word.readings.map((r) => `${r} ${kanaToRomaji(r) ?? ''}`.trim()).join(' · ')
+      }
+    } else if (note) {
+      word.note = note
+    }
 
     // `sentence | translation`. A sentence that cannot be blanked is dropped
     // rather than kept — `canCloze` is the same question the card builder asks,
@@ -65,6 +78,7 @@ export function materialize(raw: RawPack): Pack {
     code: clean(raw.code),
     name: clean(raw.name || raw.code),
     englishName: clean(raw.englishName || raw.name || raw.code),
+    kind: raw.kind === 'kana' || raw.kind === 'kanji' ? raw.kind : 'words',
     words,
   }
 }

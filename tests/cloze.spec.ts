@@ -34,6 +34,20 @@ describe("blanking a word out of its sentence", () => {
     expect(blankTerm("a.b y axb", "a.b")).toBe(`${BLANK} y axb`);
   });
 
+  it("finds words in scripts written without spaces", () => {
+    // Every letter beside の is another word's, so the spaced rule kept two
+    // Japanese examples in a hundred.
+    expect(blankTerm("これは私の本です。", "の")).toBe(`これは私${BLANK}本です。`);
+    expect(blankTerm("毎日、本を読む。", "毎日")).toBe(`${BLANK}、本を読む。`);
+    expect(blankTerm("ฉันกินข้าวทุกวัน", "กิน")).toBe(`ฉัน${BLANK}ข้าวทุกวัน`);
+  });
+
+  it("still leaves a word alone when it is only part of another, without spaces", () => {
+    // A substring test would blank 年 out of 来年 and の out of もの.
+    expect(canCloze("私は来年、日本に行く。", "年")).toBe(false);
+    expect(blankTerm("これは私のものだ", "の")).toBe(`これは私${BLANK}ものだ`);
+  });
+
   it("agrees with itself about what can be blanked", () => {
     // The guard and the blanker are the same question asked twice; when they
     // disagreed, a sentence passed the guard and was asked with the answer in it.
@@ -44,6 +58,8 @@ describe("blanking a word out of its sentence", () => {
       ["Casa mía", "casa"],
       ["nothing here", "casa"],
       ["", "casa"],
+      ["これは私のものだ", "の"],
+      ["私は来年、日本に行く。", "年"],
     ] as const) {
       const blanked = blankTerm(text, term);
       expect(canCloze(text, term), `${term} in "${text}"`).toBe(blanked !== text);

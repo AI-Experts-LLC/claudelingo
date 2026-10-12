@@ -132,6 +132,29 @@ describe('pack generation', () => {
     expect(notes.join(' ')).toContain('failed twice')
   })
 
+  /**
+   * A short pack is reported with the last note alone, so that note has to say
+   * a chunk failed. Blaming the ranks hid the cause of a short Japanese pack.
+   */
+  it('says a short pack was cut short by a failure, not by the ranks', async () => {
+    const notes: string[] = []
+    const onProgress = (_done: number, _total: number, note?: string) => {
+      if (note) notes.push(note)
+    }
+
+    await generatePack(fakeModel([words(1, 100), 'nope', 'still nope']).ask, 'X', 'xx', 300, {
+      onProgress,
+    })
+
+    expect(notes.at(-1)).toContain('after a chunk failed')
+    expect(notes.at(-1)).toContain('valid JSON')
+
+    notes.length = 0
+    await generatePack(fakeModel([words(1, 50)]).ask, 'X', 'xx', 1000, { onProgress })
+
+    expect(notes.at(-1)).toContain('the ranks asked for are used up')
+  })
+
   it('throws only when it got nothing at all', async () => {
     // Both shapes of nothing: a reply that will not parse, twice over, and one
     // that parses to an empty list.
@@ -146,6 +169,24 @@ describe('pack generation', () => {
     await expect(
       generatePack(fakeModel(['{"words":[]}']).ask, 'X', 'xx', 10),
     ).rejects.toThrow(/no words/)
+  })
+
+  /**
+   * When nothing comes back the error is all the person sees: the progress
+   * notes that say why are dropped on that path, so the reason has to travel in
+   * the error. "No words" on its own cannot tell a refused model from a reply
+   * cut off by its token cap.
+   */
+  it('says why, when it got nothing at all', async () => {
+    const refused: Asker = async () => {
+      throw new Error('no such model: haiku-3')
+    }
+
+    await expect(generatePack(refused, 'X', 'xx', 10)).rejects.toThrow(/no such model: haiku-3/)
+    await expect(generatePack(fakeModel(['']).ask, 'X', 'xx', 10)).rejects.toThrow(/empty reply/)
+    await expect(generatePack(fakeModel(['{"words":[{"te']).ask, 'X', 'xx', 10)).rejects.toThrow(
+      /valid JSON/,
+    )
   })
 
   /**

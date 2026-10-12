@@ -133,6 +133,14 @@ describe("answer checking", () => {
     expect(normalize("aujourd'hui")).toBe("aujourd'hui");
   });
 
+  it("drops Latin accents but keeps Japanese voicing marks", () => {
+    // Decomposing split が into か and a mark the filter then dropped, so が
+    // and か compared equal and みす passed for みず.
+    expect(normalize("が")).toBe("が");
+    expect(normalize("みす")).not.toBe(normalize("みず"));
+    expect(normalize("パン")).toBe("パン");
+  });
+
   it("treats a teach card as always correct", () => {
     const teach = { ...recall, kind: "teach" as const };
     expect(isCorrect(teach, {})).toBe(true);

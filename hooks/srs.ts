@@ -1,4 +1,5 @@
 import { blankTerm } from "./cloze";
+import { kanaToRomaji, sameReading } from "./kana";
 import type { Card, CardKind, ItemProgress, Pack, Progress, Settings, Word } from "./types";
 
 const MINUTE = 60_000;
@@ -170,11 +171,18 @@ function pickDistractors(pack: Pack, word: Word, rng: () => number, count: numbe
   return picked;
 }
 
-/** Strip case, accents, and surrounding punctuation so "Qué" matches "que". */
+/**
+ * Strip case, accents, and surrounding punctuation so "Qué" matches "que".
+ *
+ * Only Latin accents go, and the rest is recomposed. Decomposing alone split
+ * が into か and a voicing mark the punctuation filter then dropped, so が and
+ * か compared equal and みす passed for みず.
+ */
 export function normalize(text: string): string {
   return text
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
+    .normalize("NFC")
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s'-]/gu, "")
     .trim()
@@ -189,6 +197,22 @@ export function buildCard(pack: Pack, word: Word, item: ItemProgress | null, rng
 
   if (kind === "teach") {
     return { kind, word, prompt: word.term, choices: [], answerIndex: -1, accepted: [word.term] };
+  }
+
+  if (kind === "recall" && word.readings?.length) {
+    // A script is produced by reading it, not by spelling it: typing 水 needs a
+    // Japanese keyboard, and the keyboard would do the remembering. So the
+    // character is shown and its reading is typed, in romaji or kana. The first
+    // accepted answer is what the verdict shows when it is got wrong.
+    const romaji = word.readings.map((r) => kanaToRomaji(r) ?? r);
+    return {
+      kind,
+      word,
+      prompt: word.term,
+      choices: [],
+      answerIndex: -1,
+      accepted: [pack.kind === "kana" ? word.gloss : romaji.join(" / "), ...word.readings],
+    };
   }
 
   if (kind === "recall") {
@@ -245,7 +269,10 @@ export function isCorrect(card: Card, response: { choice?: number; text?: string
     }
     return false;
   }
-  return typed.length > 0 && card.accepted.some((a) => normalize(a) === typed);
+  return (
+    typed.length > 0 &&
+    card.accepted.some((a) => normalize(a) === typed || sameReading(a, response.text ?? ""))
+  );
 }
 
 function freshItem(id: string, now: number): ItemProgress {
